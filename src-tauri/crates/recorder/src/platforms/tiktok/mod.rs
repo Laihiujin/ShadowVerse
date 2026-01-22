@@ -133,8 +133,10 @@ impl TikTokRecorder {
         // TikTok URLs are typically like: https://www.tiktok.com/@username/live
         let url = if self.room_id.starts_with("http") {
             self.room_id.clone()
-        } else {
+        } else if self.room_id.starts_with('@') {
             format!("https://www.tiktok.com/{}/live", self.room_id)
+        } else {
+            format!("https://www.tiktok.com/@{}/live", self.room_id)
         };
 
         match api::get_room_info(&self.client, &self.account, &url).await {

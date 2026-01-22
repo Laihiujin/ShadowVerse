@@ -593,7 +593,7 @@ async fn fetch_mobile_live_value(
     Ok(value)
 }
 
-fn extract_mobile_room_info(value: &Value, account: &Account, url: &str) -> Option<RoomInfo> {
+fn extract_mobile_room_info(value: &Value, _account: &Account, url: &str) -> Option<RoomInfo> {
     let live_stream = value.get("liveStream")?;
     let live_map = live_stream.as_object()?;
     let living = live_map
@@ -602,16 +602,8 @@ fn extract_mobile_room_info(value: &Value, account: &Account, url: &str) -> Opti
         .or_else(|| live_map.get("living").and_then(|v| v.as_i64().map(|n| n == 1)))
         .unwrap_or(false);
 
-    let fallback_user_id = if account.id.is_empty() {
-        extract_user_id_from_url(url)
-    } else {
-        account.id.clone()
-    };
-    let fallback_user_name = if account.name.is_empty() {
-        "Kuaishou Live".to_string()
-    } else {
-        account.name.clone()
-    };
+    let fallback_user_id = extract_user_id_from_url(url);
+    let fallback_user_name = "Kuaishou Live".to_string();
 
     let user_map = live_map.get("user").and_then(|v| v.as_object());
     let user_name = user_map
@@ -748,25 +740,19 @@ pub async fn get_room_info(
         });
     }
     let has_fallback_stream = extract_hls_play_url(&html_str).is_some();
-    let fallback_user_id = if account.id.is_empty() {
-        extract_user_id_from_url(url)
-    } else {
-        account.id.clone()
-    };
+    let fallback_user_id = extract_user_id_from_url(url);
     let (html_title, html_cover, html_avatar) = extract_metadata_from_html(&html_str);
 
-    let fallback_user_name = if account.name.is_empty() {
-        html_title.clone().unwrap_or_else(|| "Kuaishou Live".to_string())
-    } else {
-        account.name.clone()
-    };
+    let fallback_user_name = html_title.clone().unwrap_or_else(|| "Kuaishou Live".to_string());
 
     let fallback_room_info = RoomInfo {
         live_status: has_fallback_stream,
-        room_title: html_title.clone().unwrap_or_else(|| format!("{}'s live", fallback_user_name)),
+        room_title: html_title
+            .clone()
+            .unwrap_or_else(|| format!("{}'s live", fallback_user_name)),
         room_cover_url: html_cover.clone().unwrap_or_default(),
-        user_id: fallback_user_id,
-        user_name: fallback_user_name,
+        user_id: fallback_user_id.clone(),
+        user_name: fallback_user_name.clone(),
         user_avatar: html_avatar.clone().unwrap_or_default(),
     };
 
@@ -819,16 +805,12 @@ pub async fn get_room_info(
 
     let author = live_data.author.unwrap_or_default();
     let author_name = if author.name.is_empty() {
-        if account.name.is_empty() {
-            "Kuaishou Live".to_string()
-        } else {
-            account.name.clone()
-        }
+        fallback_user_name.clone()
     } else {
         author.name.clone()
     };
     let author_id = if author.id.is_empty() {
-        account.id.clone()
+        fallback_user_id.clone()
     } else {
         author.id.clone()
     };

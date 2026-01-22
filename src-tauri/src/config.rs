@@ -50,8 +50,6 @@ pub struct Config {
     pub update_interval: Arc<AtomicU64>,
     #[serde(default = "default_powerlive_key")]
     pub powerlive_key: String,
-    #[serde(default = "default_proxy_url")]
-    pub proxy_url: String,
     #[serde(default = "default_douyin_passport")]
     pub douyin_passport: DouyinPassportConfig,
 }
@@ -157,10 +155,6 @@ fn default_webhook_url() -> String {
 }
 
 fn default_powerlive_key() -> String {
-    String::new()
-}
-
-fn default_proxy_url() -> String {
     String::new()
 }
 
@@ -281,22 +275,6 @@ impl Config {
             if let Ok(mut config) = toml::from_str::<Config>(&content) {
                 config.config_path = config_path.to_str().unwrap().into();
                 config.update_interval = Arc::new(AtomicU64::new(config.status_check_interval));
-                if config.proxy_url.trim().is_empty() {
-                    let detected = detect_env_proxy().or_else(|| {
-                        #[cfg(target_os = "windows")]
-                        {
-                            detect_windows_proxy()
-                        }
-                        #[cfg(not(target_os = "windows"))]
-                        {
-                            None
-                        }
-                    });
-                    if let Some(proxy_url) = detected {
-                        config.proxy_url = proxy_url;
-                        config.save();
-                    }
-                }
                 return Ok(config);
             }
         }
@@ -329,17 +307,6 @@ impl Config {
             danmu_ass_options: default_danmu_ass_options(),
             update_interval: Arc::new(AtomicU64::new(default_status_check_interval())),
             powerlive_key: default_powerlive_key(),
-            proxy_url: detect_env_proxy().or_else(|| {
-                #[cfg(target_os = "windows")]
-                {
-                    detect_windows_proxy()
-                }
-                #[cfg(not(target_os = "windows"))]
-                {
-                    None
-                }
-            })
-            .unwrap_or_else(default_proxy_url),
             douyin_passport: default_douyin_passport(),
         };
 
@@ -428,12 +395,21 @@ impl Config {
     }
 
     pub fn apply_proxy_env(&self) {
-        let proxy_url = self.proxy_url.trim();
-        if proxy_url.is_empty() {
-            return;
+        let detected = detect_env_proxy().or_else(|| {
+            #[cfg(target_os = "windows")]
+            {
+                detect_windows_proxy()
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                None
+            }
+        });
+        if let Some(proxy_url) = detected {
+            std::env::set_var("TIKTOK_PROXY_URL", proxy_url);
+        } else {
+            std::env::remove_var("TIKTOK_PROXY_URL");
         }
-
-        std::env::set_var("TIKTOK_PROXY_URL", proxy_url);
     }
 
     pub fn apply_douyin_passport_env(&self) {

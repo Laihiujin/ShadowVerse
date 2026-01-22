@@ -18,7 +18,7 @@ use crate::{
             update_danmu_ass_options, update_notify, update_openai_api_endpoint,
             update_openai_api_key, update_status_check_interval, update_subtitle_generator_type,
             update_subtitle_setting, update_webhook_url, update_whisper_language,
-            update_whisper_model, update_whisper_prompt, update_proxy_url,
+            update_whisper_model, update_whisper_prompt,
         },
         message::{delete_message, get_messages, read_message},
         recorder::{
@@ -349,22 +349,6 @@ async fn handler_update_webhook_url(
     update_webhook_url(state.0, param.webhook_url)
         .await
         .expect("Failed to update webhook url");
-    Ok(Json(ApiResponse::success(())))
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct UpdateProxyUrlRequest {
-    proxy_url: String,
-}
-
-async fn handler_update_proxy_url(
-    state: axum::extract::State<State>,
-    Json(param): Json<UpdateProxyUrlRequest>,
-) -> Result<Json<ApiResponse<()>>, ApiError> {
-    update_proxy_url(state.0, param.proxy_url)
-        .await
-        .expect("Failed to update proxy url");
     Ok(Json(ApiResponse::success(())))
 }
 
@@ -1816,7 +1800,6 @@ pub async fn start_api_server(state: State) {
                 post(handler_update_whisper_language),
             )
             .route("/api/update_webhook_url", post(handler_update_webhook_url))
-            .route("/api/update_proxy_url", post(handler_update_proxy_url))
             .route(
                 "/api/update_danmu_ass_options",
                 post(handler_update_danmu_ass_options),

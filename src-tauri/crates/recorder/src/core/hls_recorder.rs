@@ -183,6 +183,19 @@ impl HlsRecorder {
                         log::error!("[{}]M3u8 parse failed: {}", self.room_id, e);
                         return Err(e);
                     }
+                    RecorderError::InvalidResponseStatus { status }
+                        if status.is_server_error() =>
+                    {
+                        log::warn!(
+                            "[{}]Playlist fetch failed with {}, retrying",
+                            self.room_id,
+                            status
+                        );
+                        self.updated_at
+                            .store(Utc::now().timestamp_millis(), Ordering::Relaxed);
+                        tokio::time::sleep(Duration::from_secs(2)).await;
+                        continue;
+                    }
                     RecorderError::StreamExpired { .. } => {
                         log::error!("[{}]Stream expired", self.room_id);
                         return Err(e);

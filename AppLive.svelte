@@ -826,9 +826,7 @@
                       class="px-4 py-1.5 text-red-500 text-sm rounded-lg
                              transition-all duration-200 hover:bg-red-500/10
                              disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                      删除
-                    </button>
+                    >??</button>
                   {/if}
                 </div>
               </div>
@@ -842,7 +840,7 @@
                        transition duration-200 outline-none appearance-none
                        hover:border-gray-700/50"
                 >
-                  <option value={0}>选择切片</option>
+                  <option value={0}>????</option>
                   {#each videos as video}
                     <option value={video.value}>{video.name}</option>
                   {/each}
@@ -853,9 +851,7 @@
                     class="w-24 ml-2 px-3 py-2 bg-[#0A84FF] text-white rounded-lg
                      transition-all duration-200 hover:bg-[#0A84FF]/90
                      disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    下载
-                  </button>
+                  >??</button>
                 {/if}
               </div>
             </section>
@@ -863,13 +859,13 @@
             <!-- 弹幕峰值检索区 -->
             <section class="space-y-3 flex-shrink-0">
               <div class="flex items-center justify-between">
-                <h3 class="text-sm font-medium text-gray-300">弹幕峰值</h3>
+                <h3 class="text-sm font-medium text-gray-300">????</h3>
                 {#if show_peak_panel}
                   <button
                     on:click={() => (show_peak_panel = false)}
                     class="text-sm text-gray-400 hover:text-[#0A84FF] transition-colors duration-200"
                   >
-                    收起
+                    ??
                   </button>
                 {:else}
                   <button
@@ -877,19 +873,18 @@
                     class="px-4 py-1.5 bg-[#2c2c2e] text-white text-sm rounded-lg
                            transition-all duration-200 hover:bg-[#3c3c3e]"
                   >
-                    峰值检索
+                    ????
                   </button>
                 {/if}
               </div>
 
               {#if show_peak_panel}
-                <!-- 设置区域 -->
                 <div
                   class="space-y-2 p-3 bg-[#2c2c2e] rounded-lg border border-gray-800/50"
                 >
                   <div class="flex items-center justify-between">
                     <span class="text-xs text-gray-400"
-                      >阈值: {peak_threshold}%</span
+                      >??: {peak_threshold}%</span
                     >
                     <input
                       type="range"
@@ -901,53 +896,38 @@
                   </div>
                 </div>
 
-                <!-- 峰值列表 -->
                 {#if danmu_records.length === 0}
                   <div class="text-center py-4 text-gray-500 text-sm">
-                    暂无弹幕数据
+                    ??????
                   </div>
                 {:else if danmu_peaks.length === 0}
                   <div class="text-center py-4 text-gray-500 text-sm">
-                    未检测到峰值，请尝试降低阈值
+                    ??????????????
                   </div>
                 {:else}
                   <div class="flex items-center justify-between mb-2">
                     <span class="text-xs text-gray-400">
-                      检测到 {danmu_peaks.length} 个峰值
+                      ??? {danmu_peaks.length} ???
                     </span>
                     <div class="flex items-center gap-2">
-
                       <button
-
                         on:click={add_all_peaks_to_ranges}
-
                         class="text-xs text-gray-400 hover:text-[#0A84FF] transition-colors duration-200 font-medium"
-
                       >
-
-                        + ???
-
+                        + ????
                       </button>
-
                       <button
-
                         on:click={remove_all_peaks_from_ranges}
-
                         class="text-xs text-gray-400 hover:text-red-400 transition-colors duration-200 font-medium"
-
                       >
-
-                        - ????
-
+                        ?????
                       </button>
-
                     </div>
                   </div>
                   <div
                     class="max-h-48 overflow-y-auto space-y-2 sidebar-scrollbar"
                   >
                     {#each danmu_peaks as peak}
-                      <!-- svelte-ignore a11y-click-events-have-key-events -->
                       <div
                         class="flex items-center justify-between p-2 bg-[#2c2c2e] rounded-lg border border-gray-800/50
                                hover:border-[#0A84FF]/50 transition-all duration-200 cursor-pointer"
@@ -959,12 +939,12 @@
                       >
                         <div class="flex-1">
                           <div class="text-xs text-white/90">
-                            {format_time(peak.start * 1000)} → {format_time(
+                            {format_time(peak.start * 1000)} - {format_time(
                               peak.end * 1000,
                             )}
                           </div>
                           <div class="text-xs text-gray-500">
-                            {peak.count} 条弹幕
+                            {peak.count} ???
                           </div>
                         </div>
                         {#if peak.added}
@@ -981,7 +961,7 @@
                               add_peak_to_ranges(peak)}
                             class="text-xs text-gray-400 hover:text-[#0A84FF] transition-colors duration-200 font-medium"
                           >
-                            + 添加
+                            + ??
                           </button>
                         {/if}
                       </div>
@@ -1016,7 +996,7 @@
                     </div>
                     <img
                       src={selected_video.cover}
-                      alt="视频封面"
+                      alt="????"
                       class="w-full"
                     />
                   </div>
@@ -1027,27 +1007,13 @@
             <!-- 弹幕列表区 -->
             <section class="space-y-3 flex flex-col flex-1 min-h-0">
               <div class="flex items-center justify-between flex-shrink-0">
-                <h3 class="text-sm font-medium text-gray-300">弹幕列表</h3>
+                <h3 class="text-sm font-medium text-gray-300">????</h3>
               </div>
 
               <div class="space-y-3 flex flex-col flex-1 min-h-0">
-                <!-- 搜索 -->
-                <div class="space-y-2 flex-shrink-0">
-                  <input
-                    type="text"
-                    bind:value={danmu_search_text}
-                    placeholder="搜索弹幕内容..."
-                    class="w-full px-3 py-2 bg-[#2c2c2e] text-white rounded-lg
-                           border border-gray-800/50 focus:border-[#0A84FF]
-                           transition duration-200 outline-none
-                           placeholder-gray-500"
-                  />
-                </div>
-
-                <!-- 弹幕统计 -->
+                <!-- ???? -->
                 <div class="text-xs text-gray-400 flex-shrink-0">
-                  共 {danmu_records.length} 条弹幕，显示 {filtered_danmu.length}
-                  条
+                  ? {danmu_records.length} ?????? {filtered_danmu.length} ?
                 </div>
 
                 <!-- 弹幕列表 -->

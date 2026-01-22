@@ -74,26 +74,89 @@ pub async fn get_room_info(
 
     if status.is_success() {
         if let Ok(data) = serde_json::from_str::<DouyinRoomInfoResponse>(&text) {
-            let cover = data
-                .data
-                .data
-                .first()
-                .and_then(|data| data.cover.as_ref())
-                .map(|cover| cover.url_list[0].clone());
+            if data.status_code != 0 {
+                return Err(RecorderError::ApiError {
+                    error: format!("Douyin API error status_code: {}", data.status_code),
+                });
+            }
+            let room = match data.data.data.first() {
+                Some(room) => room,
+                None => {
+                    return Err(RecorderError::ApiError {
+                        error: "Douyin room info missing, possible rate limit or login redirect"
+                            .to_string(),
+                    });
+                }
+            };
+            if let Some(enter_room_id) = data.data.enter_room_id.as_deref() {
+                if !enter_room_id.is_empty()
+                    && enter_room_id != room_id
+                    && enter_room_id != room.id_str
+                {
+                    return Err(RecorderError::ApiError {
+                        error: "Douyin room id mismatch, possible rate limit or login redirect"
+                            .to_string(),
+                    });
+                }
+            }
+
+            let (user_name, user_avatar, owner_sec_uid) = if let Some(owner) = room.owner.as_ref()
+            {
+                (
+                    owner.nickname.clone(),
+                    owner
+                        .avatar_thumb
+                        .url_list
+                        .first()
+                        .cloned()
+                        .unwrap_or_default(),
+                    owner.sec_uid.clone(),
+                )
+            } else {
+                if let Some(owner_user_id) = room.owner_user_id_str.as_deref() {
+                    if !owner_user_id.is_empty() && owner_user_id != data.data.user.id_str {
+                        return Err(RecorderError::ApiError {
+                            error: "Douyin room owner mismatch, possible rate limit or login redirect"
+                                .to_string(),
+                        });
+                    }
+                }
+                (
+                    data.data.user.nickname.clone(),
+                    data.data
+                        .user
+                        .avatar_thumb
+                        .url_list
+                        .first()
+                        .cloned()
+                        .unwrap_or_default(),
+                    data.data.user.sec_uid.clone(),
+                )
+            };
+
+            let cover = room
+                .cover
+                .as_ref()
+                .and_then(|cover| cover.url_list.first().cloned());
+
             return Ok(DouyinBasicRoomInfo {
-                room_id_str: data.data.data[0].id_str.clone(),
-                sec_user_id: sec_user_id.to_string(),
+                room_id_str: room.id_str.clone(),
+                sec_user_id: if owner_sec_uid.is_empty() {
+                    sec_user_id.to_string()
+                } else {
+                    owner_sec_uid
+                },
                 cover,
-                room_title: data.data.data[0].title.clone(),
-                user_name: data.data.user.nickname.clone(),
-                user_avatar: data.data.user.avatar_thumb.url_list[0].clone(),
+                room_title: room.title.clone(),
+                user_name,
+                user_avatar,
                 status: data.data.room_status,
-                hls_url: data.data.data[0]
+                hls_url: room
                     .stream_url
                     .as_ref()
                     .map(|stream_url| stream_url.hls_pull_url.clone())
                     .unwrap_or_default(),
-                stream_data: data.data.data[0]
+                stream_data: room
                     .stream_url
                     .as_ref()
                     .map(|s| s.live_core_sdk_data.pull_data.stream_data.clone())

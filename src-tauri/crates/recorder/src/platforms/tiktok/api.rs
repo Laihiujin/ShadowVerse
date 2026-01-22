@@ -15,6 +15,7 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use url::form_urlencoded::Serializer;
 
 const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36";
+const MOBILE_USER_AGENT: &str = "Mozilla/5.0 (Linux; Android 12; Pixel 6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Mobile Safari/537.36";
 const DEFAULT_COOKIE: &str = "1%7Cz7FKki38aKyy7i-BC9rEDwcrVvjcLcFEL6QIeqldoy4%7C1761302831%7C6c1461e9f1f980cbe0404c51905177d5d53bbd822e1bf66128887d942c9c3e2f";
 const TIKTOK_COOLDOWN_SECS: i64 = 120;
 const TIKTOK_MSSDK_URL: &str = "https://mssdk.tiktokw.us/web/report?msToken=1Ab-7YxR9lUHSem0PraI_XzdKmpHb6j50L8AaXLAd2aWTdoJCYLfX_67rVQFE4UwwHVHmyG_NfIipqrlLT3kCXps-5PYlNAqtdwEg7TrDyTAfCKyBrOLmhMUjB55oW8SPZ4_EkNxNFUdV7MquA==";
@@ -29,7 +30,11 @@ static TIKTOK_COOLDOWN_UNTIL: AtomicI64 = AtomicI64::new(0);
 
 fn tiktok_api_allowed() -> bool {
     let now = Utc::now().timestamp();
-    now >= TIKTOK_COOLDOWN_UNTIL.load(Ordering::Relaxed)
+    if now >= TIKTOK_COOLDOWN_UNTIL.load(Ordering::Relaxed) {
+        return true;
+    }
+    // Allow immediate retry when proxy is configured (useful after switching proxy).
+    proxy_url_from_env().is_some()
 }
 
 fn set_tiktok_cooldown(reason: &str) {
@@ -68,12 +73,26 @@ pub struct TikTokQrStatus {
     pub message: String,
 }
 
+fn normalize_proxy_url(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if trimmed.starts_with("http://")
+        || trimmed.starts_with("https://")
+        || trimmed.starts_with("socks5://")
+        || trimmed.starts_with("socks5h://")
+    {
+        return Some(trimmed.to_string());
+    }
+    Some(format!("http://{trimmed}"))
+}
+
 pub fn proxy_url_from_env() -> Option<String> {
     for key in ["TIKTOK_PROXY_URL", "tiktok_proxy_url"] {
         if let Ok(value) = env::var(key) {
-            let trimmed = value.trim();
-            if !trimmed.is_empty() {
-                return Some(trimmed.to_string());
+            if let Some(url) = normalize_proxy_url(&value) {
+                return Some(url);
             }
         }
     }
@@ -86,9 +105,8 @@ pub fn proxy_url_from_env() -> Option<String> {
         "all_proxy",
     ] {
         if let Ok(value) = env::var(key) {
-            let trimmed = value.trim();
-            if !trimmed.is_empty() {
-                return Some(trimmed.to_string());
+            if let Some(url) = normalize_proxy_url(&value) {
+                return Some(url);
             }
         }
     }
@@ -134,6 +152,52 @@ fn extract_json_after_marker(html_str: &str, marker: &str) -> Option<Value> {
         if let Some(value) = parse_first_json_value(slice) {
             return Some(value);
         }
+    }
+    None
+}
+
+fn detect_blocked_page(html_str: &str) -> Option<&'static str> {
+    let lower = html_str.to_ascii_lowercase();
+    let candidates = [
+        ("captcha", "TikTok returned a captcha page"),
+        ("verify to continue", "TikTok requires verification"),
+        ("just a moment", "TikTok is protected by a browser check"),
+        ("access denied", "TikTok access denied"),
+        ("safety verification", "TikTok safety verification required"),
+        ("challenge", "TikTok challenge page"),
+        ("slardarwaf", "TikTok WAF page (Slardar)"),
+        ("slardar-config", "TikTok WAF page (Slardar)"),
+    ];
+    for (needle, message) in candidates {
+        if lower.contains(needle) {
+            return Some(message);
+        }
+    }
+    None
+}
+
+fn maybe_dump_html(label: &str, html_str: &str) -> Option<String> {
+    let enabled = env::var("BSR_TIKTOK_DUMP_HTML")
+        .map(|v| {
+            let v = v.to_ascii_lowercase();
+            !(v == "0" || v == "false" || v == "no" || v == "off")
+        })
+        .unwrap_or(true);
+    if !enabled {
+        return None;
+    }
+    let dir = env::var("BSR_TIKTOK_DUMP_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| std::env::temp_dir());
+    let _ = std::fs::create_dir_all(&dir);
+    let filename = format!(
+        "tiktok_{}_{}.html",
+        label,
+        chrono::Utc::now().timestamp_millis()
+    );
+    let path = dir.join(filename);
+    if std::fs::write(&path, html_str.as_bytes()).is_ok() {
+        return Some(path.to_string_lossy().to_string());
     }
     None
 }
@@ -330,6 +394,19 @@ fn parse_cookie_header(header: &str) -> HashMap<String, String> {
     map
 }
 
+
+fn normalize_cookie_header(raw: &str) -> String {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return String::new();
+    }
+    if raw.contains('=') {
+        raw.to_string()
+    } else {
+        format!("ttwid={raw}")
+    }
+}
+
 fn mssdk_url() -> String {
     env::var("TIKTOK_MSSDK_URL").unwrap_or_else(|_| TIKTOK_MSSDK_URL.to_string())
 }
@@ -353,6 +430,45 @@ fn apply_tiktok_extra_headers(headers: &mut HeaderMap) {
             }
         }
     }
+}
+
+fn apply_browser_headers(headers: &mut HeaderMap, mobile: bool) {
+    let defaults = [
+        ("accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"),
+        ("accept-language", "en-US,en;q=0.9"),
+        ("sec-ch-ua", "\"Chromium\";v=\"141\", \"Not?A_Brand\";v=\"8\", \"Google Chrome\";v=\"141\""),
+        ("sec-ch-ua-mobile", if mobile { "?1" } else { "?0" }),
+        ("sec-ch-ua-platform", "\"Windows\""),
+        ("sec-fetch-dest", "document"),
+        ("sec-fetch-mode", "navigate"),
+        ("sec-fetch-site", "none"),
+        ("sec-fetch-user", "?1"),
+        ("upgrade-insecure-requests", "1"),
+    ];
+    for (key, value) in defaults {
+        if let Ok(parsed) = value.parse() {
+            headers.insert(key, parsed);
+        }
+    }
+}
+
+fn build_page_headers(url: &str, user_agent: &str, mobile: bool) -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    headers.insert("User-Agent", user_agent.parse().unwrap());
+    if let Ok(parsed) = url.parse() {
+        headers.insert("referer", parsed);
+    }
+    apply_browser_headers(&mut headers, mobile);
+    headers
+}
+
+fn to_mobile_url(url: &str) -> Option<String> {
+    let mut parsed = Url::parse(url).ok()?;
+    if parsed.host_str()? == "m.tiktok.com" {
+        return None;
+    }
+    parsed.set_host(Some("m.tiktok.com")).ok()?;
+    Some(parsed.to_string())
 }
 
 async fn fetch_ms_token(client: &Client) -> String {
@@ -582,9 +698,15 @@ async fn follow_login_chain(
 }
 
 pub async fn get_qr_login(client: &Client) -> Result<TikTokQrInfo, RecorderError> {
+    let proxy_url = proxy_url_from_env();
+    let request_client = if let Some(proxy_url) = proxy_url.as_deref() {
+        build_proxy_client(proxy_url)?
+    } else {
+        client.clone()
+    };
     let device_id = gen_device_id();
     let verify_fp = crate::platforms::douyin::params::gen_verify_fp();
-    let mut cookies = bootstrap_tiktok_cookies(client, &verify_fp, None).await;
+    let mut cookies = bootstrap_tiktok_cookies(&request_client, &verify_fp, None).await;
     let mut ms_token = cookies
         .get("msToken")
         .cloned()
@@ -597,7 +719,7 @@ pub async fn get_qr_login(client: &Client) -> Result<TikTokQrInfo, RecorderError
     );
 
     let headers = build_passport_headers(&cookies);
-    let resp = client.get(url).headers(headers.clone()).send().await?;
+    let resp = request_client.get(url).headers(headers.clone()).send().await?;
     if let Some(ms_header) = resp.headers().get("x-ms-token") {
         if let Ok(value) = ms_header.to_str() {
             ms_token = value.to_string();
@@ -669,7 +791,13 @@ pub async fn get_qr_login_status(
     let ms_token = parts.next().unwrap_or_default();
     let ttwid_ticket = parts.next();
 
-    let cookies = bootstrap_tiktok_cookies(client, verify_fp, Some(ms_token)).await;
+    let proxy_url = proxy_url_from_env();
+    let request_client = if let Some(proxy_url) = proxy_url.as_deref() {
+        build_proxy_client(proxy_url)?
+    } else {
+        client.clone()
+    };
+    let cookies = bootstrap_tiktok_cookies(&request_client, verify_fp, Some(ms_token)).await;
     let params = build_qr_params(Some(token), device_id, verify_fp, ms_token);
     let query = build_query(&params);
     let mut headers = build_passport_headers(&cookies);
@@ -689,7 +817,7 @@ pub async fn get_qr_login_status(
     let mut json: Option<serde_json::Value> = None;
     for host in hosts {
         let url = format!("{host}/passport/web/check_qrconnect/?{query}");
-        let resp = client.get(url).headers(headers.clone()).send().await?;
+        let resp = request_client.get(url).headers(headers.clone()).send().await?;
         merge_cookie_maps(&mut response_cookies, collect_cookie_map(resp.headers()));
         let current: serde_json::Value = resp.json().await?;
         let is_rate_limited = current.get("message").and_then(Value::as_str) == Some("error")
@@ -1652,40 +1780,134 @@ pub async fn get_room_info(
         });
     }
     let proxy_url = proxy_url_from_env();
+    let has_proxy = proxy_url.is_some();
     let request_client = if let Some(proxy_url) = proxy_url.as_deref() {
         build_proxy_client(proxy_url)?
     } else {
         client.clone()
     };
-    let mut headers = reqwest::header::HeaderMap::new();
-    headers.insert("User-Agent", USER_AGENT.parse().unwrap());
-    headers.insert("referer", "https://www.tiktok.com/".parse().unwrap());
-    headers.insert("accept-language", "en-US,en;q=0.9".parse().unwrap());
+    let mut headers = build_page_headers(url, USER_AGENT, false);
 
-    let cookie = if account.cookies.is_empty() {
+    let raw_cookie = if account.cookies.is_empty() {
         DEFAULT_COOKIE
     } else {
         &account.cookies
     };
-    headers.insert("cookie", cookie.parse().unwrap());
+    let normalized_cookie = normalize_cookie_header(raw_cookie);
+    let mut cookie_map = parse_cookie_header(&normalized_cookie);
+    if !cookie_map.contains_key("msToken") || !cookie_map.contains_key("ttwid") {
+        let verify_fp = crate::platforms::douyin::params::gen_verify_fp();
+        let bootstrap = bootstrap_tiktok_cookies(
+            &request_client,
+            &verify_fp,
+            cookie_map.get("msToken").map(|s| s.as_str()),
+        )
+        .await;
+        for (key, value) in bootstrap {
+            cookie_map.entry(key).or_insert(value);
+        }
+    }
+    let cookie_header = build_cookie_string(&cookie_map);
+    if !cookie_header.is_empty() {
+        headers.insert("cookie", cookie_header.parse().unwrap());
+    }
+
+    let direct_client = client.clone();
 
     // Retry up to 3 times
     for attempt in 0..3 {
+        let mut using_proxy = has_proxy;
         let response = request_client
             .get(url)
             .headers(headers.clone())
             .send()
             .await?;
-        let status = response.status();
-        let html_str = response.text().await?;
+        let mut status = response.status();
+        let mut html_str = response.text().await?;
+        if has_proxy
+            && (status == reqwest::StatusCode::BAD_GATEWAY
+                || status == reqwest::StatusCode::GATEWAY_TIMEOUT)
+        {
+            log::warn!(
+                "[TikTok] Proxy response status {}, retrying without proxy",
+                status
+            );
+            if let Ok(direct_response) = client.get(url).headers(headers.clone()).send().await {
+                let direct_status = direct_response.status();
+                let direct_html = direct_response.text().await.unwrap_or_default();
+                if direct_status.is_success() {
+                    status = direct_status;
+                    html_str = direct_html;
+                    using_proxy = false;
+                }
+            }
+        }
+        if let Some(_reason) = detect_blocked_page(&html_str) {
+            if using_proxy {
+                if let Ok(direct_response) = client.get(url).headers(headers.clone()).send().await
+                {
+                    let direct_status = direct_response.status();
+                    let direct_html = direct_response.text().await.unwrap_or_default();
+                    if direct_status.is_success()
+                        && detect_blocked_page(&direct_html).is_none()
+                    {
+                        status = direct_status;
+                        html_str = direct_html;
+                        using_proxy = false;
+                    }
+                }
+            }
+        }
+        if let Some(reason) = detect_blocked_page(&html_str) {
+            let dump_path = maybe_dump_html("blocked_room_info", &html_str);
+            return Err(RecorderError::ApiError {
+                error: if let Some(path) = dump_path {
+                    format!(
+                        "TikTok blocked response: {}. Check proxy quality. Dump: {}",
+                        reason, path
+                    )
+                } else {
+                    format!("TikTok blocked response: {}. Check proxy quality.", reason)
+                },
+            });
+        }
         if !status.is_success() {
+            if status == reqwest::StatusCode::FORBIDDEN {
+                if let Some(mobile_url) = to_mobile_url(url) {
+                    let mobile_headers = build_page_headers(&mobile_url, MOBILE_USER_AGENT, true);
+                    if let Ok(mobile_response) = request_client
+                        .get(&mobile_url)
+                        .headers(mobile_headers)
+                        .send()
+                        .await
+                    {
+                        let mobile_status = mobile_response.status();
+                        let mobile_html = mobile_response.text().await.unwrap_or_default();
+                        if mobile_status.is_success() {
+                            status = mobile_status;
+                            html_str = mobile_html;
+                        }
+                    }
+                }
+            }
+            if status.is_server_error() {
+                if attempt < 2 {
+                    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                    continue;
+                }
+            }
+            let dump_path = maybe_dump_html("status_room_info", &html_str);
             if status == reqwest::StatusCode::FORBIDDEN
                 || status == reqwest::StatusCode::TOO_MANY_REQUESTS
             {
                 set_tiktok_cooldown(&format!("response status {}", status));
             }
             return Err(RecorderError::ApiError {
-                error: format!("TikTok response status: {}", status),
+                error: if let Some(path) = dump_path {
+                    format!("TikTok response status: {}. Dump: {}", status, path)
+                } else {
+                    format!("TikTok response status: {}", status)
+                },
             });
         }
 
@@ -1708,17 +1930,47 @@ pub async fn get_room_info(
             }
         }
 
-        let sigi_value = match extract_state_value(&html_str) {
+        let mut sigi_value = extract_state_value(&html_str);
+        if sigi_value.is_none() && using_proxy {
+            if let Ok(direct_response) = client.get(url).headers(headers.clone()).send().await {
+                let direct_status = direct_response.status();
+                let direct_html = direct_response.text().await.unwrap_or_default();
+                if direct_status.is_success() {
+                    if let Some(value) = extract_state_value(&direct_html) {
+                        html_str = direct_html;
+                        sigi_value = Some(value);
+                        using_proxy = false;
+                    }
+                }
+            }
+        }
+        let sigi_value = match sigi_value {
             Some(value) => value,
             None => {
                 if attempt < 2 {
                     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
                     continue;
                 }
+                let dump_path = maybe_dump_html("state_room_info", &html_str);
+                if !using_proxy {
+                    set_tiktok_cooldown("state extraction failed");
+                }
                 return Err(RecorderError::ApiError {
-                    error: "Please check if your network can access TikTok normally. Failed to extract page state JSON.".to_string(),
+                    error: if let Some(path) = dump_path {
+                        format!(
+                            "Please check if your network can access TikTok normally. Failed to extract page state JSON. Dump: {}",
+                            path
+                        )
+                    } else {
+                        "Please check if your network can access TikTok normally. Failed to extract page state JSON.".to_string()
+                    },
                 });
             }
+        };
+        let active_client: &Client = if using_proxy {
+            &request_client
+        } else {
+            &direct_client
         };
 
         let mut extracted_room_info = serde_json::from_value::<SigiStateResponse>(sigi_value.clone())
@@ -1741,7 +1993,7 @@ pub async fn get_room_info(
             };
             if live_status
                 && !verify_live_stream(
-                    &request_client,
+                    active_client,
                     &headers,
                     room_info.stream_url.as_ref(),
                     &sigi_value,
@@ -1805,7 +2057,7 @@ pub async fn get_room_info(
             {
                 if room_info.live_status
                     && !verify_live_stream(
-                        &request_client,
+                        active_client,
                         &headers,
                         None,
                         &sigi_value,
@@ -1841,7 +2093,7 @@ pub async fn get_room_info(
             };
 
             let live_status =
-                check_url_accessible(&request_client, &headers, &fallback_stream).await;
+                check_url_accessible(active_client, &headers, &fallback_stream).await;
 
             return Ok(RoomInfo {
                 live_status,
@@ -1875,40 +2127,134 @@ pub async fn get_stream_url(
         });
     }
     let proxy_url = proxy_url_from_env();
+    let has_proxy = proxy_url.is_some();
     let request_client = if let Some(proxy_url) = proxy_url.as_deref() {
         build_proxy_client(proxy_url)?
     } else {
         client.clone()
     };
-    let mut headers = reqwest::header::HeaderMap::new();
-    headers.insert("User-Agent", USER_AGENT.parse().unwrap());
-    headers.insert("referer", "https://www.tiktok.com/".parse().unwrap());
-    headers.insert("accept-language", "en-US,en;q=0.9".parse().unwrap());
+    let mut headers = build_page_headers(url, USER_AGENT, false);
 
-    let cookie = if account.cookies.is_empty() {
+    let raw_cookie = if account.cookies.is_empty() {
         DEFAULT_COOKIE
     } else {
         &account.cookies
     };
-    headers.insert("cookie", cookie.parse().unwrap());
+    let normalized_cookie = normalize_cookie_header(raw_cookie);
+    let mut cookie_map = parse_cookie_header(&normalized_cookie);
+    if !cookie_map.contains_key("msToken") || !cookie_map.contains_key("ttwid") {
+        let verify_fp = crate::platforms::douyin::params::gen_verify_fp();
+        let bootstrap = bootstrap_tiktok_cookies(
+            &request_client,
+            &verify_fp,
+            cookie_map.get("msToken").map(|s| s.as_str()),
+        )
+        .await;
+        for (key, value) in bootstrap {
+            cookie_map.entry(key).or_insert(value);
+        }
+    }
+    let cookie_header = build_cookie_string(&cookie_map);
+    if !cookie_header.is_empty() {
+        headers.insert("cookie", cookie_header.parse().unwrap());
+    }
+
+    let direct_client = client.clone();
 
     // Retry up to 3 times
     for attempt in 0..3 {
+        let mut using_proxy = has_proxy;
         let response = request_client
             .get(url)
             .headers(headers.clone())
             .send()
             .await?;
-        let status = response.status();
-        let html_str = response.text().await?;
+        let mut status = response.status();
+        let mut html_str = response.text().await?;
+        if has_proxy
+            && (status == reqwest::StatusCode::BAD_GATEWAY
+                || status == reqwest::StatusCode::GATEWAY_TIMEOUT)
+        {
+            log::warn!(
+                "[TikTok] Proxy response status {}, retrying without proxy",
+                status
+            );
+            if let Ok(direct_response) = client.get(url).headers(headers.clone()).send().await {
+                let direct_status = direct_response.status();
+                let direct_html = direct_response.text().await.unwrap_or_default();
+                if direct_status.is_success() {
+                    status = direct_status;
+                    html_str = direct_html;
+                    using_proxy = false;
+                }
+            }
+        }
+        if let Some(_reason) = detect_blocked_page(&html_str) {
+            if using_proxy {
+                if let Ok(direct_response) = client.get(url).headers(headers.clone()).send().await
+                {
+                    let direct_status = direct_response.status();
+                    let direct_html = direct_response.text().await.unwrap_or_default();
+                    if direct_status.is_success()
+                        && detect_blocked_page(&direct_html).is_none()
+                    {
+                        status = direct_status;
+                        html_str = direct_html;
+                        using_proxy = false;
+                    }
+                }
+            }
+        }
+        if let Some(reason) = detect_blocked_page(&html_str) {
+            let dump_path = maybe_dump_html("blocked_stream", &html_str);
+            return Err(RecorderError::ApiError {
+                error: if let Some(path) = dump_path {
+                    format!(
+                        "TikTok blocked response: {}. Check proxy quality. Dump: {}",
+                        reason, path
+                    )
+                } else {
+                    format!("TikTok blocked response: {}. Check proxy quality.", reason)
+                },
+            });
+        }
         if !status.is_success() {
+            if status == reqwest::StatusCode::FORBIDDEN {
+                if let Some(mobile_url) = to_mobile_url(url) {
+                    let mobile_headers = build_page_headers(&mobile_url, MOBILE_USER_AGENT, true);
+                    if let Ok(mobile_response) = request_client
+                        .get(&mobile_url)
+                        .headers(mobile_headers)
+                        .send()
+                        .await
+                    {
+                        let mobile_status = mobile_response.status();
+                        let mobile_html = mobile_response.text().await.unwrap_or_default();
+                        if mobile_status.is_success() {
+                            status = mobile_status;
+                            html_str = mobile_html;
+                        }
+                    }
+                }
+            }
+            if status.is_server_error() {
+                if attempt < 2 {
+                    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                    continue;
+                }
+            }
+            let dump_path = maybe_dump_html("status_stream", &html_str);
             if status == reqwest::StatusCode::FORBIDDEN
                 || status == reqwest::StatusCode::TOO_MANY_REQUESTS
             {
                 set_tiktok_cooldown(&format!("response status {}", status));
             }
             return Err(RecorderError::ApiError {
-                error: format!("TikTok response status: {}", status),
+                error: if let Some(path) = dump_path {
+                    format!("TikTok response status: {}. Dump: {}", status, path)
+                } else {
+                    format!("TikTok response status: {}", status)
+                },
             });
         }
 
@@ -1924,23 +2270,50 @@ pub async fn get_stream_url(
             }
         }
 
-        let sigi_value = match extract_state_value(&html_str) {
+        let mut sigi_value = extract_state_value(&html_str);
+        if sigi_value.is_none() && using_proxy {
+            if let Ok(direct_response) = client.get(url).headers(headers.clone()).send().await {
+                let direct_status = direct_response.status();
+                let direct_html = direct_response.text().await.unwrap_or_default();
+                if direct_status.is_success() {
+                    if let Some(value) = extract_state_value(&direct_html) {
+                        html_str = direct_html;
+                        sigi_value = Some(value);
+                        using_proxy = false;
+                    }
+                }
+            }
+        }
+        let sigi_value = match sigi_value {
             Some(value) => value,
             None => {
                 if attempt < 2 {
                     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
                     continue;
                 }
+                let dump_path = maybe_dump_html("state_stream", &html_str);
+                if !using_proxy {
+                    set_tiktok_cooldown("state extraction failed");
+                }
                 return Err(RecorderError::ApiError {
-                    error: "Failed to extract page state JSON".to_string(),
+                    error: if let Some(path) = dump_path {
+                        format!("Failed to extract page state JSON. Dump: {}", path)
+                    } else {
+                        "Failed to extract page state JSON".to_string()
+                    },
                 });
             }
+        };
+        let active_client: &Client = if using_proxy {
+            &request_client
+        } else {
+            &direct_client
         };
 
         if let Some(live_room_info) = extract_live_room_user_info(&sigi_value) {
             let candidates = extract_stream_candidates(&live_room_info);
             if let Some(stream_info) =
-                select_accessible_stream(&request_client, &headers, &candidates).await
+                select_accessible_stream(active_client, &headers, &candidates).await
             {
                 return Ok(stream_info);
             }
@@ -1966,7 +2339,7 @@ pub async fn get_stream_url(
                 rtmp_url: stream_url.rtmp_pull_url,
             };
             if let Some(hls_url) = info.hls_url.as_deref() {
-                if !check_hls_stream_accessible(&request_client, &headers, hls_url).await {
+                if !check_hls_stream_accessible(active_client, &headers, hls_url).await {
                     info.hls_url = None;
                 }
             }

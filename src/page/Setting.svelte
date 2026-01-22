@@ -43,7 +43,6 @@
       font_size: 36,
       opacity: 0.8,
     },
-    proxy_url: "",
   };
 
   let showModal = false;
@@ -160,11 +159,6 @@
     });
   }
 
-  async function update_proxy_url() {
-    await invoke("update_proxy_url", {
-      proxyUrl: setting_model.proxy_url,
-    });
-  }
 
   async function update_danmu_ass_options() {
     await invoke("update_danmu_ass_options", {
@@ -260,11 +254,7 @@
                     Webhook URL
                   </h3>
                   <p class="text-sm text-gray-500 dark:text-gray-400">
-                    设置 Webhook URL，用于接收事件通知，见<a
-                      href="https://bsr.xinrea.cn/usage/features/webhook.html"
-                      class="text-blue-500 hover:text-blue-700"
-                      target="_blank">Webhook 文档</a
-                    >
+                    设置 Webhook URL，用于接收事件通知；
                   </p>
                 </div>
                 <div class="flex items-center space-x-2">
@@ -274,27 +264,6 @@
                     bind:value={setting_model.webhook_url}
                     on:change={update_webhook_url}
                     placeholder="https://example.com/webhook"
-                  />
-                </div>
-              </div>
-            </div>
-            <div class="p-4">
-              <div class="flex items-center justify-between">
-                <div>
-                  <h3 class="text-sm font-medium text-gray-900 dark:text-white">
-                    HTTP Proxy
-                  </h3>
-                  <p class="text-sm text-gray-500 dark:text-gray-400">
-                    Configure HTTP/HTTPS proxy for platforms like TikTok
-                  </p>
-                </div>
-                <div class="flex items-center space-x-2">
-                  <input
-                    type="text"
-                    class="px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white w-96"
-                    bind:value={setting_model.proxy_url}
-                    on:change={update_proxy_url}
-                    placeholder="http://127.0.0.1:7890"
                   />
                 </div>
               </div>

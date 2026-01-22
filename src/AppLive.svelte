@@ -916,13 +916,13 @@
                         on:click={add_all_peaks_to_ranges}
                         class="text-xs text-gray-400 hover:text-[#0A84FF] transition-colors duration-200 font-medium"
                       >
-                        + ??????
+                        + 全部添加
                       </button>
                       <button
                         on:click={remove_all_peaks_from_ranges}
                         class="text-xs text-gray-400 hover:text-red-400 transition-colors duration-200 font-medium"
                       >
-                        ????????
+                        移除已添加
                       </button>
                     </div>
                   </div>
@@ -956,7 +956,7 @@
                               remove_peak_from_ranges(peak)}
                             class="text-xs text-red-400 hover:text-red-300 transition-colors duration-200 font-medium"
                           >
-                            - ???
+                            - 移除
                           </button>
                         {:else}
                           <button
@@ -964,7 +964,7 @@
                               add_peak_to_ranges(peak)}
                             class="text-xs text-gray-400 hover:text-[#0A84FF] transition-colors duration-200 font-medium"
                           >
-                            + ???
+                            + 添加
                           </button>
                         {/if}
                       </div>
