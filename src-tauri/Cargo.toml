@@ -165,3 +165,4 @@ uuid = { version = "1.4", features = ["v4"] }
 
 [profile.release]
 debug = 1
+

@@ -247,6 +247,7 @@
     danmu_peaks = [...danmu_peaks]; // 触发响应式更新
   }
 
+  // 一键添加所有峰值
   function remove_peak_from_ranges(peak: DanmuPeak) {
     const next_ranges = ranges.filter((r) => !is_range_similar(r, peak));
     if (next_ranges.length !== ranges.length) {
@@ -272,7 +273,6 @@
     danmu_peaks = [...danmu_peaks];
   }
 
-  // 一键添加所有峰值
   function add_all_peaks_to_ranges() {
     for (const peak of danmu_peaks) {
       if (!peak.added) {
@@ -517,11 +517,15 @@
 
   // Initialize video element when component is mounted
   onMount(() => {
-    const stored_peak_panel = window.localStorage.getItem(peak_panel_storage_key);
+    const stored_peak_panel = window.localStorage.getItem(
+      peak_panel_storage_key
+    );
     if (stored_peak_panel === "1") {
       show_peak_panel = true;
     }
-    const stored_peak_threshold = window.localStorage.getItem(peak_threshold_storage_key);
+    const stored_peak_threshold = window.localStorage.getItem(
+      peak_threshold_storage_key
+    );
     if (stored_peak_threshold) {
       const parsed = parseInt(stored_peak_threshold, 10);
       if (!Number.isNaN(parsed) && parsed >= 50 && parsed <= 100) {
@@ -912,18 +916,31 @@
                       检测到 {danmu_peaks.length} 个峰值
                     </span>
                     <div class="flex items-center gap-2">
+
                       <button
+
                         on:click={add_all_peaks_to_ranges}
+
                         class="text-xs text-gray-400 hover:text-[#0A84FF] transition-colors duration-200 font-medium"
+
                       >
-                        + ??????
+
+                        + ???
+
                       </button>
+
                       <button
+
                         on:click={remove_all_peaks_from_ranges}
+
                         class="text-xs text-gray-400 hover:text-red-400 transition-colors duration-200 font-medium"
+
                       >
-                        ????????
+
+                        - ????
+
                       </button>
+
                     </div>
                   </div>
                   <div
@@ -956,7 +973,7 @@
                               remove_peak_from_ranges(peak)}
                             class="text-xs text-red-400 hover:text-red-300 transition-colors duration-200 font-medium"
                           >
-                            - ???
+                            - ??
                           </button>
                         {:else}
                           <button
@@ -964,7 +981,7 @@
                               add_peak_to_ranges(peak)}
                             class="text-xs text-gray-400 hover:text-[#0A84FF] transition-colors duration-200 font-medium"
                           >
-                            + ???
+                            + 添加
                           </button>
                         {/if}
                       </div>
