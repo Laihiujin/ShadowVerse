@@ -2,10 +2,12 @@
 use crate::account::Account;
 use crate::errors::RecorderError;
 use chrono::Utc;
+use rand::Rng;
 use regex::Regex;
 use reqwest::Client;
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicI64, Ordering};
 
 const USER_AGENT: &str =
@@ -680,6 +682,7 @@ pub struct QrInfo {
     pub qr_login_token: String,
     pub qr_login_signature: String,
     pub image_data: String,
+    pub qr_cookie: String,
 }
 
 #[derive(Clone, Debug)]
@@ -705,6 +708,23 @@ pub struct StreamInfo {
 pub struct QrStatus {
     pub code: u8,
     pub cookies: String,
+}
+
+fn gen_web_did() -> String {
+    let mut rng = rand::rng();
+    let mut bytes = [0u8; 16];
+    rng.fill(&mut bytes);
+    let mut hex = String::with_capacity(32);
+    for byte in bytes {
+        hex.push_str(&format!("{:02x}", byte));
+    }
+    format!("web_{hex}")
+}
+
+fn build_qr_cookie() -> String {
+    let did = gen_web_did();
+    let didv = Utc::now().timestamp_millis();
+    format!("did={did}; didv={didv}; kwpsecproductname=PCLive")
 }
 
 /// Get room information from web page
@@ -1360,17 +1380,44 @@ pub async fn get_stream_url_mobile(
 pub async fn get_qr(client: &Client) -> Result<QrInfo, RecorderError> {
     let mut headers = reqwest::header::HeaderMap::new();
     headers.insert("User-Agent", USER_AGENT.parse().unwrap());
-    headers.insert("Content-Type", "application/json".parse().unwrap());
-    headers.insert("Referer", "https://www.kuaishou.com/".parse().unwrap());
+    headers.insert(
+        "Content-Type",
+        "application/x-www-form-urlencoded".parse().unwrap(),
+    );
+    headers.insert("Referer", "https://live.kuaishou.com/".parse().unwrap());
+    let mut qr_cookie = build_qr_cookie();
+    headers.insert("Cookie", qr_cookie.parse().unwrap());
 
     let response = client
         .post("https://id.kuaishou.com/rest/c/infra/ks/qr/start")
         .headers(headers)
-        .json(&json!({}))
+        .body("sid=kuaishou.live.web&channelType=UNKNOWN&encryptHeaders=")
         .send()
         .await?;
+    let response_headers = response.headers().clone();
 
     let data: serde_json::Value = response.json().await?;
+    let mut cookie_map: HashMap<String, String> = HashMap::new();
+    for cookie_part in qr_cookie.split(';') {
+        if let Some((name, value)) = cookie_part.trim().split_once('=') {
+            cookie_map.insert(name.trim().to_string(), value.trim().to_string());
+        }
+    }
+    for cookie_header in response_headers.get_all("set-cookie") {
+        if let Ok(cookie_str) = cookie_header.to_str() {
+            if let Some(cookie_part) = cookie_str.split(';').next() {
+                if let Some((name, value)) = cookie_part.split_once('=') {
+                    cookie_map.insert(name.trim().to_string(), value.trim().to_string());
+                }
+            }
+        }
+    }
+    let mut cookie_pairs: Vec<String> = cookie_map
+        .into_iter()
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect();
+    cookie_pairs.sort();
+    qr_cookie = cookie_pairs.join("; ");
 
     Ok(QrInfo {
         qr_login_token: data["qrLoginToken"]
@@ -1385,6 +1432,7 @@ pub async fn get_qr(client: &Client) -> Result<QrInfo, RecorderError> {
             .as_str()
             .ok_or(RecorderError::InvalidValue)?
             .to_string(),
+        qr_cookie,
     })
 }
 
@@ -1547,26 +1595,35 @@ pub async fn get_qr_status(
     client: &Client,
     qr_login_token: &str,
     qr_login_signature: &str,
+    qr_cookie: Option<&str>,
 ) -> Result<QrStatus, RecorderError> {
     let mut headers = reqwest::header::HeaderMap::new();
     headers.insert("User-Agent", USER_AGENT.parse().unwrap());
-    headers.insert("Content-Type", "application/json".parse().unwrap());
-    headers.insert("Referer", "https://www.kuaishou.com/".parse().unwrap());
+    headers.insert(
+        "Content-Type",
+        "application/x-www-form-urlencoded".parse().unwrap(),
+    );
+    headers.insert("Referer", "https://live.kuaishou.com/".parse().unwrap());
+    if let Some(cookie) = qr_cookie {
+        if !cookie.trim().is_empty() {
+            headers.insert("Cookie", cookie.parse().unwrap());
+        }
+    }
 
-    let payload = json!({
-        "qrLoginToken": qr_login_token,
-        "qrLoginSignature": qr_login_signature,
-    });
+    let payload = format!(
+        "qrLoginToken={qr_login_token}&qrLoginSignature={qr_login_signature}&channelType=UNKNOWN&encryptHeaders=&sid=kuaishou.live.web"
+    );
 
     // Step 1: Check scan status
     let scan_response = client
         .post("https://id.kuaishou.com/rest/c/infra/ks/qr/scanResult")
         .headers(headers.clone())
-        .json(&payload)
+        .body(payload.clone())
         .send()
         .await?;
 
     let scan_data: serde_json::Value = scan_response.json().await?;
+    log::warn!("[Kuaishou] QR scanResult: {}", scan_data);
 
     // If not scanned yet, return pending status
     if scan_data["result"].as_u64().unwrap_or(1) != 1 {
@@ -1580,11 +1637,12 @@ pub async fn get_qr_status(
     let accept_response = client
         .post("https://id.kuaishou.com/rest/c/infra/ks/qr/acceptResult")
         .headers(headers.clone())
-        .json(&payload)
+        .body(payload)
         .send()
         .await?;
 
     let accept_data: serde_json::Value = accept_response.json().await?;
+    log::warn!("[Kuaishou] QR acceptResult: {}", accept_data);
 
     // If not accepted yet, return pending status
     if accept_data["result"].as_u64().unwrap_or(1) != 1 {
@@ -1602,32 +1660,54 @@ pub async fn get_qr_status(
     let callback_response = client
         .post("https://id.kuaishou.com/pass/kuaishou/login/qr/callback")
         .headers(headers.clone())
-        .json(&json!({
-            "qrToken": qr_token,
-        }))
+        .body(format!("qrToken={qr_token}&sid=kuaishou.live.web"))
         .send()
         .await?;
 
-    // Extract cookies from response headers
-    let mut cookies_vec = Vec::new();
-    if let Some(cookie_headers) = callback_response.headers().get_all("set-cookie").iter().next() {
-        if let Ok(cookie_str) = cookie_headers.to_str() {
-            // Extract cookie name=value before the first semicolon
-            if let Some(cookie_part) = cookie_str.split(';').next() {
-                cookies_vec.push(cookie_part.to_string());
-            }
-        }
-    }
+    let callback_headers = callback_response.headers().clone();
+    let callback_json: serde_json::Value = callback_response.json().await.unwrap_or_default();
+    log::warn!("[Kuaishou] QR callback: {}", callback_json);
 
-    // Get all set-cookie headers
-    for cookie_header in callback_response.headers().get_all("set-cookie") {
+    let mut cookies_map: HashMap<String, String> = HashMap::new();
+    for cookie_header in callback_headers.get_all("set-cookie") {
         if let Ok(cookie_str) = cookie_header.to_str() {
             if let Some(cookie_part) = cookie_str.split(';').next() {
-                cookies_vec.push(cookie_part.to_string());
+                if let Some((name, value)) = cookie_part.split_once('=') {
+                    cookies_map.insert(name.trim().to_string(), value.trim().to_string());
+                }
             }
         }
     }
 
+    if let Some(value) = callback_json.get("kuaishou.live.web_st").and_then(|v| v.as_str()) {
+        if !value.is_empty() {
+            cookies_map.insert("kuaishou.live.web_st".to_string(), value.to_string());
+        }
+    }
+    if let Some(value) = callback_json.get("kuaishou.live.web.at").and_then(|v| v.as_str()) {
+        if !value.is_empty() {
+            cookies_map.insert("kuaishou.live.web.at".to_string(), value.to_string());
+        }
+    }
+    if let Some(value) = callback_json.get("ssecurity").and_then(|v| v.as_str()) {
+        if !value.is_empty() {
+            cookies_map.insert("ssecurity".to_string(), value.to_string());
+        }
+    }
+    if let Some(value) = callback_json.get("passToken").and_then(|v| v.as_str()) {
+        if !value.is_empty() {
+            cookies_map.insert("passToken".to_string(), value.to_string());
+        }
+    }
+    if let Some(value) = callback_json.get("userId").and_then(|v| v.as_i64()) {
+        cookies_map.insert("userId".to_string(), value.to_string());
+    }
+
+    let mut cookies_vec: Vec<String> = cookies_map
+        .into_iter()
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect();
+    cookies_vec.sort();
     let cookies = cookies_vec.join("; ");
 
     if cookies.is_empty() {

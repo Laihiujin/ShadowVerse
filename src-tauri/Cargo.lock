@@ -5388,6 +5388,7 @@ dependencies = [
  "serde",
  "serde_derive",
  "serde_json",
+ "sm3",
  "thiserror 2.0.17",
  "tokio",
  "url",
@@ -6506,6 +6507,15 @@ name = "slab"
 version = "0.4.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "04dc19736151f35336d325007ac991178d504a119863a2fcb3758cdb5e52c50d"
+
+[[package]]
+name = "sm3"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ebb9a3b702d0a7e33bc4d85a14456633d2b165c2ad839c5fd9a8417c1ab15860"
+dependencies = [
+ "digest",
+]
 
 [[package]]
 name = "smallvec"

@@ -52,12 +52,57 @@ pub struct Config {
     pub powerlive_key: String,
     #[serde(default = "default_proxy_url")]
     pub proxy_url: String,
+    #[serde(default = "default_douyin_passport")]
+    pub douyin_passport: DouyinPassportConfig,
 }
 
 #[derive(Deserialize, Serialize, Clone)]
 pub struct AutoGenerateConfig {
     pub enabled: bool,
     pub encode_danmu: bool,
+}
+
+#[derive(Deserialize, Serialize, Clone)]
+pub struct DouyinPassportConfig {
+    pub provider_url: String,
+    pub sign: String,
+    pub qs: String,
+    pub passport_jssdk_version: String,
+    pub passport_jssdk_type: String,
+    pub is_from_ttaccountsdk: String,
+    pub aid: String,
+    pub language: String,
+    pub account_app_language: String,
+    pub next: String,
+    pub need_short_url: String,
+    pub need_logo: String,
+    pub is_new_login: String,
+    pub is_from_iesaccountsaas: String,
+    pub account_sdk_source: String,
+    pub account_sdk_source_info: String,
+    pub p_ui: String,
+    pub p_ca: String,
+    pub p_ca_real: String,
+    pub p_js_v: String,
+    pub p_js_t: String,
+    pub p_zt: String,
+    pub p_ver: String,
+    pub p_ver_real: String,
+    pub request_host: String,
+    pub p_bd: String,
+    pub p_ts: String,
+    pub p_no: String,
+    pub biz_trace_id: String,
+    pub device_platform: String,
+    pub ms_token: String,
+    pub a_bogus: String,
+    pub x_tt_passport_csrf_token: String,
+    pub x_tt_passport_aid_sign: String,
+    pub x_tt_passport_trace_id: String,
+    pub x_tt_passport_verify_portrait: String,
+    pub x_tt_session_dtrait: String,
+    pub qr_origin: String,
+    pub qr_referer: String,
 }
 
 fn default_danmu_ass_options() -> Danmu2AssOptions {
@@ -117,6 +162,50 @@ fn default_powerlive_key() -> String {
 
 fn default_proxy_url() -> String {
     String::new()
+}
+
+fn default_douyin_passport() -> DouyinPassportConfig {
+    DouyinPassportConfig {
+        provider_url: String::new(),
+        sign: String::new(),
+        qs: String::new(),
+        passport_jssdk_version: "3.1.3".to_string(),
+        passport_jssdk_type: "normal".to_string(),
+        is_from_ttaccountsdk: "1".to_string(),
+        aid: "6383".to_string(),
+        language: "zh".to_string(),
+        account_app_language: "zh-CN".to_string(),
+        next: "https://live.douyin.com".to_string(),
+        need_short_url: "true".to_string(),
+        need_logo: "false".to_string(),
+        is_new_login: "1".to_string(),
+        is_from_iesaccountsaas: "1".to_string(),
+        account_sdk_source: "web".to_string(),
+        account_sdk_source_info: String::new(),
+        p_ui: "2.1.4".to_string(),
+        p_ca: "4.0.17".to_string(),
+        p_ca_real: "1.0.0.729".to_string(),
+        p_js_v: "3.1.3".to_string(),
+        p_js_t: "pro".to_string(),
+        p_zt: "3.3.10".to_string(),
+        p_ver: "1.1.3".to_string(),
+        p_ver_real: "0".to_string(),
+        request_host: "https://live.douyin.com".to_string(),
+        p_bd: "1.0.1.19-fix.01".to_string(),
+        p_ts: String::new(),
+        p_no: String::new(),
+        biz_trace_id: String::new(),
+        device_platform: "web_app".to_string(),
+        ms_token: String::new(),
+        a_bogus: String::new(),
+        x_tt_passport_csrf_token: String::new(),
+        x_tt_passport_aid_sign: String::new(),
+        x_tt_passport_trace_id: String::new(),
+        x_tt_passport_verify_portrait: String::new(),
+        x_tt_session_dtrait: String::new(),
+        qr_origin: "https://live.douyin.com".to_string(),
+        qr_referer: "https://live.douyin.com/".to_string(),
+    }
 }
 
 fn normalize_proxy_url(raw: &str) -> Option<String> {
@@ -251,6 +340,7 @@ impl Config {
                 }
             })
             .unwrap_or_else(default_proxy_url),
+            douyin_passport: default_douyin_passport(),
         };
 
         config.save();
@@ -343,14 +433,52 @@ impl Config {
             return;
         }
 
-        std::env::set_var("HTTP_PROXY", proxy_url);
-        std::env::set_var("http_proxy", proxy_url);
-        std::env::set_var("HTTPS_PROXY", proxy_url);
-        std::env::set_var("https_proxy", proxy_url);
-        std::env::set_var("ALL_PROXY", proxy_url);
-        std::env::set_var("all_proxy", proxy_url);
-        if std::env::var("NO_PROXY").is_err() {
-            std::env::set_var("NO_PROXY", "localhost,127.0.0.1");
-        }
+        std::env::set_var("TIKTOK_PROXY_URL", proxy_url);
+    }
+
+    pub fn apply_douyin_passport_env(&self) {
+        let cfg = &self.douyin_passport;
+        std::env::set_var("DOUYIN_PASSPORT_PROVIDER_URL", &cfg.provider_url);
+        std::env::set_var("DOUYIN_SIGN", &cfg.sign);
+        std::env::set_var("DOUYIN_QS", &cfg.qs);
+        std::env::set_var("DOUYIN_PASSPORT_JSSDK_VERSION", &cfg.passport_jssdk_version);
+        std::env::set_var("DOUYIN_PASSPORT_JSSDK_TYPE", &cfg.passport_jssdk_type);
+        std::env::set_var("DOUYIN_IS_FROM_TTACCOUNTSDK", &cfg.is_from_ttaccountsdk);
+        std::env::set_var("DOUYIN_AID", &cfg.aid);
+        std::env::set_var("DOUYIN_LANGUAGE", &cfg.language);
+        std::env::set_var("DOUYIN_ACCOUNT_APP_LANGUAGE", &cfg.account_app_language);
+        std::env::set_var("DOUYIN_NEXT", &cfg.next);
+        std::env::set_var("DOUYIN_NEED_SHORT_URL", &cfg.need_short_url);
+        std::env::set_var("DOUYIN_NEED_LOGO", &cfg.need_logo);
+        std::env::set_var("DOUYIN_IS_NEW_LOGIN", &cfg.is_new_login);
+        std::env::set_var("DOUYIN_IS_FROM_IESACCOUNTSAAS", &cfg.is_from_iesaccountsaas);
+        std::env::set_var("DOUYIN_ACCOUNT_SDK_SOURCE", &cfg.account_sdk_source);
+        std::env::set_var("DOUYIN_ACCOUNT_SDK_SOURCE_INFO", &cfg.account_sdk_source_info);
+        std::env::set_var("DOUYIN_P_UI", &cfg.p_ui);
+        std::env::set_var("DOUYIN_P_CA", &cfg.p_ca);
+        std::env::set_var("DOUYIN_P_CA_REAL", &cfg.p_ca_real);
+        std::env::set_var("DOUYIN_P_JS_V", &cfg.p_js_v);
+        std::env::set_var("DOUYIN_P_JS_T", &cfg.p_js_t);
+        std::env::set_var("DOUYIN_P_ZT", &cfg.p_zt);
+        std::env::set_var("DOUYIN_P_VER", &cfg.p_ver);
+        std::env::set_var("DOUYIN_P_VER_REAL", &cfg.p_ver_real);
+        std::env::set_var("DOUYIN_REQUEST_HOST", &cfg.request_host);
+        std::env::set_var("DOUYIN_P_BD", &cfg.p_bd);
+        std::env::set_var("DOUYIN_P_TS", &cfg.p_ts);
+        std::env::set_var("DOUYIN_P_NO", &cfg.p_no);
+        std::env::set_var("DOUYIN_BIZ_TRACE_ID", &cfg.biz_trace_id);
+        std::env::set_var("DOUYIN_DEVICE_PLATFORM", &cfg.device_platform);
+        std::env::set_var("DOUYIN_MS_TOKEN", &cfg.ms_token);
+        std::env::set_var("DOUYIN_A_BOGUS", &cfg.a_bogus);
+        std::env::set_var("DOUYIN_X_TT_PASSPORT_CSRF_TOKEN", &cfg.x_tt_passport_csrf_token);
+        std::env::set_var("DOUYIN_X_TT_PASSPORT_AID_SIGN", &cfg.x_tt_passport_aid_sign);
+        std::env::set_var("DOUYIN_X_TT_PASSPORT_TRACE_ID", &cfg.x_tt_passport_trace_id);
+        std::env::set_var(
+            "DOUYIN_X_TT_PASSPORT_VERIFY_PORTRAIT",
+            &cfg.x_tt_passport_verify_portrait,
+        );
+        std::env::set_var("DOUYIN_X_TT_SESSION_DTRAIT", &cfg.x_tt_session_dtrait);
+        std::env::set_var("DOUYIN_QR_ORIGIN", &cfg.qr_origin);
+        std::env::set_var("DOUYIN_QR_REFERER", &cfg.qr_referer);
     }
 }

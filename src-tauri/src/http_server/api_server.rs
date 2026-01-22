@@ -166,24 +166,34 @@ async fn handler_get_account_count(
     Ok(Json(ApiResponse::success(count)))
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GetQrRequest {
+    platform: String,
+}
+
 async fn handler_get_qr(
     state: axum::extract::State<State>,
-) -> Result<Json<ApiResponse<QrInfo>>, ApiError> {
-    let qr = get_qr(state.0).await.expect("Failed to get QR code");
+    Json(request): Json<GetQrRequest>,
+) -> Result<Json<ApiResponse<crate::handlers::account::PlatformQrInfo>>, ApiError> {
+    let qr = get_qr(state.0, request.platform)
+        .await
+        .expect("Failed to get QR code");
     Ok(Json(ApiResponse::success(qr)))
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct GetQrStatusRequest {
+    platform: String,
     qrcode_key: String,
 }
 
 async fn handler_get_qr_status(
     state: axum::extract::State<State>,
     Json(qr_info): Json<GetQrStatusRequest>,
-) -> Result<Json<ApiResponse<QrStatus>>, ApiError> {
-    let qr_status = get_qr_status(state.0, &qr_info.qrcode_key)
+) -> Result<Json<ApiResponse<crate::handlers::account::PlatformQrStatus>>, ApiError> {
+    let qr_status = get_qr_status(state.0, qr_info.platform, &qr_info.qrcode_key)
         .await
         .expect("Failed to get QR status");
     Ok(Json(ApiResponse::success(qr_status)))

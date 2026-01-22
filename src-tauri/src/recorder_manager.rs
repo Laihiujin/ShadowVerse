@@ -536,7 +536,7 @@ impl RecorderManager {
                         | PlatformType::Kuaishou
                 );
                 if account_required && account.is_err() {
-                    log::warn!("Failed to find an account for {platform:?} {room_id}");
+                    log::info!("Skip recorder without account: {platform:?} {room_id}");
                     continue;
                 }
                 let account = if let Ok(account) = account {
@@ -699,12 +699,31 @@ impl RecorderManager {
         platform: PlatformType,
         room_id: &str,
     ) -> Result<RecorderRow, RecorderManagerError> {
-        // check recorder exists
-        let recorder_id = format!("{}:{}", platform.as_str(), room_id);
+        // check recorder exists in manager, otherwise fall back to DB removal
+        let mut recorder_id = format!("{}:{}", platform.as_str(), room_id);
         if !self.recorders.read().await.contains_key(&recorder_id) {
-            return Err(RecorderManagerError::NotFound {
-                room_id: room_id.to_string(),
-            });
+            if let Some(found_id) = self
+                .recorders
+                .read()
+                .await
+                .keys()
+                .find(|key| key.as_str().ends_with(&format!(":{room_id}")))
+                .cloned()
+            {
+                recorder_id = found_id;
+            } else {
+                let recorder = self.db.remove_recorder(room_id).await?;
+                let cache_folder = format!(
+                    "{}/{}/{}",
+                    self.config.read().await.cache,
+                    recorder.platform,
+                    room_id
+                );
+                log::debug!("Remove cache folder: {cache_folder}");
+                let _ = tokio::fs::remove_dir_all(cache_folder).await;
+                log::info!("Recorder {room_id} cache folder removed");
+                return Ok(recorder);
+            }
         }
 
         // remove from db
@@ -732,7 +751,7 @@ impl RecorderManager {
         let cache_folder = format!(
             "{}/{}/{}",
             self.config.read().await.cache,
-            platform.as_str(),
+            recorder.platform,
             room_id
         );
         log::debug!("Remove cache folder: {cache_folder}");

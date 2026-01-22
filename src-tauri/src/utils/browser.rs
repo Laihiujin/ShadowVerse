@@ -23,7 +23,6 @@ pub struct BrowserCookie {
 }
 
 pub struct BrowserCookieCollector {
-    pub name: String,
     pub profile_path: PathBuf,
 }
 
@@ -33,7 +32,6 @@ impl BrowserCookieCollector {
         let path = Path::new(&local_app_data).join("Google/Chrome/User Data");
         if path.exists() {
             Some(Self {
-                name: "Chrome".to_string(),
                 profile_path: path,
             })
         } else {
@@ -46,7 +44,6 @@ impl BrowserCookieCollector {
         let path = Path::new(&local_app_data).join("Microsoft/Edge/User Data");
         if path.exists() {
             Some(Self {
-                name: "Edge".to_string(),
                 profile_path: path,
             })
         } else {
@@ -292,13 +289,6 @@ fn copy_cookie_db(src: &Path, dst: &Path) -> io::Result<()> {
     }
 
     #[cfg(not(target_os = "windows"))]
-    {
-        Err(io::Error::new(
-            io::ErrorKind::Other,
-            "Failed to copy cookie db",
-        ))
-    }
-    #[cfg(target_os = "windows")]
     {
         Err(io::Error::new(
             io::ErrorKind::Other,

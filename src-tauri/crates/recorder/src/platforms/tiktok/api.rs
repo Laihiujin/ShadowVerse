@@ -2,18 +2,28 @@ use super::response::{RoomInfo as SigiRoomInfo, SigiStateResponse, StreamUrl as 
 use crate::account::Account;
 use crate::errors::RecorderError;
 use chrono::Utc;
+use rand::Rng;
 use regex::Regex;
-use reqwest::header::HeaderMap;
+use reqwest::header::{HeaderMap, LOCATION};
+use reqwest::redirect::Policy;
 use reqwest::{Client, Proxy, Url};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::sync::atomic::{AtomicI64, Ordering};
+use url::form_urlencoded::Serializer;
 
 const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36";
 const DEFAULT_COOKIE: &str = "1%7Cz7FKki38aKyy7i-BC9rEDwcrVvjcLcFEL6QIeqldoy4%7C1761302831%7C6c1461e9f1f980cbe0404c51905177d5d53bbd822e1bf66128887d942c9c3e2f";
 const TIKTOK_COOLDOWN_SECS: i64 = 120;
+const TIKTOK_MSSDK_URL: &str = "https://mssdk.tiktokw.us/web/report?msToken=1Ab-7YxR9lUHSem0PraI_XzdKmpHb6j50L8AaXLAd2aWTdoJCYLfX_67rVQFE4UwwHVHmyG_NfIipqrlLT3kCXps-5PYlNAqtdwEg7TrDyTAfCKyBrOLmhMUjB55oW8SPZ4_EkNxNFUdV7MquA==";
+const TIKTOK_MSSDK_MAGIC: i64 = 538969122;
+const TIKTOK_MSSDK_VERSION: i64 = 1;
+const TIKTOK_MSSDK_DATA_TYPE: i64 = 8;
+const TIKTOK_MSSDK_STR_DATA: &str = "3BvqYbNXLLOcZehvxZVbjpAu7vq82RoWmFSJHLFwzDwJIZevE0AeilQfP55LridxmdGGjknoksqIsLqlMHMif0IFK/Br7JWqxOHnYuMwVCnttFc0Y4MFvdVWM5FECiEulJC0Dc+eeVsNSrFnAc9K7fazqdglyJgGLSfXIJmgyCvvQ4pg0u5HBVVugLSWs242X42fjoWymaUCLZJQo6vi6WLyuV7l5IC3Mg+lelr5xBQD6Q7hBIFEw8zzxJ1n2DyA4xLbOHTQdKvEtsK7XzyWwjpRnojPTbBl69Zosnuru+lOBIl+tFu/+hCQ1m0jYZwTP4rVE75L3Du6+KZ5v/9TyFYjq7y3y9bGLP4d7yQueJbF90G1yrZ6htElrZ2vqZKDrIqBVbmOZr/nph12k2JKrITtN0R/pMsp0sJ4gesQnXxcD/pLOFAINHk7umgbe6LzJ7+TLUdGuO4M7xiEg/jCqhjgJX1izZ4NPoBDp35zRxj6Y6OrcstlTN/cv5sz663+Nco/mEwhGq2VwrL4gAIAPycndIsb48dPdtngmLqNDNN0ZyVRjgqVIDXXrxigXCkR9CH89Dlrrb7QQqWVgRXz9/k5ihEM43BR3sd3mMU/XgFLN1Aoxf6GzzdxP2QPBI75/ZoHoAmu54v8gTmA3ntCGlEF0zgaFGTdpkGdb+oZgyQM4pw1aAyxmFINXkpD3IKKoGev9kD9gTFnhiQMGCMemhZS7ZYdbuGu0Cb+lQKaL/QTt80FMyGmW8kzVy9xW/ja9BcdEJYRoaufuFRkBFG5ay8x4WHLR6hEapXqQial/cREbLL4sQytpjtmnndFqvT7xN5DhgsLY2Z7451MJhD6NJXKNrMafGZSbItzQWY=";
+const TIKTOK_TTWID_CHECK_URL: &str = "https://www.tiktok.com/ttwid/check/";
+const TIKTOK_TTWID_CHECK_DATA: &str = "{\"aid\":1988,\"service\":\"www.tiktok.com\",\"union\":false,\"unionHost\":\"\",\"needFid\":false,\"fid\":\"\",\"migrate_priority\":0}";
 
 static TIKTOK_COOLDOWN_UNTIL: AtomicI64 = AtomicI64::new(0);
 
@@ -44,7 +54,29 @@ pub struct StreamInfo {
     pub rtmp_url: Option<String>,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TikTokQrInfo {
+    pub oauth_key: String,
+    pub url: String,
+    pub image: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TikTokQrStatus {
+    pub code: u8,
+    pub cookies: String,
+    pub message: String,
+}
+
 pub fn proxy_url_from_env() -> Option<String> {
+    for key in ["TIKTOK_PROXY_URL", "tiktok_proxy_url"] {
+        if let Ok(value) = env::var(key) {
+            let trimmed = value.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
     for key in [
         "HTTPS_PROXY",
         "https_proxy",
@@ -171,6 +203,718 @@ fn extract_m3u8_from_html(html_str: &str) -> Option<String> {
         Some(decoded)
     } else {
         None
+    }
+}
+
+fn gen_device_id() -> String {
+    let mut rng = rand::rng();
+    (0..19)
+        .map(|_| char::from(b'0' + rng.random_range(0..10)))
+        .collect()
+}
+
+fn build_qr_params(
+    token: Option<&str>,
+    device_id: &str,
+    verify_fp: &str,
+    ms_token: &str,
+) -> Vec<(String, String)> {
+    let mut params = vec![
+        ("next".to_string(), "https://www.tiktok.com".to_string()),
+        ("multi_login".to_string(), "1".to_string()),
+        ("did".to_string(), device_id.to_string()),
+        ("locale".to_string(), "zh-Hans".to_string()),
+        ("app_language".to_string(), "zh".to_string()),
+        ("aid".to_string(), "1459".to_string()),
+        ("account_sdk_source".to_string(), "web".to_string()),
+        ("sdk_version".to_string(), "2.1.11-tiktokbeta.3".to_string()),
+        ("language".to_string(), "zh-Hant".to_string()),
+        ("verifyFp".to_string(), verify_fp.to_string()),
+        ("target_aid".to_string(), "".to_string()),
+        ("standalone_aid".to_string(), "".to_string()),
+        ("msToken".to_string(), ms_token.to_string()),
+    ];
+    if let Some(token) = token {
+        params.push(("token".to_string(), token.to_string()));
+    }
+
+    let shark_extra = serde_json::json!({
+        "aid": 1459,
+        "app_name": "Tik_Tok_Login",
+        "channel": "tiktok_web",
+        "device_platform": "web_pc",
+        "device_id": device_id,
+        "region": "TW",
+        "priority_region": "",
+        "os": "windows",
+        "referer": "https://www.tiktok.com/",
+        "cookie_enabled": true,
+        "screen_width": 2560,
+        "screen_height": 1440,
+        "browser_language": "zh-CN",
+        "browser_platform": "Win32",
+        "browser_name": "Mozilla",
+        "browser_version": "5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36",
+        "browser_online": true,
+        "verifyFp": verify_fp,
+        "app_language": "zh-Hans",
+        "webcast_language": "zh-Hans",
+        "tz_name": "Asia/Shanghai",
+        "is_page_visible": true,
+        "focus_state": true,
+        "is_fullscreen": false,
+        "history_len": 2,
+        "user_is_login": false,
+        "data_collection_enabled": true
+    });
+    params.push(("shark_extra".to_string(), shark_extra.to_string()));
+
+    params
+}
+
+fn build_query(params: &[(String, String)]) -> String {
+    let mut serializer = Serializer::new(String::new());
+    for (key, value) in params {
+        serializer.append_pair(key, value);
+    }
+    serializer.finish()
+}
+
+fn collect_cookie_map(headers: &reqwest::header::HeaderMap) -> HashMap<String, String> {
+    let mut map = HashMap::new();
+    for value in headers.get_all(reqwest::header::SET_COOKIE).iter() {
+        if let Ok(raw) = value.to_str() {
+            if let Some((pair, _)) = raw.split_once(';') {
+                if let Some((name, val)) = pair.split_once('=') {
+                    map.insert(name.trim().to_string(), val.trim().to_string());
+                }
+            }
+        }
+    }
+    map
+}
+
+fn merge_cookie_maps(target: &mut HashMap<String, String>, extra: HashMap<String, String>) {
+    for (key, value) in extra {
+        target.insert(key, value);
+    }
+}
+
+fn build_cookie_string(map: &HashMap<String, String>) -> String {
+    let mut pairs: Vec<String> = map
+        .iter()
+        .map(|(key, value)| format!("{key}={value}"))
+        .collect();
+    pairs.sort();
+    pairs.join("; ")
+}
+
+fn has_login_cookie(map: &HashMap<String, String>) -> bool {
+    map.contains_key("sessionid")
+        || map.contains_key("sessionid_ss")
+        || map.contains_key("sid_tt")
+        || map.contains_key("sid_guard")
+}
+
+fn parse_cookie_header(header: &str) -> HashMap<String, String> {
+    let mut map = HashMap::new();
+    for pair in header.split(';') {
+        let pair = pair.trim();
+        if pair.is_empty() {
+            continue;
+        }
+        if let Some((key, value)) = pair.split_once('=') {
+            map.insert(key.trim().to_string(), value.trim().to_string());
+        }
+    }
+    map
+}
+
+fn mssdk_url() -> String {
+    env::var("TIKTOK_MSSDK_URL").unwrap_or_else(|_| TIKTOK_MSSDK_URL.to_string())
+}
+
+fn apply_tiktok_extra_headers(headers: &mut HeaderMap) {
+    let mappings = [
+        ("TIKTOK_X_MSSDK_INFO", "x-mssdk-info"),
+        ("TIKTOK_TT_TICKET_GUARD_CLIENT_DATA", "tt-ticket-guard-client-data"),
+        ("TIKTOK_TT_TICKET_GUARD_ITERATION_VERSION", "tt-ticket-guard-iteration-version"),
+        ("TIKTOK_TT_TICKET_GUARD_PUBLIC_KEY", "tt-ticket-guard-public-key"),
+        ("TIKTOK_TT_TICKET_GUARD_VERSION", "tt-ticket-guard-version"),
+        ("TIKTOK_TT_TICKET_GUARD_WEB_VERSION", "tt-ticket-guard-web-version"),
+    ];
+    for (env_key, header_name) in mappings {
+        if let Ok(value) = env::var(env_key) {
+            let value = value.trim();
+            if !value.is_empty() {
+                if let Ok(parsed) = value.parse() {
+                    headers.insert(header_name, parsed);
+                }
+            }
+        }
+    }
+}
+
+async fn fetch_ms_token(client: &Client) -> String {
+    let payload = serde_json::json!({
+        "magic": TIKTOK_MSSDK_MAGIC,
+        "version": TIKTOK_MSSDK_VERSION,
+        "dataType": TIKTOK_MSSDK_DATA_TYPE,
+        "strData": TIKTOK_MSSDK_STR_DATA,
+        "tspFromClient": chrono::Utc::now().timestamp_millis(),
+    });
+    let resp = client
+        .post(mssdk_url())
+        .header("User-Agent", USER_AGENT)
+        .header("Content-Type", "application/json")
+        .body(payload.to_string())
+        .send()
+        .await;
+    if let Ok(resp) = resp {
+        if let Some(token) = collect_cookie_map(resp.headers()).get("msToken").cloned() {
+            return token;
+        }
+    }
+    crate::platforms::douyin::params::gen_false_ms_token()
+}
+
+async fn fetch_ttwid(client: &Client, cookie_header: &str) -> Option<String> {
+    let resp = client
+        .post(TIKTOK_TTWID_CHECK_URL)
+        .header("User-Agent", USER_AGENT)
+        .header("Content-Type", "text/plain")
+        .header("Cookie", cookie_header)
+        .body(TIKTOK_TTWID_CHECK_DATA)
+        .send()
+        .await
+        .ok()?;
+    collect_cookie_map(resp.headers()).get("ttwid").cloned()
+}
+
+async fn bootstrap_tiktok_cookies(
+    client: &Client,
+    verify_fp: &str,
+    ms_token_hint: Option<&str>,
+) -> HashMap<String, String> {
+    let mut cookies = HashMap::new();
+    if let Ok(resp) = client
+        .get("https://www.tiktok.com/")
+        .header("User-Agent", USER_AGENT)
+        .header("Referer", "https://www.tiktok.com/")
+        .send()
+        .await
+    {
+        merge_cookie_maps(&mut cookies, collect_cookie_map(resp.headers()));
+    }
+
+    if !verify_fp.is_empty() {
+        cookies.insert("s_v_web_id".to_string(), verify_fp.to_string());
+    }
+
+    let ms_token = if let Some(ms_token) = ms_token_hint {
+        ms_token.to_string()
+    } else if let Some(ms_token) = cookies.get("msToken").cloned() {
+        ms_token
+    } else {
+        fetch_ms_token(client).await
+    };
+    cookies.insert("msToken".to_string(), ms_token);
+
+    if !cookies.contains_key("ttwid") {
+        let cookie_header = build_cookie_string(&cookies);
+        if let Some(ttwid) = fetch_ttwid(client, &cookie_header).await {
+            cookies.insert("ttwid".to_string(), ttwid);
+        }
+    }
+
+    cookies
+}
+
+fn build_passport_headers(cookies: &HashMap<String, String>) -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    headers.insert("user-agent", USER_AGENT.parse().unwrap());
+    headers.insert("referer", "https://www.tiktok.com/".parse().unwrap());
+    let cookie_header = build_cookie_string(cookies);
+    if !cookie_header.is_empty() {
+        headers.insert("cookie", cookie_header.parse().unwrap());
+    }
+    if let Some(csrf) = cookies.get("passport_csrf_token") {
+        headers.insert("x-tt-passport-csrf-token", csrf.parse().unwrap());
+    }
+    headers
+}
+
+fn build_auth_broadcast_query(device_id: &str, verify_fp: &str, ms_token: &str) -> String {
+    let now = chrono::Utc::now().timestamp();
+    let params = vec![
+        ("WebIdLastTime".to_string(), now.to_string()),
+        ("aid".to_string(), "1988".to_string()),
+        ("app_language".to_string(), "zh-Hans".to_string()),
+        ("app_name".to_string(), "tiktok_web".to_string()),
+        ("browser_language".to_string(), "zh-CN".to_string()),
+        ("browser_name".to_string(), "Mozilla".to_string()),
+        ("browser_online".to_string(), "true".to_string()),
+        ("browser_platform".to_string(), "Win32".to_string()),
+        ("browser_version".to_string(), USER_AGENT.to_string()),
+        ("channel".to_string(), "tiktok_web".to_string()),
+        ("cookie_enabled".to_string(), "true".to_string()),
+        ("data_collection_enabled".to_string(), "true".to_string()),
+        ("device_id".to_string(), device_id.to_string()),
+        ("device_platform".to_string(), "web_pc".to_string()),
+        ("focus_state".to_string(), "false".to_string()),
+        ("history_len".to_string(), "6".to_string()),
+        ("is_fullscreen".to_string(), "false".to_string()),
+        ("is_page_visible".to_string(), "true".to_string()),
+        ("os".to_string(), "windows".to_string()),
+        ("region".to_string(), "TW".to_string()),
+        ("screen_height".to_string(), "1440".to_string()),
+        ("screen_width".to_string(), "2560".to_string()),
+        ("tz_name".to_string(), "Asia/Shanghai".to_string()),
+        ("user_is_login".to_string(), "false".to_string()),
+        ("verifyFp".to_string(), verify_fp.to_string()),
+        ("webcast_language".to_string(), "zh-Hans".to_string()),
+        ("msToken".to_string(), ms_token.to_string()),
+    ];
+    build_query(&params)
+}
+
+async fn fetch_auth_broadcast_cookies(
+    client: &Client,
+    headers: &HeaderMap,
+    base_cookies: &HashMap<String, String>,
+    device_id: &str,
+    verify_fp: &str,
+    ms_token: &str,
+) -> Result<HashMap<String, String>, RecorderError> {
+    let query = build_auth_broadcast_query(device_id, verify_fp, ms_token);
+    let hosts = [
+        "https://web-va.tiktok.com",
+        "https://login-no1a.www.tiktok.com",
+        "https://us.tiktok.com",
+    ];
+    let mut merged = base_cookies.clone();
+    for host in hosts {
+        let url = format!("{host}/passport/web/auth_broadcast/?{query}");
+        let resp = client.post(url).headers(headers.clone()).send().await?;
+        let extra = collect_cookie_map(resp.headers());
+        if !extra.is_empty() {
+            log::info!(
+                "[TikTok] auth_broadcast cookies from {}: {}",
+                host,
+                extra.len()
+            );
+        } else {
+            log::warn!("[TikTok] auth_broadcast no cookies from {}", host);
+        }
+        merge_cookie_maps(&mut merged, extra);
+    }
+    Ok(merged)
+}
+
+fn extract_next_url(target: &str) -> Option<String> {
+    let parsed = Url::parse(target).ok()?;
+    for (key, value) in parsed.query_pairs() {
+        if key == "next_url" {
+            return Some(value.to_string());
+        }
+    }
+    None
+}
+
+async fn fetch_cookies_with_redirects(
+    headers: &HeaderMap,
+    start_url: &str,
+) -> Result<HashMap<String, String>, RecorderError> {
+    let client = Client::builder()
+        .redirect(Policy::none())
+        .build()
+        .map_err(|_| RecorderError::ApiError {
+            error: "Failed to build TikTok login client".to_string(),
+        })?;
+    let mut current = start_url.to_string();
+    let mut collected = HashMap::new();
+    if let Some(cookie_header) = headers.get("cookie").and_then(|v| v.to_str().ok()) {
+        merge_cookie_maps(&mut collected, parse_cookie_header(cookie_header));
+    }
+
+    for _ in 0..6 {
+        let mut request_headers = headers.clone();
+        let cookie_string = build_cookie_string(&collected);
+        if !cookie_string.is_empty() {
+            request_headers.insert("cookie", cookie_string.parse().unwrap());
+        }
+        let resp = client.get(&current).headers(request_headers).send().await?;
+        merge_cookie_maps(&mut collected, collect_cookie_map(resp.headers()));
+
+        if resp.status().is_redirection() {
+            if let Some(location) = resp.headers().get(LOCATION) {
+                let location = location.to_str().unwrap_or_default();
+                if location.is_empty() {
+                    break;
+                }
+                if let Ok(next_url) = Url::parse(&current).and_then(|base| base.join(location))
+                {
+                    current = next_url.to_string();
+                    continue;
+                }
+                if let Ok(next_url) = Url::parse(location) {
+                    current = next_url.to_string();
+                    continue;
+                }
+            }
+        }
+        break;
+    }
+
+    Ok(collected)
+}
+
+async fn follow_login_chain(
+    headers: &HeaderMap,
+    target: &str,
+) -> Result<String, RecorderError> {
+    let mut cookie_map = fetch_cookies_with_redirects(headers, target).await?;
+    if let Some(next_url) = extract_next_url(target) {
+        let next_map = fetch_cookies_with_redirects(headers, &next_url).await?;
+        merge_cookie_maps(&mut cookie_map, next_map);
+    }
+    Ok(build_cookie_string(&cookie_map))
+}
+
+pub async fn get_qr_login(client: &Client) -> Result<TikTokQrInfo, RecorderError> {
+    let device_id = gen_device_id();
+    let verify_fp = crate::platforms::douyin::params::gen_verify_fp();
+    let mut cookies = bootstrap_tiktok_cookies(client, &verify_fp, None).await;
+    let mut ms_token = cookies
+        .get("msToken")
+        .cloned()
+        .unwrap_or_else(crate::platforms::douyin::params::gen_false_ms_token);
+
+    let params = build_qr_params(None, &device_id, &verify_fp, &ms_token);
+    let query = build_query(&params);
+    let url = format!(
+        "https://www.tiktok.com/passport/web/get_qrcode/?{query}"
+    );
+
+    let headers = build_passport_headers(&cookies);
+    let resp = client.get(url).headers(headers.clone()).send().await?;
+    if let Some(ms_header) = resp.headers().get("x-ms-token") {
+        if let Ok(value) = ms_header.to_str() {
+            ms_token = value.to_string();
+            cookies.insert("msToken".to_string(), ms_token.clone());
+        }
+    }
+    let json: serde_json::Value = resp.json().await?;
+    log::info!("TikTok get_qrcode response: {}", json);
+    let data = json.get("data").ok_or_else(|| RecorderError::ApiError {
+        error: "TikTok QR: missing data".to_string(),
+    })?;
+    let token = data
+        .get("token")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    let qrcode_index_url = data
+        .get("qrcode_index_url")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    let ttwid_ticket = data
+        .get("ttwid_migration_ticket")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    let qrcode = data
+        .get("qrcode")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    let (url, image) = if !qrcode.is_empty() {
+        (qrcode_index_url, Some(qrcode))
+    } else if !qrcode_index_url.is_empty() {
+        (String::new(), Some(qrcode_index_url))
+    } else {
+        (String::new(), None)
+    };
+
+    let mut oauth_key = format!("{token}|{device_id}|{verify_fp}|{ms_token}");
+    if !ttwid_ticket.is_empty() {
+        oauth_key.push('|');
+        oauth_key.push_str(&ttwid_ticket);
+    }
+
+    Ok(TikTokQrInfo {
+        oauth_key,
+        url,
+        image,
+    })
+}
+
+pub async fn get_qr_login_status(
+    client: &Client,
+    token_key: &str,
+) -> Result<TikTokQrStatus, RecorderError> {
+    if !tiktok_api_allowed() {
+        return Ok(TikTokQrStatus {
+            code: 1,
+            cookies: String::new(),
+            message: "访问太频繁，请稍后再试".to_string(),
+        });
+    }
+    let mut parts = token_key.split('|');
+    let token = parts.next().unwrap_or_default();
+    let device_id = parts.next().unwrap_or_default();
+    let verify_fp = parts.next().unwrap_or_default();
+    let ms_token = parts.next().unwrap_or_default();
+    let ttwid_ticket = parts.next();
+
+    let cookies = bootstrap_tiktok_cookies(client, verify_fp, Some(ms_token)).await;
+    let params = build_qr_params(Some(token), device_id, verify_fp, ms_token);
+    let query = build_query(&params);
+    let mut headers = build_passport_headers(&cookies);
+    if let Some(ticket) = ttwid_ticket {
+        if !ticket.is_empty() {
+            if let Ok(value) = ticket.parse() {
+                headers.insert("x-tt-passport-ttwid-ticket", value);
+            }
+        }
+    }
+    apply_tiktok_extra_headers(&mut headers);
+    let hosts = [
+        "https://login-no1a.www.tiktok.com",
+        "https://web-va.tiktok.com",
+    ];
+    let mut response_cookies = cookies.clone();
+    let mut json: Option<serde_json::Value> = None;
+    for host in hosts {
+        let url = format!("{host}/passport/web/check_qrconnect/?{query}");
+        let resp = client.get(url).headers(headers.clone()).send().await?;
+        merge_cookie_maps(&mut response_cookies, collect_cookie_map(resp.headers()));
+        let current: serde_json::Value = resp.json().await?;
+        let is_rate_limited = current.get("message").and_then(Value::as_str) == Some("error")
+            && current
+                .get("data")
+                .and_then(|data| data.get("error_code"))
+                .and_then(Value::as_i64)
+                == Some(7);
+        if is_rate_limited {
+            log::warn!("[TikTok] QR rate limited on {}", host);
+            json = Some(current);
+            continue;
+        }
+        json = Some(current);
+        break;
+    }
+    let json = json.unwrap_or_else(|| serde_json::json!({}));
+    if let (Some(status_code), Some(sub_status_code)) = (
+        json.get("status_code").and_then(Value::as_i64),
+        json.get("sub_status_code").and_then(Value::as_i64),
+    ) {
+        log::info!(
+            "[TikTok] QR status_code: {}, sub_status_code: {}",
+            status_code,
+            sub_status_code
+        );
+    }
+
+    if json.get("message").and_then(Value::as_str) == Some("error") {
+        let description = json
+            .get("data")
+            .and_then(|data| data.get("description"))
+            .and_then(value_to_string)
+            .unwrap_or_else(|| "TikTok QR error".to_string());
+        let is_rate_limited = json
+            .get("data")
+            .and_then(|data| data.get("error_code"))
+            .and_then(Value::as_i64)
+            == Some(7)
+            || description.contains("\u{8bbf}\u{95ee}\u{592a}\u{9891}\u{7e41}")
+            || description.contains("\u{8bf7}\u{7a0d}\u{540e}\u{518d}\u{8bd5}")
+            || description.to_ascii_lowercase().contains("rate");
+        if is_rate_limited {
+            set_tiktok_cooldown("rate limited");
+        }
+        return Ok(TikTokQrStatus {
+            code: if is_rate_limited { 1 } else { 3 },
+            cookies: String::new(),
+            message: description,
+        });
+    }
+
+    let status_value = match json.get("data") {
+        Some(Value::Array(items)) => items.first().and_then(|item| {
+            let status = item
+                .get("status")
+                .and_then(value_to_string);
+            let target = item
+                .get("target")
+                .and_then(value_to_string);
+            status.map(|s| (s, target))
+        }),
+        Some(Value::Object(obj)) => {
+            let status = obj.get("status").and_then(value_to_string);
+            let target = obj.get("target").and_then(value_to_string);
+            status.map(|s| (s, target))
+        }
+        _ => None,
+    };
+
+    let authnext = json
+        .get("data")
+        .and_then(|data| data.get("authnext").or_else(|| data.get("auth_next")))
+        .and_then(value_to_string);
+    if let Some(authnext_url) = authnext {
+        log::info!("[TikTok] QR authnext received");
+        match follow_login_chain(&headers, &authnext_url).await {
+            Ok(cookies) if !cookies.is_empty() => {
+                return Ok(TikTokQrStatus {
+                    code: 0,
+                    cookies,
+                    message: "ok".to_string(),
+                });
+            }
+            Ok(_) => {
+                log::warn!("[TikTok] QR login cookie empty after authnext");
+            }
+            Err(err) => {
+                log::warn!("[TikTok] QR authnext chain failed: {}", err);
+            }
+        }
+    }
+
+    let redirect_url = json
+        .get("data")
+        .and_then(|data| data.get("redirect_url"))
+        .and_then(value_to_string);
+    if let Some(redirect_url) = redirect_url {
+        log::info!("[TikTok] QR redirect_url received");
+        match follow_login_chain(&headers, &redirect_url).await {
+            Ok(cookies) if !cookies.is_empty() => {
+                return Ok(TikTokQrStatus {
+                    code: 0,
+                    cookies,
+                    message: "ok".to_string(),
+                });
+            }
+            Ok(_) => {
+                log::warn!("[TikTok] QR login cookie empty after redirect_url");
+            }
+            Err(err) => {
+                log::warn!("[TikTok] QR redirect_url chain failed: {}", err);
+            }
+        }
+    }
+
+    if json.get("status_code").and_then(Value::as_i64) == Some(0)
+        && json.get("sub_status_code").and_then(Value::as_i64) == Some(2001)
+    {
+        if has_login_cookie(&response_cookies) {
+            return Ok(TikTokQrStatus {
+                code: 0,
+                cookies: build_cookie_string(&response_cookies),
+                message: "ok".to_string(),
+            });
+        }
+        log::info!("[TikTok] QR check pass, try auth_broadcast");
+        match fetch_auth_broadcast_cookies(
+            client,
+            &headers,
+            &response_cookies,
+            device_id,
+            verify_fp,
+            ms_token,
+        )
+        .await
+        {
+            Ok(cookies) if has_login_cookie(&cookies) => {
+                return Ok(TikTokQrStatus {
+                    code: 0,
+                    cookies: build_cookie_string(&cookies),
+                    message: "ok".to_string(),
+                });
+            }
+            Ok(cookies) => {
+                log::warn!("[TikTok] auth_broadcast returned empty cookies");
+                if !cookies.is_empty() {
+                    log::warn!(
+                        "[TikTok] auth_broadcast cookies missing sessionid ({} total)",
+                        cookies.len()
+                    );
+                }
+            }
+            Err(err) => {
+                log::warn!("[TikTok] auth_broadcast failed: {}", err);
+            }
+        }
+        return Ok(TikTokQrStatus {
+            code: 2,
+            cookies: String::new(),
+            message: "waiting_confirm".to_string(),
+        });
+    }
+
+    if let Some((status, target)) = status_value {
+        log::info!("[TikTok] QR status: {}", status);
+        if let Some(target_url) = target {
+            match follow_login_chain(&headers, &target_url).await {
+                Ok(cookies) if !cookies.is_empty() => {
+                    return Ok(TikTokQrStatus {
+                        code: 0,
+                        cookies,
+                        message: "ok".to_string(),
+                    });
+                }
+                Ok(_) => {
+                    log::warn!("[TikTok] QR login cookie empty after status {}", status);
+                }
+                Err(err) => {
+                    log::warn!("[TikTok] QR login chain failed: {}", err);
+                }
+            }
+        }
+        if status == "success" || status == "confirm" || status == "scan" || status == "scanned" {
+            return Ok(TikTokQrStatus {
+                code: 2,
+                cookies: String::new(),
+                message: "waiting_confirm".to_string(),
+            });
+        }
+        if status == "new" {
+            return Ok(TikTokQrStatus {
+                code: 1,
+                cookies: String::new(),
+                message: status,
+            });
+        }
+        if status == "expired" || status == "cancel" || status == "failed" {
+            return Ok(TikTokQrStatus {
+                code: 3,
+                cookies: String::new(),
+                message: status,
+            });
+        }
+        return Ok(TikTokQrStatus {
+            code: 1,
+            cookies: String::new(),
+            message: status,
+        });
+    }
+
+    log::warn!("TikTok QR status: unexpected response: {}", json);
+    Ok(TikTokQrStatus {
+        code: 1,
+        cookies: String::new(),
+        message: "unknown".to_string(),
+    })
+}
+
+fn value_to_string(value: &Value) -> Option<String> {
+    match value {
+        Value::String(value) => Some(value.to_string()),
+        Value::Number(value) => Some(value.to_string()),
+        Value::Bool(value) => Some(value.to_string()),
+        _ => None,
     }
 }
 

@@ -3,10 +3,13 @@ use std::str::FromStr;
 use crate::database::account::AccountRow;
 use crate::state::State;
 use crate::state_type;
+use crate::utils::browser::BrowserCookieCollector;
 use chrono::Utc;
-use recorder::platforms::bilibili::api::{QrInfo, QrStatus};
-use recorder::platforms::{bilibili, douyin, huya, kuaishou, weibo, xiaohongshu, PlatformType};
+use recorder::platforms::{
+    bilibili, douyin, huya, kuaishou, tiktok, weibo, xiaohongshu, PlatformType,
+};
 use recorder::UserInfo;
+use serde::{Deserialize, Serialize};
 
 use hyper::header::HeaderValue;
 #[cfg(feature = "gui")]
@@ -29,19 +32,27 @@ fn get_item_from_cookies(name: &str, cookies: &str) -> Result<String, String> {
         .to_string())
 }
 
+fn extract_tiktok_uid(cookies: &str) -> Option<String> {
+    for cookie in cookies.split(';').map(str::trim) {
+        if let Some((name, _)) = cookie.split_once('=') {
+            if let Some(uid) = name.strip_prefix("__user_") {
+                if !uid.is_empty() {
+                    return Some(uid.to_string());
+                }
+            }
+        }
+    }
+    get_item_from_cookies("sessionid", cookies)
+        .or_else(|_| get_item_from_cookies("uid_tt", cookies))
+        .ok()
+}
+
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn add_account(
     state: state_type!(),
     platform: String,
     cookies: &str,
 ) -> Result<(), String> {
-    let cookies = cookies
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .collect::<Vec<_>>()
-        .join("; ");
-    let cookies = cookies.trim().to_string();
     // check if cookies is valid
     if let Err(e) = cookies.parse::<HeaderValue>() {
         return Err(format!("Invalid cookies: {e}"));
@@ -74,14 +85,14 @@ pub async fn add_account(
             if csrf.is_none() {
                 return Err("Invalid bilibili cookies".to_string());
             }
-            let uid = get_item_from_cookies("DedeUserID", &cookies)?;
+            let uid = get_item_from_cookies("DedeUserID", cookies)?;
             let tmp_account = AccountRow {
                 platform: platform.as_str().to_string(),
                 uid,
                 name: String::new(),
                 avatar: String::new(),
                 csrf: csrf.clone().unwrap(),
-                cookies: cookies.clone(),
+                cookies: cookies.into(),
                 created_at: Utc::now().to_rfc3339(),
             };
             match bilibili::api::get_user_info(&client, &tmp_account.to_account(), &tmp_account.uid)
@@ -104,7 +115,7 @@ pub async fn add_account(
                 name: String::new(),
                 avatar: String::new(),
                 csrf: "".into(),
-                cookies: cookies.clone(),
+                cookies: cookies.into(),
                 created_at: Utc::now().to_rfc3339(),
             };
 
@@ -130,7 +141,7 @@ pub async fn add_account(
             }
         }
         PlatformType::Huya => {
-            let user_id = get_item_from_cookies("yyuid", &cookies)?;
+            let user_id = get_item_from_cookies("yyuid", cookies)?;
 
             let tmp_account = AccountRow {
                 platform: platform.as_str().to_string(),
@@ -138,7 +149,7 @@ pub async fn add_account(
                 name: String::new(),
                 avatar: String::new(),
                 csrf: "".into(),
-                cookies: cookies.clone(),
+                cookies: cookies.into(),
                 created_at: Utc::now().to_rfc3339(),
             };
 
@@ -153,10 +164,6 @@ pub async fn add_account(
                 }
             }
         }
-        PlatformType::Youtube => {
-            // unsupported
-            return Err("Unsupported platform".to_string());
-        }
         PlatformType::Kuaishou => {
             let tmp_account = AccountRow {
                 platform: platform.as_str().to_string(),
@@ -164,32 +171,12 @@ pub async fn add_account(
                 name: String::new(),
                 avatar: String::new(),
                 csrf: "".into(),
-                cookies: cookies.clone(),
+                cookies: cookies.into(),
                 created_at: Utc::now().to_rfc3339(),
             };
-
             match kuaishou::api::get_user_info(&client, &tmp_account.to_account()).await {
-                Ok(user_info) => UserInfo {
-                    user_id: user_info.user_id,
-                    user_name: user_info.user_name,
-                    user_avatar: user_info.user_avatar,
-                },
-                Err(e) => {
-                    let fallback_id = get_item_from_cookies("userId", &cookies)
-                        .or_else(|_| get_item_from_cookies("bUserId", &cookies));
-                    if let Ok(fallback_id) = fallback_id {
-                        log::warn!(
-                            "Failed to get Kuaishou user info, fallback to cookie user id: {e}"
-                        );
-                        UserInfo {
-                            user_id: fallback_id.clone(),
-                            user_name: fallback_id,
-                            user_avatar: String::new(),
-                        }
-                    } else {
-                        return Err(format!("Failed to get Kuaishou user info: {e}"));
-                    }
-                }
+                Ok(user_info) => user_info,
+                Err(e) => return Err(format!("Failed to get Kuaishou user info: {e}")),
             }
         }
         PlatformType::Xiaohongshu => {
@@ -199,19 +186,12 @@ pub async fn add_account(
                 name: String::new(),
                 avatar: String::new(),
                 csrf: "".into(),
-                cookies: cookies.clone(),
+                cookies: cookies.into(),
                 created_at: Utc::now().to_rfc3339(),
             };
-
             match xiaohongshu::api::get_user_info(&client, &tmp_account.to_account()).await {
-                Ok(user_info) => UserInfo {
-                    user_id: user_info.user_id,
-                    user_name: user_info.user_name,
-                    user_avatar: user_info.user_avatar,
-                },
-                Err(e) => {
-                    return Err(format!("Failed to get Xiaohongshu user info: {e}"));
-                }
+                Ok(user_info) => user_info,
+                Err(e) => return Err(format!("Failed to get Xiaohongshu user info: {e}")),
             }
         }
         PlatformType::TikTok => {
@@ -221,35 +201,20 @@ pub async fn add_account(
                 name: String::new(),
                 avatar: String::new(),
                 csrf: "".into(),
-                cookies: cookies.clone(),
+                cookies: cookies.into(),
                 created_at: Utc::now().to_rfc3339(),
             };
-
-            match recorder::platforms::tiktok::api::get_user_info(&client, &tmp_account.to_account()).await {
+            match tiktok::api::get_user_info(&client, &tmp_account.to_account()).await {
                 Ok(user_info) => user_info,
                 Err(e) => {
-                    log::warn!("Failed to get TikTok user info from API: {}", e);
-                    // Fallback to cookie extraction
-                    let uid = get_item_from_cookies("uid", &cookies)
-                        .or_else(|_| get_item_from_cookies("uid_tt", &cookies))
-                        .or_else(|_| get_item_from_cookies("user_id", &cookies))
-                        .or_else(|_| get_item_from_cookies("sec_uid", &cookies))
-                        .unwrap_or_else(|_| {
-                            format!("tt_{:x}", md5::compute(cookies.as_bytes()))
-                        });
-                    let user_name = get_item_from_cookies("nickname", &cookies)
-                        .or_else(|_| get_item_from_cookies("unique_id", &cookies))
-                        .unwrap_or_else(|_| {
-                            if uid.starts_with("tt_") {
-                                "TikTok User".to_string()
-                            } else {
-                                uid.clone()
-                            }
-                        });
-                    UserInfo {
-                        user_id: uid,
-                        user_name,
-                        user_avatar: String::new(),
+                    if let Some(uid) = extract_tiktok_uid(cookies) {
+                        UserInfo {
+                            user_id: uid,
+                            user_name: "TikTok".to_string(),
+                            user_avatar: String::new(),
+                        }
+                    } else {
+                        return Err(format!("Failed to get TikTok user info: {e}"));
                     }
                 }
             }
@@ -261,20 +226,17 @@ pub async fn add_account(
                 name: String::new(),
                 avatar: String::new(),
                 csrf: "".into(),
-                cookies: cookies.clone(),
+                cookies: cookies.into(),
                 created_at: Utc::now().to_rfc3339(),
             };
-
             match weibo::api::get_user_info(&client, &tmp_account.to_account()).await {
-                Ok(user_info) => UserInfo {
-                    user_id: user_info.user_id,
-                    user_name: user_info.user_name,
-                    user_avatar: user_info.user_avatar,
-                },
-                Err(e) => {
-                    return Err(format!("Failed to get Weibo user info: {e}"));
-                }
+                Ok(user_info) => user_info,
+                Err(e) => return Err(format!("Failed to get Weibo user info: {e}")),
             }
+        }
+        PlatformType::Youtube => {
+            // unsupported
+            return Err("Unsupported platform".to_string());
         }
     };
 
@@ -289,58 +251,6 @@ pub async fn add_account(
     };
     state.db.add_account(&account).await?;
     Ok(())
-}
-
-#[cfg_attr(feature = "gui", tauri::command)]
-pub async fn get_browser_cookies(
-    browser: String,
-    domain: String,
-    format: Option<String>,
-) -> Result<serde_json::Value, String> {
-    let collector = match browser.to_lowercase().as_str() {
-        "chrome" => crate::utils::browser::BrowserCookieCollector::new_chrome(),
-        "edge" => crate::utils::browser::BrowserCookieCollector::new_edge(),
-        _ => return Err("Unsupported browser".to_string()),
-    };
-
-    let collector = collector
-        .ok_or_else(|| format!("{} not found or not supported on this platform", browser))?;
-
-    let domains: Vec<&str> = domain
-        .split(|c| c == ',' || c == '|')
-        .map(|s| s.trim())
-        .filter(|s| !s.is_empty())
-        .collect();
-    let domains = if domains.is_empty() {
-        vec![domain.as_str()]
-    } else {
-        domains
-    };
-
-    let mut cookies = Vec::new();
-    for d in domains {
-        let mut items = collector.get_cookies(d).map_err(|e| e.to_string())?;
-        cookies.append(&mut items);
-    }
-
-    // Deduplicate by host + name + path, keep first occurrence.
-    let mut seen = std::collections::HashSet::new();
-    cookies.retain(|c| {
-        let key = format!("{}\n{}\n{}", c.host, c.name, c.path);
-        seen.insert(key)
-    });
-
-    match format.as_deref().unwrap_or("json") {
-        "string" => {
-            let s = cookies
-                .iter()
-                .map(|c| format!("{}={}", c.name, c.value))
-                .collect::<Vec<_>>()
-                .join("; ");
-            Ok(serde_json::Value::String(s))
-        }
-        _ => Ok(serde_json::to_value(cookies).map_err(|e| e.to_string())?),
-    }
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]
@@ -362,22 +272,245 @@ pub async fn get_account_count(state: state_type!()) -> Result<u64, String> {
     Ok(state.db.get_accounts().await?.len() as u64)
 }
 
-#[cfg_attr(feature = "gui", tauri::command)]
-pub async fn get_qr_status(_state: state_type!(), qrcode_key: &str) -> Result<QrStatus, ()> {
-    let client = reqwest::Client::new();
-    match bilibili::api::get_qr_status(&client, qrcode_key).await {
-        Ok(qr_status) => Ok(qr_status),
-        Err(_e) => Err(()),
+fn domain_for_platform(platform: &str) -> Option<&'static str> {
+    match platform {
+        "bilibili" => Some("bilibili.com"),
+        "douyin" => Some("douyin.com"),
+        "huya" => Some("huya.com"),
+        "kuaishou" => Some("kuaishou.com"),
+        "xiaohongshu" => Some("xiaohongshu.com"),
+        "tiktok" => Some("tiktok.com"),
+        "weibo" => Some("weibo.com"),
+        "youtube" => Some("youtube.com"),
+        _ => None,
     }
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]
-pub async fn get_qr(_state: state_type!()) -> Result<QrInfo, ()> {
-    let client = reqwest::Client::new();
-    match bilibili::api::get_qr(&client).await {
-        Ok(qr_info) => Ok(qr_info),
-        Err(_e) => Err(()),
+pub async fn get_browser_cookies(
+    _state: state_type!(),
+    platform: String,
+) -> Result<String, String> {
+    let domain = domain_for_platform(&platform)
+        .ok_or_else(|| format!("Unsupported platform: {platform}"))?;
+
+    let mut cookie_sets = Vec::new();
+    if let Some(collector) = BrowserCookieCollector::new_chrome() {
+        if let Ok(cookies) = collector.get_cookies_as_string(domain) {
+            if !cookies.is_empty() {
+                cookie_sets.push(cookies);
+            }
+        }
     }
+    if let Some(collector) = BrowserCookieCollector::new_edge() {
+        if let Ok(cookies) = collector.get_cookies_as_string(domain) {
+            if !cookies.is_empty() {
+                cookie_sets.push(cookies);
+            }
+        }
+    }
+
+    if cookie_sets.is_empty() {
+        return Err("No browser cookies found".to_string());
+    }
+
+    Ok(cookie_sets.join("; "))
+}
+
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn get_qr_status(
+    _state: state_type!(),
+    platform: String,
+    qrcode_key: &str,
+) -> Result<PlatformQrStatus, String> {
+    log::warn!("[Account] get_qr_status platform={}, key_len={}", platform, qrcode_key.len());
+    let client = reqwest::Client::new();
+    match platform.as_str() {
+        "bilibili" => match bilibili::api::get_qr_status(&client, qrcode_key).await {
+            Ok(qr_status) => {
+                log::warn!(
+                    "[Account] bilibili qr_status code={}, cookies_len={}",
+                    qr_status.code,
+                    qr_status.cookies.len()
+                );
+                Ok(PlatformQrStatus {
+                    code: qr_status.code,
+                    cookies: qr_status.cookies,
+                    message: None,
+                })
+            }
+            Err(e) => Err(e.to_string()),
+        },
+        "douyin" => match douyin::api::get_qr_login_status(&client, qrcode_key).await {
+            Ok(qr_status) => {
+                log::warn!(
+                    "[Account] douyin qr_status code={}, msg={}, cookies_len={}",
+                    qr_status.code,
+                    qr_status.message,
+                    qr_status.cookies.len()
+                );
+                Ok(PlatformQrStatus {
+                    code: qr_status.code,
+                    cookies: qr_status.cookies,
+                    message: Some(qr_status.message),
+                })
+            }
+            Err(e) => Err(e.to_string()),
+        },
+        "kuaishou" => {
+            let mut parts = qrcode_key.split('|');
+            let token = parts.next().ok_or_else(|| "Invalid Kuaishou QR key".to_string())?;
+            let signature = parts.next().ok_or_else(|| "Invalid Kuaishou QR key".to_string())?;
+            let cookie = parts.next();
+            match kuaishou::api::get_qr_status(&client, token, signature, cookie).await {
+                Ok(qr_status) => {
+                    log::warn!(
+                        "[Account] kuaishou qr_status code={}, cookies_len={}",
+                        qr_status.code,
+                        qr_status.cookies.len()
+                    );
+                    Ok(PlatformQrStatus {
+                        code: qr_status.code,
+                        cookies: qr_status.cookies,
+                        message: None,
+                    })
+                }
+                Err(e) => Err(e.to_string()),
+            }
+        }
+        "tiktok" => match tiktok::api::get_qr_login_status(&client, qrcode_key).await {
+            Ok(qr_status) => {
+                log::warn!(
+                    "[Account] tiktok qr_status code={}, msg={}, cookies_len={}",
+                    qr_status.code,
+                    qr_status.message,
+                    qr_status.cookies.len()
+                );
+                Ok(PlatformQrStatus {
+                    code: qr_status.code,
+                    cookies: qr_status.cookies,
+                    message: Some(qr_status.message),
+                })
+            }
+            Err(e) => Err(e.to_string()),
+        },
+        _ => Err("Invalid platform".to_string()),
+    }
+}
+
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn get_qr(_state: state_type!(), platform: String) -> Result<PlatformQrInfo, String> {
+    log::warn!("[Account] get_qr platform={}", platform);
+    let client = reqwest::Client::new();
+    match platform.as_str() {
+        "bilibili" => match bilibili::api::get_qr(&client).await {
+            Ok(qr_info) => {
+                log::warn!(
+                    "[Account] bilibili get_qr key_len={}, url_len={}",
+                    qr_info.oauth_key.len(),
+                    qr_info.url.len()
+                );
+                Ok(PlatformQrInfo {
+                    oauth_key: qr_info.oauth_key,
+                    url: Some(qr_info.url),
+                    image: None,
+                })
+            }
+            Err(e) => Err(e.to_string()),
+        },
+        "douyin" => match douyin::api::get_qr_login(&client).await {
+            Ok(qr_info) => {
+                log::warn!(
+                    "[Account] douyin get_qr key_len={}, url_len={}, image={}",
+                    qr_info.oauth_key.len(),
+                    qr_info.url.len(),
+                    qr_info.image.is_some()
+                );
+                Ok(PlatformQrInfo {
+                    oauth_key: qr_info.oauth_key,
+                    url: if qr_info.url.is_empty() {
+                        None
+                    } else {
+                        Some(qr_info.url)
+                    },
+                    image: qr_info.image.map(|raw| {
+                        if raw.starts_with("data:image") {
+                            raw
+                        } else {
+                            format!("data:image/png;base64,{raw}")
+                        }
+                    }),
+                })
+            }
+            Err(e) => Err(e.to_string()),
+        },
+        "kuaishou" => match kuaishou::api::get_qr(&client).await {
+            Ok(qr_info) => {
+                log::warn!(
+                    "[Account] kuaishou get_qr key_len={}, image_len={}",
+                    qr_info
+                        .qr_login_token
+                        .len()
+                        .saturating_add(qr_info.qr_login_signature.len()),
+                    qr_info.image_data.len()
+                );
+                Ok(PlatformQrInfo {
+                    oauth_key: format!(
+                        "{}|{}|{}",
+                        qr_info.qr_login_token, qr_info.qr_login_signature, qr_info.qr_cookie
+                    ),
+                    url: None,
+                    image: Some(format!("data:image/png;base64,{}", qr_info.image_data)),
+                })
+            }
+            Err(e) => Err(e.to_string()),
+        },
+        "tiktok" => match tiktok::api::get_qr_login(&client).await {
+            Ok(qr_info) => {
+                log::warn!(
+                    "[Account] tiktok get_qr key_len={}, url_len={}, image={}",
+                    qr_info.oauth_key.len(),
+                    qr_info.url.len(),
+                    qr_info.image.is_some()
+                );
+                Ok(PlatformQrInfo {
+                    oauth_key: qr_info.oauth_key,
+                    url: if qr_info.url.is_empty() {
+                        None
+                    } else {
+                        Some(qr_info.url)
+                    },
+                    image: qr_info.image.map(|raw| {
+                        if raw.starts_with("data:image") {
+                            raw
+                        } else if raw.starts_with("http://") || raw.starts_with("https://") {
+                            raw
+                        } else {
+                            format!("data:image/png;base64,{raw}")
+                        }
+                    }),
+                })
+            }
+            Err(e) => Err(e.to_string()),
+        },
+        _ => Err("Invalid platform".to_string()),
+    }
+}
+
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlatformQrInfo {
+    pub oauth_key: String,
+    pub url: Option<String>,
+    pub image: Option<String>,
+}
+
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlatformQrStatus {
+    pub code: u8,
+    pub cookies: String,
+    pub message: Option<String>,
 }
 
 #[cfg(test)]

@@ -148,12 +148,17 @@
   let selectedPlatform = "bilibili";
   $: {
     const trimmed = addRoom.trim();
+    const parsed = parseRoomInput(trimmed);
+    const normalizedRoomId =
+      parsed.platform === selectedPlatform && parsed.roomId
+        ? parsed.roomId
+        : trimmed;
     const needsNumeric =
       selectedPlatform === "bilibili" || selectedPlatform === "douyin";
-    if (!trimmed) {
+    if (!normalizedRoomId) {
       addValid = false;
       addErrorMsg = "";
-    } else if (needsNumeric && !Number.isInteger(Number(trimmed))) {
+    } else if (needsNumeric && !Number.isInteger(Number(normalizedRoomId))) {
       addValid = false;
       addErrorMsg =
         "\u0049\u0044\u683c\u5f0f\u9519\u8bef\uff0c\u8bf7\u68c0\u67e5\u8f93\u5165";
@@ -398,6 +403,54 @@
     } else if (room.room_info.platform === "tiktok") {
       open(`https://www.tiktok.com/${room.room_info.room_id}/live`);
     }
+  }
+
+  function parseRoomInput(raw: string) {
+    const trimmed = raw.trim();
+    if (!trimmed) {
+      return { roomId: "", platform: "" };
+    }
+
+    const patterns = [
+      {
+        platform: "bilibili",
+        re: /(?:bsr:\/\/)?https?:\/\/live\.bilibili\.com\/(\d+)/i,
+      },
+      {
+        platform: "bilibili",
+        re: /bsr:\/\/live\.bilibili\.com\/(\d+)/i,
+      },
+      {
+        platform: "douyin",
+        re: /(?:bsr:\/\/)?https?:\/\/live\.douyin\.com\/(\d+)/i,
+      },
+      {
+        platform: "kuaishou",
+        re: /(?:bsr:\/\/)?https?:\/\/live\.kuaishou\.com\/(?:u\/)?([A-Za-z0-9]+)/i,
+      },
+      {
+        platform: "tiktok",
+        re: /(?:bsr:\/\/)?https?:\/\/(?:www\.)?tiktok\.com\/@?([^\/\?]+)\/live/i,
+      },
+    ];
+
+    for (const { platform, re } of patterns) {
+      const match = trimmed.match(re);
+      if (match) {
+        return { roomId: match[1], platform };
+      }
+    }
+
+    return { roomId: "", platform: "" };
+  }
+
+  function normalizeRoomInput(raw: string, platform: string) {
+    const parsed = parseRoomInput(raw);
+    const trimmed = raw.trim();
+    if (parsed.roomId && (!platform || parsed.platform === platform)) {
+      return { roomId: parsed.roomId, platform: parsed.platform || platform };
+    }
+    return { roomId: trimmed, platform };
   }
 
   function addNewRecorder(room_id: string, platform: string, extra: string) {
@@ -796,7 +849,7 @@
                   : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'}"
                 on:click={() => (selectedPlatform = "bilibili")}
               >
-                哔哩哔哩
+                Bilibili
               </button>
               <button
                 class="px-3 py-2 text-sm font-medium rounded-md transition-colors {selectedPlatform ===
@@ -844,8 +897,8 @@
             >
               {selectedPlatform === "kuaishou" || selectedPlatform === "tiktok"
                 ? "直播间链接"
-                : selectedPlatform === "bilibili"
-                  ? "房间号"
+                : selectedPlatform === "bilibili" || selectedPlatform === "douyin"
+                  ? "直播间链接/ID"
                   : "直播间ID"}
             </label>
             <input
@@ -855,7 +908,9 @@
               class="w-full px-3 py-2 bg-[#f5f5f7] dark:bg-[#1c1c1e] border-0 rounded-lg focus:ring-2 focus:ring-blue-500 text-gray-900 dark:text-white placeholder-gray-500 dark:placeholder-gray-400"
               placeholder={selectedPlatform === "kuaishou" || selectedPlatform === "tiktok"
                 ? "请输入直播间链接"
-                : "请输入直播间房间号"}
+                : selectedPlatform === "bilibili" || selectedPlatform === "douyin"
+                  ? "请输入直播间链接或房间号"
+                  : "请输入直播间房间号"}
             />
             {#if addErrorMsg}
               <p class="text-sm text-red-600 dark:text-red-500">
@@ -877,7 +932,11 @@
               class="px-4 py-2 bg-[#0A84FF] hover:bg-[#0A84FF]/90 text-white text-sm font-medium rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               disabled={!addValid}
               on:click={() => {
-                addNewRecorder(addRoom, selectedPlatform, "");
+                const normalized = normalizeRoomInput(
+                  addRoom,
+                  selectedPlatform
+                );
+                addNewRecorder(normalized.roomId, normalized.platform, "");
                 addModal = false;
                 addRoom = "";
               }}

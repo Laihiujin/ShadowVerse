@@ -36,16 +36,56 @@
 
   let addModal = false;
   let activeTab = "qr"; // 'qr' | 'manual'
-  let selectedPlatform = "bilibili"; // 'bilibili' or 'douyin'
+  let selectedPlatform = "bilibili";
   let oauth_key = "";
   let check_interval = null;
+  let check_interval_ms = 2000;
+  let tiktok_backoff = 0;
+  let tiktok_rate_timer = null;
+  let tiktok_start_timer = null;
+  let qr_attempts = 0;
+  let qr_max_attempts = 15;
+  let auto_qr_poll = true;
+  let last_qr_check_ts = 0;
+  let min_qr_interval_ms = 3000;
   let cookie_str = "";
+  let qr_image = "";
+  let qr_url = "";
+  let qr_error = "";
 
   let manualModal = false;
 
   let activeDropdown = null;
 
-  function toggleDropdown(uid) {
+  const qrPlatforms = new Set(["bilibili", "douyin", "kuaishou", "tiktok"]);
+  const autoQrPlatforms = new Set(["bilibili", "kuaishou"]);
+
+  function default_tab(platform: string) {
+    return autoQrPlatforms.has(platform) ? "qr" : "manual";
+  }
+
+  function set_platform(platform: string) {
+    selectedPlatform = platform;
+    activeTab = default_tab(platform);
+    if (activeTab === "qr" && supports_qr(platform)) {
+      requestAnimationFrame(handle_qr);
+    }
+  }
+
+  function supports_qr(platform: string) {
+    return qrPlatforms.has(platform);
+  }
+
+  function qr_help_text(platform: string) {
+    const helpMap = {
+      bilibili: "\u8bf7\u4f7f\u7528BiliBili App\u626b\u63cf\u4e8c\u7ef4\u7801\u767b\u5f55",
+      douyin: "\u8bf7\u4f7f\u7528\u6296\u97f3App\u626b\u63cf\u4e8c\u7ef4\u7801\u767b\u5f55",
+      kuaishou: "\u8bf7\u4f7f\u7528\u5feb\u624bApp\u626b\u63cf\u4e8c\u7ef4\u7801\u767b\u5f55",
+      tiktok: "\u8bf7\u4f7f\u7528TikTok App\u626b\u63cf\u4e8c\u7ef4\u7801\u767b\u5f55"
+    };
+    return helpMap[platform] || "\u8bf7\u4f7f\u7528App\u626b\u63cf\u4e8c\u7ef4\u7801\u767b\u5f55";
+  }
+function toggleDropdown(uid) {
     if (activeDropdown === uid) {
       activeDropdown = null;
     } else {
@@ -71,6 +111,9 @@
       !event.target.closest("button")
     ) {
       addModal = false;
+      if (check_interval) {
+        clearInterval(check_interval);
+      }
     }
   }
 
@@ -78,33 +121,162 @@
     if (check_interval) {
       clearInterval(check_interval);
     }
-    let qr_info: { url: string; oauthKey: string } = await invoke("get_qr");
-    oauth_key = qr_info.oauthKey;
-    const canvas = document.getElementById("qr");
-    QRCode.toCanvas(canvas, qr_info.url, function (error) {
-      if (error) {
-        console.log(error);
+    if (tiktok_rate_timer) {
+      clearTimeout(tiktok_rate_timer);
+      tiktok_rate_timer = null;
+    }
+    if (tiktok_start_timer) {
+      clearTimeout(tiktok_start_timer);
+      tiktok_start_timer = null;
+    }
+    tiktok_backoff = 0;
+    qr_attempts = 0;
+    qr_max_attempts = selectedPlatform === "tiktok" ? 30 : 15;
+    min_qr_interval_ms = selectedPlatform === "tiktok" ? 15000 : selectedPlatform === "bilibili" ? 5000 : 3000;
+    check_interval_ms = selectedPlatform === "tiktok" ? 15000 : 2000;
+    qr_error = "";
+    qr_image = "";
+    qr_url = "";
+    try {
+      let qr_info: { url?: string; image?: string; oauthKey: string } = await invoke(
+        "get_qr",
+        { platform: selectedPlatform }
+      );
+      oauth_key = qr_info.oauthKey;
+      qr_image = qr_info.image || "";
+      qr_url = qr_info.url || "";
+
+      if (qr_image) {
+        if (auto_qr_poll) {
+          if (selectedPlatform === "tiktok") {
+            tiktok_start_timer = setTimeout(() => {
+              if (addModal && activeTab === "qr" && supports_qr(selectedPlatform)) {
+                check_qr_once();
+                check_interval = setInterval(check_qr, check_interval_ms);
+              }
+            }, check_interval_ms);
+          } else {
+            check_qr_once();
+            check_interval = setInterval(check_qr, check_interval_ms);
+          }
+        }
         return;
       }
-      canvas.style.display = "block";
-      check_interval = setInterval(check_qr, 2000);
-    });
+
+      if (!qr_url) {
+        qr_error = "\u4e8c\u7ef4\u7801\u83b7\u53d6\u5931\u8d25";
+        return;
+      }
+
+      const canvas = document.getElementById("qr");
+      QRCode.toCanvas(canvas, qr_url, function (error) {
+        if (error) {
+          console.log(error);
+          qr_error = "\u4e8c\u7ef4\u7801\u6e32\u67d3\u5931\u8d25";
+          return;
+        }
+        canvas.style.display = "block";
+        if (auto_qr_poll) {
+          if (selectedPlatform === "tiktok") {
+            tiktok_start_timer = setTimeout(() => {
+              if (addModal && activeTab === "qr" && supports_qr(selectedPlatform)) {
+                check_qr_once();
+                check_interval = setInterval(check_qr, check_interval_ms);
+              }
+            }, check_interval_ms);
+          } else {
+            check_qr_once();
+            check_interval = setInterval(check_qr, check_interval_ms);
+          }
+        }
+      });
+    } catch (e) {
+      qr_error = String(e || "\u4e8c\u7ef4\u7801\u83b7\u53d6\u5931\u8d25");
+    }
   }
 
-  async function check_qr() {
-    let qr_status: { code: number; cookies: string } = await invoke(
-      "get_qr_status",
-      { qrcodeKey: oauth_key }
-    );
-    if (qr_status.code == 0) {
-      clearInterval(check_interval);
-      await invoke("add_account", {
-        cookies: qr_status.cookies,
-        platform: selectedPlatform,
-      });
-      await update_accounts();
-      addModal = false;
+  async function check_qr(force = false) {
+    if (!auto_qr_poll && !force) {
+      return;
     }
+    if (!force && selectedPlatform === "tiktok" && tiktok_rate_timer) {
+      return;
+    }
+    const now = Date.now();
+    if (!force && now - last_qr_check_ts < min_qr_interval_ms) {
+      return;
+    }
+    last_qr_check_ts = now;
+    try {
+      qr_attempts += 1;
+      if (qr_attempts > qr_max_attempts) {
+        if (check_interval) {
+          clearInterval(check_interval);
+        }
+        qr_error = "已暂停轮询，请点击刷新扫码状态";
+        return;
+      }
+      let qr_status: { code: number; cookies: string; message?: string } = await invoke(
+        "get_qr_status",
+        { platform: selectedPlatform, qrcodeKey: oauth_key }
+      );
+      if (qr_status.code == 0) {
+        clearInterval(check_interval);
+        await invoke("add_account", {
+          cookies: qr_status.cookies,
+          platform: selectedPlatform,
+        });
+        await update_accounts();
+        addModal = false;
+        return;
+      }
+      if (qr_status.code == 1) {
+        if (qr_status.message && qr_status.message !== "new") {
+          qr_error = qr_status.message;
+          if (qr_status.message.includes("\u8bbf\u95ee\u592a\u9891\u7e41")) {
+            if (check_interval) {
+              clearInterval(check_interval);
+            }
+            tiktok_backoff += 1;
+            check_interval_ms = Math.min(60000, 10000 + tiktok_backoff * 5000);
+            if (selectedPlatform === "tiktok") {
+              if (tiktok_rate_timer) {
+                clearTimeout(tiktok_rate_timer);
+              }
+              tiktok_rate_timer = setTimeout(() => {
+                tiktok_rate_timer = null;
+                if (addModal && activeTab === "qr" && supports_qr(selectedPlatform) && auto_qr_poll) {
+                  check_qr_once();
+                  check_interval = setInterval(check_qr, check_interval_ms);
+                }
+              }, 120000);
+            } else {
+              if (auto_qr_poll) {
+                check_interval = setInterval(check_qr, check_interval_ms);
+              }
+            }
+          }
+        }
+        return;
+      }
+      if (qr_status.code == 2) {
+        if (check_interval) {
+          clearInterval(check_interval);
+        }
+        qr_error = qr_status.message || "\u4e8c\u7ef4\u7801\u767b\u5f55\u5df2\u7ec8\u6b62";
+        return;
+      }
+      qr_error = qr_status.message || "\u626b\u7801\u672a\u786e\u8ba4";
+    } catch (e) {
+      qr_error = String(e || "二维码状态获取失败");
+    }
+  }
+
+  async function check_qr_once() {
+    if (!supports_qr(selectedPlatform) || !oauth_key) {
+      return;
+    }
+    await check_qr(true);
   }
 
   async function add_cookie() {
@@ -121,22 +293,21 @@
       cookie_str = "";
       addModal = false;
     } catch (e) {
-      alert("添加账号失败：" + e);
+      alert("\u6dfb\u52a0\u8d26\u53f7\u5931\u8d25\uff1a" + e);
     }
   }
 
   function platform_display(platform: string) {
     const platformMap = {
-      bilibili: "B站",
-      douyin: "抖音",
-      huya: "虎牙",
-      kuaishou: "快手",
+      bilibili: "\u0042\u7ad9",
+      douyin: "\u6296\u97f3",
+      huya: "\u864e\u7259",
+      kuaishou: "\u5feb\u624b",
       tiktok: "TikTok"
     };
     return platformMap[platform] || platform;
   }
-
-  function platform_avatar(platform: string) {
+function platform_avatar(platform: string) {
     const avatarMap = {
       bilibili: "/imgs/bilibili_avatar.png",
       douyin: "/imgs/douyin.svg",
@@ -158,33 +329,30 @@
     <!-- Header -->
     <div class="flex justify-between items-center">
       <div class="flex items-center space-x-4">
-        <h1 class="text-2xl font-semibold text-gray-900 dark:text-white">
-          账号
-        </h1>
-        
+        <h1 class="text-2xl font-semibold text-gray-900 dark:text-white">&#x8d26;&#x53f7;</h1>
+
         <div
           class="flex items-center space-x-2 text-sm text-gray-500 dark:text-gray-400"
         >
-          <span> 共 {account_info.accounts.length} 个</span>
+          <span>&#x5171; {account_info.accounts.length} &#x4e2a;</span>
         </div>
       </div>
-      <p>
-        登录账号以支持获取最高4K画质
-        <p>
+      <p>&#x767b;&#x5f55;&#x8d26;&#x53f7;&#x4ee5;&#x652f;&#x6301;&#x83b7;&#x53d6;&#x6700;&#x9ad8;&#x753b;&#x8d28;</p>
       <button
         on:click={() => {
           addModal = true;
-          if (activeTab === "qr") {
+          activeTab = default_tab(selectedPlatform);
+          if (activeTab === "qr" && supports_qr(selectedPlatform)) {
             requestAnimationFrame(handle_qr);
           }
         }}
         class="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors flex items-center space-x-2"
       >
         <Plus class="w-5 h-5 icon-white" />
-        <span>添加账号</span>
+        <span>&#x6dfb;&#x52a0;&#x8d26;&#x53f7;</span>
       </button>
     </div>
-    
+
     <!-- Account List -->
     <div class="space-y-4">
       <!-- Online Account -->
@@ -268,7 +436,8 @@
         class="w-full p-4 rounded-xl border-2 border-dashed border-gray-300 dark:border-gray-600 hover:border-blue-500 dark:hover:border-blue-400 transition-colors"
         on:click={() => {
           addModal = true;
-          if (activeTab === "qr") {
+          activeTab = default_tab(selectedPlatform);
+          if (activeTab === "qr" && supports_qr(selectedPlatform)) {
             requestAnimationFrame(handle_qr);
           }
         }}
@@ -324,23 +493,16 @@
               'bilibili'
                 ? 'bg-white dark:bg-[#3c3c3e] shadow-sm text-gray-900 dark:text-white'
                 : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'}"
-              on:click={() => {
-                selectedPlatform = "bilibili";
-                activeTab = "qr";
-                requestAnimationFrame(handle_qr);
-              }}
+              on:click={() => set_platform("bilibili")}
             >
-              哔哩哔哩
+              bilibili
             </button>
             <button
               class="px-3 py-2 text-sm font-medium rounded-md transition-colors {selectedPlatform ===
               'douyin'
                 ? 'bg-white dark:bg-[#3c3c3e] shadow-sm text-gray-900 dark:text-white'
                 : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'}"
-              on:click={() => {
-                selectedPlatform = "douyin";
-                activeTab = "manual";
-              }}
+              on:click={() => set_platform("douyin")}
             >
               抖音
             </button>
@@ -349,10 +511,7 @@
               'huya'
                 ? 'bg-white dark:bg-[#3c3c3e] shadow-sm text-gray-900 dark:text-white'
                 : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'}"
-              on:click={() => {
-                selectedPlatform = "huya";
-                activeTab = "manual";
-              }}
+              on:click={() => set_platform("huya")}
             >
               虎牙
             </button>
@@ -361,10 +520,7 @@
               'kuaishou'
                 ? 'bg-white dark:bg-[#3c3c3e] shadow-sm text-gray-900 dark:text-white'
                 : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'}"
-              on:click={() => {
-                selectedPlatform = "kuaishou";
-                activeTab = "manual";
-              }}
+              on:click={() => set_platform("kuaishou")}
             >
               快手
             </button>
@@ -373,18 +529,15 @@
               'tiktok'
                 ? 'bg-white dark:bg-[#3c3c3e] shadow-sm text-gray-900 dark:text-white'
                 : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'}"
-              on:click={() => {
-                selectedPlatform = "tiktok";
-                activeTab = "manual";
-              }}
+              on:click={() => set_platform("tiktok")}
             >
               TikTok
             </button>
           </div>
         </div>
 
-        <!-- Login Methods (Only show for Bilibili) -->
-        {#if selectedPlatform === "bilibili"}
+        <!-- Login Methods -->
+        {#if supports_qr(selectedPlatform)}
           <div class="flex rounded-lg bg-[#f5f5f7] dark:bg-[#1c1c1e] p-1">
             <button
               class="flex-1 px-4 py-1.5 text-sm rounded-md transition-colors {activeTab ===
@@ -425,13 +578,26 @@
 
         <!-- Tab Content -->
         <div class="space-y-4">
-          {#if selectedPlatform === "bilibili" && activeTab === "qr"}
+          {#if activeTab === "qr" && supports_qr(selectedPlatform)}
             <div class="flex flex-col items-center space-y-4">
               <div class="bg-white p-4 rounded-lg">
-                <canvas id="qr" />
+                {#if qr_image}
+                  <img src={qr_image} alt="qr" class="w-56 h-56 object-contain" />
+                {:else}
+                  <canvas id="qr" />
+                {/if}
               </div>
+              {#if qr_error}
+                <p class="text-sm text-center text-red-500">{qr_error}</p>
+              {/if}
+              <button
+                class="text-xs text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white transition-colors"
+                on:click={check_qr_once}
+              >
+                刷新扫码状态
+              </button>
               <p class="text-sm text-center text-gray-600 dark:text-gray-400">
-                请使用 BiliBili App 扫描二维码登录
+                {qr_help_text(selectedPlatform)}
               </p>
             </div>
           {:else}
@@ -445,16 +611,7 @@
                 />
               </p>
               <div class="flex justify-end items-center space-x-2">
-                {#if selectedPlatform !== "bilibili"}
-                  <a
-                    href="https://bsr.xinrea.cn/getting-started/config/account.html"
-                    class="text-blue-500 hover:underline text-sm"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                  >
-                    Cookie 获取教程</a
-                  >
-                {/if}
+                
                 <button
                   class="px-4 py-2 bg-[#0A84FF] hover:bg-[#0A84FF]/90 text-white text-sm font-medium rounded-lg transition-colors"
                   on:click={() => {

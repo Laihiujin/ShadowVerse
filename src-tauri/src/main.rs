@@ -452,6 +452,7 @@ async fn setup_server_state(args: Args) -> Result<State, Box<dyn std::error::Err
         }
     };
     config.apply_proxy_env();
+    config.apply_douyin_passport_env();
     let config = Arc::new(RwLock::new(config));
     let db = Arc::new(Database::new());
     // connect to sqlite database
@@ -539,6 +540,7 @@ async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::
         }
     };
     config.apply_proxy_env();
+    config.apply_douyin_passport_env();
 
     let config = Arc::new(RwLock::new(config));
     let config_clone = config.clone();

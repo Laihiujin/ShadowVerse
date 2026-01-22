@@ -1,14 +1,16 @@
 use crate::account::Account;
 use crate::errors::RecorderError;
 use crate::utils::user_agent_generator;
-use deno_core::JsRuntime;
-use deno_core::RuntimeOptions;
 use regex::Regex;
 use reqwest::Client;
-use uuid::Uuid;
 
 use super::response::DouyinRoomInfoResponse;
+use super::{abogus, params};
 use std::path::Path;
+use std::collections::HashMap;
+use reqwest::header::SET_COOKIE;
+use serde::{Deserialize, Serialize};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone)]
 pub struct DouyinBasicRoomInfo {
@@ -24,43 +26,12 @@ pub struct DouyinBasicRoomInfo {
     pub sec_user_id: String,
 }
 
-fn setup_js_runtime() -> Result<JsRuntime, RecorderError> {
-    // Create a new V8 runtime
-    let mut runtime = JsRuntime::new(RuntimeOptions::default());
-
-    // Add global CryptoJS object
-    let crypto_js = include_str!("js/a_bogus.js");
-    runtime
-        .execute_script(
-            "<a_bogus.js>",
-            deno_core::FastString::from_static(crypto_js),
-        )
-        .map_err(|e| RecorderError::JsRuntimeError(format!("Failed to execute crypto-js: {e}")))?;
-    Ok(runtime)
+fn generate_a_bogus(params: &str) -> String {
+    abogus::encode_abogus(params)
 }
 
-async fn generate_a_bogus(params: &str, user_agent: &str) -> Result<String, RecorderError> {
-    let mut runtime = setup_js_runtime()?;
-    // Call the get_wss_url function
-    let sign_call = format!("generate_a_bogus(\"{params}\", \"{user_agent}\")");
-    let result = runtime
-        .execute_script("<sign_call>", deno_core::FastString::from(sign_call))
-        .map_err(|e| RecorderError::JsRuntimeError(format!("Failed to execute JavaScript: {e}")))?;
-
-    // Get the result from the V8 runtime
-    let mut scope = runtime.handle_scope();
-    let local = deno_core::v8::Local::new(&mut scope, result);
-    let url = local
-        .to_string(&mut scope)
-        .unwrap()
-        .to_rust_string_lossy(&mut scope);
-    Ok(url)
-}
-
-async fn generate_ms_token() -> String {
-    // generate a random 32 characters uuid string
-    let uuid = Uuid::new_v4();
-    uuid.to_string()
+fn generate_ms_token() -> String {
+    params::gen_false_ms_token()
 }
 
 pub fn generate_user_agent_header() -> reqwest::header::HeaderMap {
@@ -79,11 +50,11 @@ pub async fn get_room_info(
     let mut headers = generate_user_agent_header();
     headers.insert("Referer", "https://live.douyin.com/".parse().unwrap());
     headers.insert("Cookie", account.cookies.clone().parse().unwrap());
-    let ms_token = generate_ms_token().await;
-    let user_agent = headers.get("user-agent").unwrap().to_str().unwrap();
+    let ms_token = generate_ms_token();
     let params = format!(
-            "aid=6383&app_name=douyin_web&live_id=1&device_platform=web&language=zh-CN&enter_from=web_live&cookie_enabled=true&screen_width=1920&screen_height=1080&browser_language=zh-CN&browser_platform=MacIntel&browser_name=Chrome&browser_version=122.0.0.0&web_rid={room_id}&ms_token={ms_token}");
-    let a_bogus = generate_a_bogus(&params, user_agent).await?;
+        "aid=6383&app_name=douyin_web&live_id=1&device_platform=web&language=zh-CN&enter_from=web_live&cookie_enabled=true&screen_width=1920&screen_height=1080&browser_language=zh-CN&browser_platform=MacIntel&browser_name=Chrome&browser_version=122.0.0.0&web_rid={room_id}&ms_token={ms_token}"
+    );
+    let a_bogus = generate_a_bogus(&params);
     // log::debug!("params: {params}");
     // log::debug!("user_agent: {user_agent}");
     // log::debug!("a_bogus: {a_bogus}");
@@ -91,7 +62,7 @@ pub async fn get_room_info(
             "https://live.douyin.com/webcast/room/web/enter/?aid=6383&app_name=douyin_web&live_id=1&device_platform=web&language=zh-CN&enter_from=web_live&cookie_enabled=true&screen_width=1920&screen_height=1080&browser_language=zh-CN&browser_platform=MacIntel&browser_name=Chrome&browser_version=122.0.0.0&web_rid={room_id}&ms_token={ms_token}&a_bogus={a_bogus}"
         );
 
-    let resp = client.get(&url).headers(headers).send().await?;
+    let resp = client.get(&url).headers(headers.clone()).send().await?;
 
     let status = resp.status();
     let text = resp.text().await?;
@@ -268,6 +239,549 @@ pub async fn get_room_info_h5(
     })
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DouyinQrInfo {
+    pub oauth_key: String,
+    pub url: String,
+    pub image: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DouyinQrStatus {
+    pub code: u8,
+    pub cookies: String,
+    pub message: String,
+}
+
+fn parse_set_cookies(headers: &reqwest::header::HeaderMap) -> HashMap<String, String> {
+    let mut cookies = HashMap::new();
+    for value in headers.get_all(SET_COOKIE).iter() {
+        if let Ok(raw) = value.to_str() {
+            if let Some((pair, _)) = raw.split_once(';') {
+                if let Some((name, val)) = pair.split_once('=') {
+                    cookies.insert(name.trim().to_string(), val.trim().to_string());
+                }
+            }
+        }
+    }
+    cookies
+}
+
+fn format_cookie_header(cookies: &HashMap<String, String>) -> String {
+    cookies
+        .iter()
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+fn build_query_string_owned(params: &[(String, String)]) -> String {
+    let mut serializer = url::form_urlencoded::Serializer::new(String::new());
+    for (k, v) in params {
+        serializer.append_pair(k, v);
+    }
+    serializer.finish()
+}
+
+fn read_env(key: &str) -> Option<String> {
+    std::env::var(key).ok().filter(|v| !v.is_empty())
+}
+
+fn env_or(key: &str, default: &str) -> String {
+    read_env(key).unwrap_or_else(|| default.to_string())
+}
+
+fn push_param(params: &mut Vec<(String, String)>, key: &str, value: String) {
+    if !value.is_empty() {
+        params.push((key.to_string(), value));
+    }
+}
+
+fn override_value(overrides: Option<&HashMap<String, String>>, keys: &[&str]) -> Option<String> {
+    let map = overrides?;
+    for key in keys {
+        if let Some(value) = map.get(*key) {
+            if !value.is_empty() {
+                return Some(value.clone());
+            }
+        }
+    }
+    None
+}
+
+fn param_value(
+    overrides: Option<&HashMap<String, String>>,
+    keys: &[&str],
+    env_key: &str,
+    default: &str,
+) -> String {
+    override_value(overrides, keys).unwrap_or_else(|| env_or(env_key, default))
+}
+
+fn build_douyin_passport_params(
+    include_next: bool,
+    overrides: Option<&HashMap<String, String>>,
+) -> Vec<(String, String)> {
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .to_string();
+    let now_secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+        .to_string();
+    let mut params = Vec::new();
+    push_param(
+        &mut params,
+        "passport_jssdk_version",
+        param_value(
+            overrides,
+            &["passport_jssdk_version"],
+            "DOUYIN_PASSPORT_JSSDK_VERSION",
+            "3.1.3",
+        ),
+    );
+    push_param(
+        &mut params,
+        "passport_jssdk_type",
+        param_value(
+            overrides,
+            &["passport_jssdk_type"],
+            "DOUYIN_PASSPORT_JSSDK_TYPE",
+            "normal",
+        ),
+    );
+    push_param(
+        &mut params,
+        "is_from_ttaccountsdk",
+        param_value(
+            overrides,
+            &["is_from_ttaccountsdk"],
+            "DOUYIN_IS_FROM_TTACCOUNTSDK",
+            "1",
+        ),
+    );
+    push_param(
+        &mut params,
+        "aid",
+        param_value(overrides, &["aid"], "DOUYIN_AID", "6383"),
+    );
+    push_param(
+        &mut params,
+        "language",
+        param_value(overrides, &["language"], "DOUYIN_LANGUAGE", "zh"),
+    );
+    push_param(
+        &mut params,
+        "account_app_language",
+        param_value(
+            overrides,
+            &["account_app_language"],
+            "DOUYIN_ACCOUNT_APP_LANGUAGE",
+            "zh-CN",
+        ),
+    );
+    push_param(
+        &mut params,
+        "ts",
+        param_value(overrides, &["ts"], "DOUYIN_TS", &now_secs),
+    );
+    if include_next {
+        push_param(
+            &mut params,
+            "next",
+            param_value(
+                overrides,
+                &["next"],
+                "DOUYIN_NEXT",
+                "https://live.douyin.com",
+            ),
+        );
+    }
+    push_param(
+        &mut params,
+        "need_short_url",
+        param_value(
+            overrides,
+            &["need_short_url"],
+            "DOUYIN_NEED_SHORT_URL",
+            "true",
+        ),
+    );
+    push_param(
+        &mut params,
+        "need_logo",
+        param_value(
+            overrides,
+            &["need_logo"],
+            "DOUYIN_NEED_LOGO",
+            "false",
+        ),
+    );
+    push_param(
+        &mut params,
+        "is_new_login",
+        param_value(
+            overrides,
+            &["is_new_login"],
+            "DOUYIN_IS_NEW_LOGIN",
+            "1",
+        ),
+    );
+    push_param(
+        &mut params,
+        "is_from_iesaccountsaas",
+        param_value(
+            overrides,
+            &["is_from_iesaccountsaas"],
+            "DOUYIN_IS_FROM_IESACCOUNTSAAS",
+            "1",
+        ),
+    );
+    push_param(&mut params, "p_ui", env_or("DOUYIN_P_UI", "2.1.4"));
+    push_param(&mut params, "p_ca", env_or("DOUYIN_P_CA", "4.0.17"));
+    push_param(
+        &mut params,
+        "p_ca_real",
+        param_value(
+            overrides,
+            &["p_ca_real"],
+            "DOUYIN_P_CA_REAL",
+            "1.0.0.729",
+        ),
+    );
+    push_param(
+        &mut params,
+        "account_sdk_source",
+        param_value(
+            overrides,
+            &["account_sdk_source"],
+            "DOUYIN_ACCOUNT_SDK_SOURCE",
+            "web",
+        ),
+    );
+    push_param(
+        &mut params,
+        "account_sdk_source_info",
+        override_value(overrides, &["account_sdk_source_info"])
+            .or_else(|| read_env("DOUYIN_ACCOUNT_SDK_SOURCE_INFO"))
+            .unwrap_or_default(),
+    );
+    push_param(&mut params, "p_js_v", env_or("DOUYIN_P_JS_V", "3.1.3"));
+    push_param(&mut params, "p_js_t", env_or("DOUYIN_P_JS_T", "pro"));
+    push_param(&mut params, "p_zt", env_or("DOUYIN_P_ZT", "3.3.10"));
+    push_param(&mut params, "p_ver", env_or("DOUYIN_P_VER", "1.1.3"));
+    push_param(&mut params, "p_ver_real", env_or("DOUYIN_P_VER_REAL", "0"));
+    push_param(
+        &mut params,
+        "request_host",
+        param_value(
+            overrides,
+            &["request_host"],
+            "DOUYIN_REQUEST_HOST",
+            "https://live.douyin.com",
+        ),
+    );
+    push_param(
+        &mut params,
+        "p_bd",
+        param_value(overrides, &["p_bd"], "DOUYIN_P_BD", "1.0.1.19-fix.01"),
+    );
+    push_param(
+        &mut params,
+        "p_ts",
+        param_value(overrides, &["p_ts"], "DOUYIN_P_TS", &now_ms),
+    );
+    push_param(
+        &mut params,
+        "p_no",
+        override_value(overrides, &["p_no"])
+            .or_else(|| read_env("DOUYIN_P_NO"))
+            .unwrap_or_default(),
+    );
+    push_param(
+        &mut params,
+        "biz_trace_id",
+        override_value(overrides, &["biz_trace_id"])
+            .or_else(|| read_env("DOUYIN_BIZ_TRACE_ID"))
+            .unwrap_or_default(),
+    );
+    push_param(
+        &mut params,
+        "device_platform",
+        param_value(
+            overrides,
+            &["device_platform"],
+            "DOUYIN_DEVICE_PLATFORM",
+            "web_app",
+        ),
+    );
+    let ms_token = override_value(overrides, &["msToken", "ms_token"])
+        .or_else(|| read_env("DOUYIN_MS_TOKEN"))
+        .unwrap_or_else(|| generate_ms_token());
+    push_param(&mut params, "msToken", ms_token);
+    if let Some(sign) = override_value(overrides, &["sign"]).or_else(|| read_env("DOUYIN_SIGN")) {
+        push_param(&mut params, "sign", sign);
+    }
+    if let Some(qs) = override_value(overrides, &["qs"]).or_else(|| read_env("DOUYIN_QS")) {
+        push_param(&mut params, "qs", qs);
+    }
+    let param_str = build_query_string_owned(&params);
+    let a_bogus = override_value(overrides, &["a_bogus", "a-bogus"])
+        .or_else(|| read_env("DOUYIN_A_BOGUS"))
+        .unwrap_or_else(|| generate_a_bogus(&param_str));
+    push_param(&mut params, "a_bogus", a_bogus);
+    params
+}
+
+fn apply_douyin_passport_headers(
+    headers: &mut reqwest::header::HeaderMap,
+    passport_csrf: &str,
+    overrides: Option<&HashMap<String, String>>,
+) {
+    let origin = override_value(overrides, &["qr_origin", "origin"])
+        .unwrap_or_else(|| env_or("DOUYIN_QR_ORIGIN", "https://live.douyin.com"));
+    let referer = override_value(overrides, &["qr_referer", "referer"])
+        .unwrap_or_else(|| env_or("DOUYIN_QR_REFERER", "https://live.douyin.com/"));
+    headers.insert("Origin", origin.parse().unwrap());
+    headers.insert("Referer", referer.parse().unwrap());
+    let csrf = override_value(
+        overrides,
+        &["x_tt_passport_csrf_token", "x-tt-passport-csrf-token"],
+    )
+    .or_else(|| read_env("DOUYIN_X_TT_PASSPORT_CSRF_TOKEN"))
+    .unwrap_or_else(|| passport_csrf.to_string());
+    if !csrf.is_empty() {
+        headers.insert("x-tt-passport-csrf-token", csrf.parse().unwrap());
+    }
+    if let Some(value) = override_value(
+        overrides,
+        &["x_tt_passport_aid_sign", "x-tt-passport-aid-sign"],
+    )
+    .or_else(|| read_env("DOUYIN_X_TT_PASSPORT_AID_SIGN"))
+    {
+        headers.insert("x-tt-passport-aid-sign", value.parse().unwrap());
+    }
+    if let Some(value) = override_value(
+        overrides,
+        &["x_tt_passport_trace_id", "x-tt-passport-trace-id"],
+    )
+    .or_else(|| read_env("DOUYIN_X_TT_PASSPORT_TRACE_ID"))
+    {
+        headers.insert("x-tt-passport-trace-id", value.parse().unwrap());
+    }
+    if let Some(value) = override_value(
+        overrides,
+        &["x_tt_passport_verify_portrait", "x-tt-passport-verify-portrait"],
+    )
+    .or_else(|| read_env("DOUYIN_X_TT_PASSPORT_VERIFY_PORTRAIT"))
+    {
+        headers.insert("x-tt-passport-verify-portrait", value.parse().unwrap());
+    }
+    if let Some(value) = override_value(
+        overrides,
+        &["x_tt_session_dtrait", "x-tt-session-dtrait"],
+    )
+    .or_else(|| read_env("DOUYIN_X_TT_SESSION_DTRAIT"))
+    {
+        headers.insert("x-tt-session-dtrait", value.parse().unwrap());
+    }
+}
+
+async fn fetch_douyin_passport_overrides(
+    client: &Client,
+) -> Option<HashMap<String, String>> {
+    let url = read_env("DOUYIN_PASSPORT_PROVIDER_URL")?;
+    if url.trim().is_empty() {
+        return None;
+    }
+    let resp = client.get(url).send().await.ok()?;
+    let json: serde_json::Value = resp.json().await.ok()?;
+    let data = json.get("data").unwrap_or(&json);
+    let obj = data.as_object()?;
+    let mut map = HashMap::new();
+    for (k, v) in obj {
+        if let Some(s) = v.as_str() {
+            map.insert(k.clone(), s.to_string());
+        } else if v.is_number() || v.is_boolean() {
+            map.insert(k.clone(), v.to_string());
+        }
+    }
+    if map.is_empty() {
+        None
+    } else {
+        Some(map)
+    }
+}
+
+async fn fetch_passport_csrf(client: &Client, headers: &reqwest::header::HeaderMap) -> Option<String> {
+    let resp = client
+        .get("https://www.douyin.com/")
+        .headers(headers.clone())
+        .send()
+        .await
+        .ok()?;
+    let cookies = parse_set_cookies(resp.headers());
+    cookies.get("passport_csrf_token").cloned()
+}
+
+pub async fn get_qr_login(client: &Client) -> Result<DouyinQrInfo, RecorderError> {
+    let mut headers = generate_user_agent_header();
+
+    let passport_csrf = fetch_passport_csrf(client, &headers).await.unwrap_or_default();
+    let overrides = fetch_douyin_passport_overrides(client).await;
+    apply_douyin_passport_headers(&mut headers, &passport_csrf, overrides.as_ref());
+
+    let url = {
+        let query_params = build_douyin_passport_params(true, overrides.as_ref());
+        let param_str = build_query_string_owned(&query_params);
+        format!(
+            "https://login.douyin.com/passport/web/get_qrcode/?{param_str}"
+        )
+    };
+
+    let resp = client.get(url).headers(headers.clone()).send().await?;
+    let json: serde_json::Value = resp.json().await?;
+    log::warn!("[Douyin] get_qr_login response: {}", json);
+    let data = json
+        .get("data")
+        .ok_or_else(|| RecorderError::ApiError {
+            error: "Douyin QR: missing data".to_string(),
+        })?;
+    let token = data
+        .get("token")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    let qr_url = data
+        .get("qrcode_index_url")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    let qr_image = data
+        .get("qrcode")
+        .and_then(|v| v.as_str())
+        .map(|v| v.to_string());
+
+    Ok(DouyinQrInfo {
+        oauth_key: format!("{token}|{passport_csrf}"),
+        url: qr_url,
+        image: qr_image,
+    })
+}
+
+pub async fn get_qr_login_status(
+    client: &Client,
+    token_with_csrf: &str,
+) -> Result<DouyinQrStatus, RecorderError> {
+    let mut parts = token_with_csrf.split('|');
+    let token = parts.next().unwrap_or_default();
+    let passport_csrf = parts.next().unwrap_or_default();
+
+    let mut headers = generate_user_agent_header();
+    let overrides = fetch_douyin_passport_overrides(client).await;
+    apply_douyin_passport_headers(&mut headers, passport_csrf, overrides.as_ref());
+
+    let url = {
+        let mut query_params = build_douyin_passport_params(false, overrides.as_ref());
+        push_param(&mut query_params, "token", token.to_string());
+        let param_str = build_query_string_owned(&query_params);
+        format!(
+            "https://login.douyin.com/passport/web/check_qrconnect/?{param_str}"
+        )
+    };
+
+    let resp = client
+        .post(url)
+        .headers(headers.clone())
+        .form(&[("token", token)])
+        .send()
+        .await?;
+    let resp_headers = resp.headers().clone();
+    let json: serde_json::Value = resp.json().await?;
+    log::warn!("[Douyin] get_qr_login_status response: {}", json);
+    let data = json.get("data");
+    let status = data
+        .and_then(|v| v.get("status"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let error_code = data
+        .and_then(|v| v.get("error_code"))
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+    let description = data
+        .and_then(|v| v.get("description"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let top_message = json
+        .get("message")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    if error_code != 0 || top_message == "error" {
+        let msg = if !description.is_empty() {
+            description.to_string()
+        } else if error_code != 0 {
+            format!("Douyin QR error_code={error_code}")
+        } else {
+            "Douyin QR error".to_string()
+        };
+        return Ok(DouyinQrStatus {
+            code: 2,
+            cookies: String::new(),
+            message: msg,
+        });
+    }
+
+    if status == "3" || status == "success" {
+        let cookies = parse_set_cookies(&resp_headers);
+        let cookie_str = format_cookie_header(&cookies);
+        if !cookie_str.is_empty() {
+            return Ok(DouyinQrStatus {
+                code: 0,
+                cookies: cookie_str,
+                message: "ok".to_string(),
+            });
+        }
+        let redirect_url = json
+            .get("data")
+            .and_then(|v| v.get("redirect_url"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if !redirect_url.is_empty() {
+            let redirect_resp = client
+                .get(redirect_url)
+                .headers(headers.clone())
+                .send()
+                .await?;
+            let cookies = parse_set_cookies(redirect_resp.headers());
+            let cookie_str = format_cookie_header(&cookies);
+            if !cookie_str.is_empty() {
+                return Ok(DouyinQrStatus {
+                    code: 0,
+                    cookies: cookie_str,
+                    message: "ok".to_string(),
+                });
+            }
+        }
+        return Ok(DouyinQrStatus {
+            code: 2,
+            cookies: String::new(),
+            message: "login redirect missing cookies".to_string(),
+        });
+    }
+
+    Ok(DouyinQrStatus {
+        code: 1,
+        cookies: String::new(),
+        message: status.to_string(),
+    })
+}
+
 pub async fn get_user_info(
     client: &Client,
     account: &Account,
@@ -278,7 +792,7 @@ pub async fn get_user_info(
     headers.insert("Referer", "https://www.douyin.com/".parse().unwrap());
     headers.insert("Cookie", account.cookies.clone().parse().unwrap());
 
-    let resp = client.get(url).headers(headers).send().await?;
+    let resp = client.get(url).headers(headers.clone()).send().await?;
 
     let status = resp.status();
     let text = resp.text().await?;
@@ -340,7 +854,7 @@ pub async fn get_room_owner_sec_uid(
     let url = format!("https://live.douyin.com/{room_id}");
     let mut headers = generate_user_agent_header();
     headers.insert("Referer", "https://live.douyin.com/".parse().unwrap());
-    let resp = client.get(url).headers(headers).send().await?;
+    let resp = client.get(url).headers(headers.clone()).send().await?;
     let status = resp.status();
     let text = resp.text().await?;
     if !status.is_success() {

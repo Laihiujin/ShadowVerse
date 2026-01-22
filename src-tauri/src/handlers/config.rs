@@ -319,6 +319,7 @@ pub async fn update_proxy_url(state: state_type!(), proxy_url: String) -> Result
     let mut config = state.config.write().await;
     config.proxy_url = proxy_url;
     config.apply_proxy_env();
+    config.apply_douyin_passport_env();
     config.save();
     Ok(())
 }
