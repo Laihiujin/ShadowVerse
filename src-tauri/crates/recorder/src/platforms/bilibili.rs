@@ -345,6 +345,7 @@ impl BiliRecorder {
             stream,
             self.client.clone(),
             None,
+            None,
             self.event_channel.clone(),
             work_dir.full_path(),
             self.enabled.clone(),

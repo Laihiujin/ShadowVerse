@@ -5,11 +5,6 @@ use tokio::io::AsyncWriteExt;
 
 use crate::progress::progress_reporter::ProgressReporterTrait;
 
-#[cfg(target_os = "windows")]
-use crate::ffmpeg::CREATE_NO_WINDOW;
-#[cfg(target_os = "windows")]
-#[allow(unused_imports)]
-use std::os::windows::process::CommandExt;
 
 use super::Range;
 

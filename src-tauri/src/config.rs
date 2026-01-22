@@ -1,8 +1,14 @@
 use chrono::Local;
 use serde::{Deserialize, Serialize};
+use std::env;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{self, AtomicU64};
 use std::sync::Arc;
+
+#[cfg(target_os = "windows")]
+use winreg::enums::HKEY_CURRENT_USER;
+#[cfg(target_os = "windows")]
+use winreg::RegKey;
 
 use crate::{danmu2ass::Danmu2AssOptions, recorder_manager::ClipRangeParams};
 
@@ -44,6 +50,8 @@ pub struct Config {
     pub update_interval: Arc<AtomicU64>,
     #[serde(default = "default_powerlive_key")]
     pub powerlive_key: String,
+    #[serde(default = "default_proxy_url")]
+    pub proxy_url: String,
 }
 
 #[derive(Deserialize, Serialize, Clone)]
@@ -107,6 +115,73 @@ fn default_powerlive_key() -> String {
     String::new()
 }
 
+fn default_proxy_url() -> String {
+    String::new()
+}
+
+fn normalize_proxy_url(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let mut value = trimmed.to_string();
+    if trimmed.contains('=') {
+        let mut selected = None;
+        for entry in trimmed.split(';') {
+            let entry = entry.trim();
+            if let Some(stripped) = entry.strip_prefix("https=") {
+                selected = Some(stripped.trim());
+                break;
+            }
+            if let Some(stripped) = entry.strip_prefix("http=") {
+                selected = Some(stripped.trim());
+            }
+        }
+        if let Some(selected) = selected {
+            value = selected.to_string();
+        }
+    }
+
+    if value.contains("://") {
+        Some(value)
+    } else {
+        Some(format!("http://{value}"))
+    }
+}
+
+fn detect_env_proxy() -> Option<String> {
+    for key in [
+        "HTTPS_PROXY",
+        "https_proxy",
+        "HTTP_PROXY",
+        "http_proxy",
+        "ALL_PROXY",
+        "all_proxy",
+    ] {
+        if let Ok(value) = env::var(key) {
+            if let Some(proxy_url) = normalize_proxy_url(&value) {
+                return Some(proxy_url);
+            }
+        }
+    }
+    None
+}
+
+#[cfg(target_os = "windows")]
+fn detect_windows_proxy() -> Option<String> {
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    let key = hkcu
+        .open_subkey("Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings")
+        .ok()?;
+    let enabled: u32 = key.get_value("ProxyEnable").ok()?;
+    if enabled != 1 {
+        return None;
+    }
+    let server: String = key.get_value("ProxyServer").ok()?;
+    normalize_proxy_url(&server)
+}
+
 impl Config {
     pub fn load(
         config_path: &PathBuf,
@@ -117,6 +192,22 @@ impl Config {
             if let Ok(mut config) = toml::from_str::<Config>(&content) {
                 config.config_path = config_path.to_str().unwrap().into();
                 config.update_interval = Arc::new(AtomicU64::new(config.status_check_interval));
+                if config.proxy_url.trim().is_empty() {
+                    let detected = detect_env_proxy().or_else(|| {
+                        #[cfg(target_os = "windows")]
+                        {
+                            detect_windows_proxy()
+                        }
+                        #[cfg(not(target_os = "windows"))]
+                        {
+                            None
+                        }
+                    });
+                    if let Some(proxy_url) = detected {
+                        config.proxy_url = proxy_url;
+                        config.save();
+                    }
+                }
                 return Ok(config);
             }
         }
@@ -149,6 +240,17 @@ impl Config {
             danmu_ass_options: default_danmu_ass_options(),
             update_interval: Arc::new(AtomicU64::new(default_status_check_interval())),
             powerlive_key: default_powerlive_key(),
+            proxy_url: detect_env_proxy().or_else(|| {
+                #[cfg(target_os = "windows")]
+                {
+                    detect_windows_proxy()
+                }
+                #[cfg(not(target_os = "windows"))]
+                {
+                    None
+                }
+            })
+            .unwrap_or_else(default_proxy_url),
         };
 
         config.save();
@@ -233,5 +335,22 @@ impl Config {
         self.update_interval
             .store(interval, atomic::Ordering::Relaxed);
         self.save();
+    }
+
+    pub fn apply_proxy_env(&self) {
+        let proxy_url = self.proxy_url.trim();
+        if proxy_url.is_empty() {
+            return;
+        }
+
+        std::env::set_var("HTTP_PROXY", proxy_url);
+        std::env::set_var("http_proxy", proxy_url);
+        std::env::set_var("HTTPS_PROXY", proxy_url);
+        std::env::set_var("https_proxy", proxy_url);
+        std::env::set_var("ALL_PROXY", proxy_url);
+        std::env::set_var("all_proxy", proxy_url);
+        if std::env::var("NO_PROXY").is_err() {
+            std::env::set_var("NO_PROXY", "localhost,127.0.0.1");
+        }
     }
 }

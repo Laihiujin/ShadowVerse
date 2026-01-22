@@ -1,17 +1,17 @@
 {
-  "productName": "bili-shadowreplay",
+  "productName": "ShadowVerse",
   "app": {
     "windows": [
       {
         "label": "main",
         "fullscreen": false,
         "resizable": true,
-        "title": "BiliBili ShadowReplay",
+        "title": "ShadowVerse",
         "width": 1300,
         "height": 600,
         "transparent": false,
         "decorations": true,
-        "theme": "Light"
+        "theme": "Dark"
       }
     ]
   },

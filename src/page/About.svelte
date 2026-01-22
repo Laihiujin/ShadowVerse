@@ -67,7 +67,7 @@
       </div>
       <div>
         <h1 class="text-2xl font-semibold text-gray-900 dark:text-white">
-          BiliBili ShadowReplay
+          ShadowVerse
         </h1>
         <p class="text-gray-500 dark:text-gray-400">Version {version}</p>
       </div>

@@ -175,6 +175,7 @@ impl HuyaRecorder {
             Arc::new(hls_stream),
             self.client.clone(),
             Some(self.account.cookies.clone()),
+            None,
             self.event_channel.clone(),
             work_dir.full_path(),
             self.enabled.clone(),

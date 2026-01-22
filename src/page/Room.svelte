@@ -446,16 +446,30 @@
         let platform = "";
         let room_id = "";
 
-        if (url.startsWith("bsr://live.bilibili.com/")) {
-          // 1. remove bsr://live.bilibili.com/
-          // 2. remove all query params
-          room_id = url.replace("bsr://live.bilibili.com/", "").split("?")[0];
-          platform = "bilibili";
+        const bilibiliPrefixes = [
+          "bsr://live.bilibili.com/",
+          "https://live.bilibili.com/",
+          "http://live.bilibili.com/",
+        ];
+        for (const prefix of bilibiliPrefixes) {
+          if (url.startsWith(prefix)) {
+            room_id = url.replace(prefix, "").split("?")[0];
+            platform = "bilibili";
+            break;
+          }
         }
 
-        if (url.startsWith("bsr://live.douyin.com/")) {
-          room_id = url.replace("bsr://live.douyin.com/", "").split("?")[0];
-          platform = "douyin";
+        const douyinPrefixes = [
+          "bsr://live.douyin.com/",
+          "https://live.douyin.com/",
+          "http://live.douyin.com/",
+        ];
+        for (const prefix of douyinPrefixes) {
+          if (url.startsWith(prefix)) {
+            room_id = url.replace(prefix, "").split("?")[0];
+            platform = "douyin";
+            break;
+          }
         }
 
         if (url.startsWith("bsr://live.kuaishou.com/")) {

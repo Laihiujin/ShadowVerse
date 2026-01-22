@@ -16,9 +16,9 @@
     ],
     "targets": "all"
   },
-  "productName": "bili-shadowreplay",
+  "productName": "ShadowVerse",
   "version": "../package.json",
-  "identifier": "cn.vjoi.bilishadowreplay",
+  "identifier": "cn.ShadowVerse",
   "plugins": {
     "sql": {
       "preload": ["sqlite:data_v2.db"]

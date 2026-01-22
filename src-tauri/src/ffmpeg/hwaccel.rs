@@ -19,8 +19,6 @@ static ENCODER_CACHE: OnceLock<String> = OnceLock::new();
 
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
-#[cfg(target_os = "windows")]
-use std::os::windows::process::CommandExt;
 
 /// 检测当前环境下 FFmpeg 支持的 H.264 硬件编码器。
 ///

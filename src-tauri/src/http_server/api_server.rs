@@ -18,15 +18,16 @@ use crate::{
             update_danmu_ass_options, update_notify, update_openai_api_endpoint,
             update_openai_api_key, update_status_check_interval, update_subtitle_generator_type,
             update_subtitle_setting, update_webhook_url, update_whisper_language,
-            update_whisper_model, update_whisper_prompt,
+            update_whisper_model, update_whisper_prompt, update_proxy_url,
         },
         message::{delete_message, get_messages, read_message},
         recorder::{
             add_recorder, delete_archive, delete_archives, export_danmu, fetch_hls,
-            generate_archive_subtitle, generate_whole_clip, get_archive, get_archive_disk_usage,
-            get_archive_subtitle, get_archives, get_archives_by_parent_id, get_danmu_record,
-            get_recent_record, get_recorder_list, get_room_info, get_today_record_count,
-            get_total_length, remove_recorder, send_danmaku, set_enable, ExportDanmuOptions,
+            fix_archive_covers, generate_archive_subtitle, generate_whole_clip, get_archive,
+            get_archive_disk_usage, get_archive_subtitle, get_archives, get_archives_by_parent_id,
+            get_danmu_record, get_recent_record, get_recorder_list, get_room_info,
+            get_today_record_count, get_total_length, remove_recorder, send_danmaku, set_enable,
+            ExportDanmuOptions,
         },
         task::{delete_task, get_tasks},
         utils::{console_log, get_disk_info, list_folder, sanitize_filename_advanced, DiskInfo},
@@ -338,6 +339,22 @@ async fn handler_update_webhook_url(
     update_webhook_url(state.0, param.webhook_url)
         .await
         .expect("Failed to update webhook url");
+    Ok(Json(ApiResponse::success(())))
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateProxyUrlRequest {
+    proxy_url: String,
+}
+
+async fn handler_update_proxy_url(
+    state: axum::extract::State<State>,
+    Json(param): Json<UpdateProxyUrlRequest>,
+) -> Result<Json<ApiResponse<()>>, ApiError> {
+    update_proxy_url(state.0, param.proxy_url)
+        .await
+        .expect("Failed to update proxy url");
     Ok(Json(ApiResponse::success(())))
 }
 
@@ -1040,6 +1057,8 @@ struct GenerateWholeClipRequest {
     platform: String,
     room_id: String,
     parent_id: String,
+    #[serde(default)]
+    live_ids: Option<Vec<String>>,
 }
 
 async fn handler_generate_whole_clip(
@@ -1052,9 +1071,17 @@ async fn handler_generate_whole_clip(
         param.platform,
         param.room_id,
         param.parent_id,
+        param.live_ids,
     )
     .await?;
     Ok(Json(ApiResponse::success(task)))
+}
+
+async fn handler_fix_archive_covers(
+    state: axum::extract::State<State>,
+) -> Result<Json<ApiResponse<usize>>, ApiError> {
+    let count = fix_archive_covers(state.0).await?;
+    Ok(Json(ApiResponse::success(count)))
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1745,6 +1772,10 @@ pub async fn start_api_server(state: State) {
                 "/api/generate_whole_clip",
                 post(handler_generate_whole_clip),
             )
+            .route(
+                "/api/fix_archive_covers",
+                post(handler_fix_archive_covers),
+            )
             .route("/api/update_notify", post(handler_update_notify))
             .route(
                 "/api/update_status_check_interval",
@@ -1775,6 +1806,7 @@ pub async fn start_api_server(state: State) {
                 post(handler_update_whisper_language),
             )
             .route("/api/update_webhook_url", post(handler_update_webhook_url))
+            .route("/api/update_proxy_url", post(handler_update_proxy_url))
             .route(
                 "/api/update_danmu_ass_options",
                 post(handler_update_danmu_ass_options),

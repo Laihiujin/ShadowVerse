@@ -13,6 +13,13 @@
   const dispatch = createEventDispatcher();
 
   let wholeClipArchives: RecordItem[] = [];
+  let selectedLiveIds: string[] = [];
+  $: selectedArchives = wholeClipArchives.filter((archiveItem) =>
+    selectedLiveIds.includes(archiveItem.live_id)
+  );
+  $: allSelected =
+    wholeClipArchives.length > 0 &&
+    selectedLiveIds.length === wholeClipArchives.length;
   let isLoading = false;
   let encodeDanmu = false;
 
@@ -26,10 +33,11 @@
 
     isLoading = true;
     try {
-      // 获取与当前archive具有相同parent_id的所有archives
-      let sameParentArchives = (await invoke("get_archives_by_parent_id", {
+      // 获取同一直播间的所有片段
+      let sameParentArchives = (await invoke("get_archives", {
         roomId: roomId,
-        parentId: parentId,
+        offset: 0,
+        limit: 1000,
       })) as RecordItem[];
 
       // 处理封面
@@ -48,9 +56,16 @@
       });
 
       wholeClipArchives = sameParentArchives;
+      selectedLiveIds = sameParentArchives
+        .filter((archiveItem) => archiveItem.parent_id === parentId)
+        .map((archiveItem) => archiveItem.live_id);
+      if (selectedLiveIds.length === 0 && sameParentArchives.length > 0) {
+        selectedLiveIds = [sameParentArchives[0].live_id];
+      }
     } catch (error) {
       console.error("Failed to load whole clip archives:", error);
       wholeClipArchives = [];
+      selectedLiveIds = [];
     } finally {
       isLoading = false;
     }
@@ -58,11 +73,15 @@
 
   async function generateWholeClip() {
     try {
+      if (!archive || selectedLiveIds.length === 0) {
+        return;
+      }
       await invoke("generate_whole_clip", {
         encodeDanmu: encodeDanmu,
         platform: archive.platform,
         roomId: archive.room_id,
         parentId: archive.parent_id,
+        liveIds: selectedLiveIds,
       });
 
       showModal = false;
@@ -104,6 +123,23 @@
   function closeModal() {
     showModal = false;
     wholeClipArchives = [];
+    selectedLiveIds = [];
+  }
+
+  function toggleArchiveSelection(liveId: string) {
+    if (selectedLiveIds.includes(liveId)) {
+      selectedLiveIds = selectedLiveIds.filter((id) => id !== liveId);
+    } else {
+      selectedLiveIds = [...selectedLiveIds, liveId];
+    }
+  }
+
+  function toggleSelectAll() {
+    if (allSelected) {
+      selectedLiveIds = [];
+      return;
+    }
+    selectedLiveIds = wholeClipArchives.map((archiveItem) => archiveItem.live_id);
   }
 </script>
 
@@ -172,11 +208,31 @@
                 未找到相关片段
               </div>
             {:else}
+              <div class="flex items-center justify-between pb-3">
+                <label class="flex items-center space-x-2 text-sm text-gray-600 dark:text-gray-400">
+                  <input
+                    type="checkbox"
+                    class="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                    checked={allSelected}
+                    on:change={toggleSelectAll}
+                  />
+                  <span>全选</span>
+                </label>
+                <span class="text-xs text-gray-500 dark:text-gray-400">
+                  已选 {selectedArchives.length}/{wholeClipArchives.length}
+                </span>
+              </div>
               <div class="space-y-3 pb-4">
                 {#each wholeClipArchives as archiveItem, index (archiveItem.live_id)}
                   <div
                     class="flex items-center space-x-4 p-4 rounded-lg bg-gray-50 dark:bg-gray-700/30"
                   >
+                    <input
+                      type="checkbox"
+                      class="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                      checked={selectedLiveIds.includes(archiveItem.live_id)}
+                      on:change={() => toggleArchiveSelection(archiveItem.live_id)}
+                    />
                     <div
                       class="flex-shrink-0 w-8 h-8 rounded-full bg-blue-500 flex items-center justify-center text-white text-sm font-medium"
                     >
@@ -212,7 +268,7 @@
           </div>
 
           <!-- Right: Fixed Summary -->
-          {#if !isLoading && wholeClipArchives.length > 0}
+          {#if !isLoading && selectedArchives.length > 0}
             <div class="w-80 px-6 pb-6 flex-shrink-0 flex items-center">
               <div
                 class="p-4 rounded-lg bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 w-full"
@@ -225,13 +281,13 @@
                   >
                 </div>
                 <div class="text-sm text-blue-800 dark:text-blue-200">
-                  共 {wholeClipArchives.length} 个片段 · 总时长 {formatDuration(
-                    wholeClipArchives.reduce(
+                  共 {selectedArchives.length} 个片段 · 总时长 {formatDuration(
+                    selectedArchives.reduce(
                       (sum, archiveItem) => sum + archiveItem.length,
                       0
                     )
                   )} · 总大小 {formatSize(
-                    wholeClipArchives.reduce(
+                    selectedArchives.reduce(
                       (sum, archiveItem) => sum + archiveItem.size,
                       0
                     )
@@ -287,7 +343,7 @@
         </button>
         <button
           class="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-          disabled={isLoading || wholeClipArchives.length === 0}
+          disabled={isLoading || selectedArchives.length === 0}
           on:click={generateWholeClip}
         >
           开始合成

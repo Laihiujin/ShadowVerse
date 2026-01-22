@@ -10,6 +10,7 @@ whisper_model = "./whisper_model.bin"
 whisper_prompt = "这是一段中文 你们好"
 openai_api_key = ""
 clip_name_format = "[{room_id}][{live_id}][{title}][{created_at}].mp4"
+proxy_url = ""
 
 [auto_generate]
 enabled = false

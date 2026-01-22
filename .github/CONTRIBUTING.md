@@ -1,4 +1,4 @@
-# BiliBili-ShadowReplay contribute guide
+# bili-shadowreplay contribute guide
 
 ## Project Setup
 

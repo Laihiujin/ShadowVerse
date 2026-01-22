@@ -312,3 +312,13 @@ pub async fn update_powerlive_key(state: state_type!(), powerlive_key: String) -
     log::info!("Updated powerlive key");
     Ok(())
 }
+
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn update_proxy_url(state: state_type!(), proxy_url: String) -> Result<(), ()> {
+    log::info!("Updating proxy url");
+    let mut config = state.config.write().await;
+    config.proxy_url = proxy_url;
+    config.apply_proxy_env();
+    config.save();
+    Ok(())
+}

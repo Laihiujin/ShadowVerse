@@ -3,7 +3,7 @@
 </script>
 
 <script lang="ts">
-  import { invoke, TAURI_ENV, ENDPOINT, listen, log } from "../invoker";
+  import { invoke, TAURI_ENV, ENDPOINT, listen, log, get_static_url } from "../invoker";
   import type { AccountInfo } from "../db";
   import type { Marker, RecorderList, RecorderInfo, Range } from "../interface";
 
@@ -332,10 +332,7 @@ ${mediaPlaylistUrl}`;
   }
 
   if (TAURI_ENV) {
-    console.log("register tauri network plugin");
-    shaka.net.NetworkingEngine.registerScheme("http", tauriNetworkPlugin);
-    shaka.net.NetworkingEngine.registerScheme("https", tauriNetworkPlugin);
-    shaka.net.NetworkingEngine.registerScheme("tauri", tauriNetworkPlugin);
+    console.log("tauri env: use native fetch for HLS");
   }
 
   async function update_stream_list() {
@@ -405,7 +402,18 @@ ${mediaPlaylistUrl}`;
     });
 
     try {
-      let direct_url = `${ENDPOINT ? ENDPOINT : window.location.origin}/hls/${platform}/${room_id}/${live_id}/playlist.m3u8?start=${focus_start}&end=${focus_end}`;
+      let direct_url: string;
+      try {
+        const base_url = await get_static_url(
+          "hls",
+          `${platform}/${room_id}/${live_id}/playlist.m3u8`
+        );
+        direct_url = `${base_url}?start=${focus_start}&end=${focus_end}`;
+      } catch (error) {
+        log.warn("Failed to resolve static HLS URL, fallback to origin", error);
+        direct_url = `${ENDPOINT ? ENDPOINT : window.location.origin}/hls/${platform}/${room_id}/${live_id}/playlist.m3u8?start=${focus_start}&end=${focus_end}`;
+      }
+      log.info("Player direct_url", direct_url);
       if (!TAURI_ENV) {
         const { offset, is_fmp4 } = await load_metadata(direct_url);
         global_offset = offset;

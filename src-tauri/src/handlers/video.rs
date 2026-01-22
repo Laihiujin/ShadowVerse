@@ -486,7 +486,7 @@ async fn clip_range_inner(
             .app_handle
             .notification()
             .builder()
-            .title("BiliShadowReplay - 切片完成")
+            .title("ShadowVerse - 切片完成")
             .body(format!(
                 "生成了房间 {} 的切片: {}",
                 &params.room_id, filename
@@ -609,7 +609,7 @@ async fn upload_procedure_inner(
                         .app_handle
                         .notification()
                         .builder()
-                        .title("BiliShadowReplay - 投稿成功")
+                        .title("ShadowVerse - 投稿成功")
                         .body(format!("投稿了房间 {} 的切片: {}", room_id, ret.bvid))
                         .show()
                         .unwrap();

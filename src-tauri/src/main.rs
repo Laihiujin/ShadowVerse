@@ -18,6 +18,7 @@ mod subtitle_generator;
 mod task;
 #[cfg(feature = "gui")]
 mod tray;
+mod utils;
 mod webhook;
 
 use async_std::fs;
@@ -450,6 +451,7 @@ async fn setup_server_state(args: Args) -> Result<State, Box<dyn std::error::Err
             return Err(e.into());
         }
     };
+    config.apply_proxy_env();
     let config = Arc::new(RwLock::new(config));
     let db = Arc::new(Database::new());
     // connect to sqlite database
@@ -492,7 +494,8 @@ async fn setup_server_state(args: Args) -> Result<State, Box<dyn std::error::Err
         webhook_poster.clone(),
     ));
 
-    let static_server = Arc::new(start_static_server(config.clone()).await?);
+    let static_server =
+        Arc::new(start_static_server(config.clone(), recorder_manager.clone()).await?);
 
     let _ = try_rebuild_archives(&db, config.read().await.cache.clone().into()).await;
     let _ = try_convert_live_covers(&db, config.read().await.cache.clone().into()).await;
@@ -523,7 +526,7 @@ async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::
     setup_logging(&log_dir).await?;
 
     log::info!("Setting up app state...");
-    let app_dirs = AppDirs::new(Some("cn.vjoi.bili-shadowreplay"), false).unwrap();
+    let app_dirs = AppDirs::new(Some("cn.ShadowVerse"), false).unwrap();
     let config_path = app_dirs.config_dir.join("Conf.toml");
     let cache_path = app_dirs.cache_dir.join("cache");
     let output_path = app_dirs.data_dir.join("output");
@@ -535,6 +538,7 @@ async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::
             return Err(e.into());
         }
     };
+    config.apply_proxy_env();
 
     let config = Arc::new(RwLock::new(config));
     let config_clone = config.clone();
@@ -565,7 +569,8 @@ async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::
         webhook_poster.clone(),
     ));
 
-    let static_server = Arc::new(start_static_server(config.clone()).await?);
+    let static_server =
+        Arc::new(start_static_server(config.clone(), recorder_manager.clone()).await?);
 
     // try to rebuild archive table
     let cache_path = config_clone.read().await.cache.clone();
@@ -637,6 +642,7 @@ fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
         crate::handlers::account::get_accounts,
         crate::handlers::account::add_account,
         crate::handlers::account::remove_account,
+        crate::handlers::account::get_browser_cookies,
         crate::handlers::account::get_account_count,
         crate::handlers::account::get_qr_status,
         crate::handlers::account::get_qr,
@@ -658,6 +664,7 @@ fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
         crate::handlers::config::update_webhook_url,
         crate::handlers::config::update_danmu_ass_options,
         crate::handlers::config::update_powerlive_key,
+        crate::handlers::config::update_proxy_url,
         crate::handlers::message::get_messages,
         crate::handlers::message::read_message,
         crate::handlers::message::delete_message,
@@ -682,6 +689,7 @@ fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
         crate::handlers::recorder::set_enable,
         crate::handlers::recorder::fetch_hls,
         crate::handlers::recorder::generate_whole_clip,
+        crate::handlers::recorder::fix_archive_covers,
         crate::handlers::video::clip_range,
         crate::handlers::video::upload_procedure,
         crate::handlers::video::cancel,
@@ -709,6 +717,7 @@ fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
         crate::handlers::utils::show_in_folder,
         crate::handlers::utils::export_to_file,
         crate::handlers::utils::get_disk_info,
+        crate::handlers::utils::fetch_url,
         crate::handlers::utils::open_live,
         crate::handlers::utils::open_clip,
         crate::handlers::utils::open_log_folder,

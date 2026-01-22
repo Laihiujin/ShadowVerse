@@ -97,6 +97,13 @@ pub struct DiskInfo {
     pub free: u64,
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FetchUrlResponse {
+    pub bytes: Vec<u8>,
+    pub content_type: Option<String>,
+}
+
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn get_disk_info(state: state_type!()) -> Result<DiskInfo, ()> {
     let cache = state.config.read().await.cache.clone();
@@ -120,6 +127,37 @@ pub async fn console_log(_state: state_type!(), level: &str, message: &str) -> R
         _ => log::debug!("[frontend] {message}"),
     }
     Ok(())
+}
+
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn fetch_url(_state: state_type!(), url: String) -> Result<FetchUrlResponse, String> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(20))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let mut request = client.get(&url).header(
+        "User-Agent",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    );
+    if url.contains("tiktok") {
+        request = request.header("Referer", "https://www.tiktok.com/");
+    } else if url.contains("kuaishou") || url.contains("yximgs.com") {
+        request = request.header("Referer", "https://live.kuaishou.com/");
+    }
+
+    let response = request.send().await.map_err(|e| e.to_string())?;
+    if !response.status().is_success() {
+        return Err(format!("Fetch failed: {}", response.status()));
+    }
+
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .map(|value| value.to_string());
+    let bytes = response.bytes().await.map_err(|e| e.to_string())?.to_vec();
+
+    Ok(FetchUrlResponse { bytes, content_type })
 }
 
 pub async fn get_disk_info_inner(target: PathBuf) -> Result<DiskInfo, ()> {
@@ -225,9 +263,19 @@ pub async fn open_live(
         use std::str::FromStr;
 
         let platform = PlatformType::from_str(&platform)?;
+        let safe_room_id: String = room_id
+            .chars()
+            .map(|ch| {
+                if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '/' | ':' | '_') {
+                    ch
+                } else {
+                    '_'
+                }
+            })
+            .collect();
         let builder = tauri::WebviewWindowBuilder::new(
             &state.app_handle,
-            format!("Live:{room_id}:{live_id}"),
+            format!("Live:{safe_room_id}:{live_id}"),
             tauri::WebviewUrl::App(
                 format!(
                     "index_live.html?platform={}&room_id={}&live_id={}",

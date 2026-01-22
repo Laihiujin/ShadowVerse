@@ -35,7 +35,7 @@
   update_accounts();
 
   let addModal = false;
-  let activeTab = "qr"; // 'qr' or 'manual'
+  let activeTab = "qr"; // 'qr' | 'manual'
   let selectedPlatform = "bilibili"; // 'bilibili' or 'douyin'
   let oauth_key = "";
   let check_interval = null;
@@ -161,12 +161,16 @@
         <h1 class="text-2xl font-semibold text-gray-900 dark:text-white">
           账号
         </h1>
+        
         <div
           class="flex items-center space-x-2 text-sm text-gray-500 dark:text-gray-400"
         >
           <span> 共 {account_info.accounts.length} 个</span>
         </div>
       </div>
+      <p>
+        登录账号以支持获取最高4K画质
+        <p>
       <button
         on:click={() => {
           addModal = true;
@@ -180,7 +184,7 @@
         <span>添加账号</span>
       </button>
     </div>
-
+    
     <!-- Account List -->
     <div class="space-y-4">
       <!-- Online Account -->
@@ -392,7 +396,7 @@
                 requestAnimationFrame(handle_qr);
               }}
             >
-              扫码登录
+              二维码登录
             </button>
             <button
               class="flex-1 px-4 py-1.5 text-sm rounded-md transition-colors {activeTab ===
@@ -403,7 +407,18 @@
                 activeTab = "manual";
               }}
             >
-              手动输入
+              手动 Cookie
+            </button>
+          </div>
+        {:else}
+          <div class="flex rounded-lg bg-[#f5f5f7] dark:bg-[#1c1c1e] p-1">
+            <button
+              class="flex-1 px-4 py-1.5 text-sm rounded-md transition-colors bg-white dark:bg-[#3c3c3e] shadow-sm font-medium"
+              on:click={() => {
+                activeTab = "manual";
+              }}
+            >
+              手动 Cookie
             </button>
           </div>
         {/if}

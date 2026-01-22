@@ -19,6 +19,10 @@ use recorder::events::RecorderEvent;
 use recorder::platforms::bilibili::BiliRecorder;
 use recorder::platforms::douyin::DouyinRecorder;
 use recorder::platforms::huya::HuyaRecorder;
+use recorder::platforms::kuaishou::KuaishouRecorder;
+use recorder::platforms::xiaohongshu::XiaohongshuRecorder;
+use recorder::platforms::tiktok::TikTokRecorder;
+use recorder::platforms::weibo::WeiboRecorder;
 use recorder::platforms::PlatformType;
 use recorder::traits::RecorderTrait;
 use recorder::RoomInfo;
@@ -73,6 +77,10 @@ pub enum RecorderType {
     BiliBili(BiliRecorder),
     Douyin(DouyinRecorder),
     Huya(HuyaRecorder),
+    Kuaishou(KuaishouRecorder),
+    Xiaohongshu(XiaohongshuRecorder),
+    TikTok(TikTokRecorder),
+    Weibo(WeiboRecorder),
 }
 
 impl RecorderType {
@@ -81,6 +89,10 @@ impl RecorderType {
             RecorderType::BiliBili(recorder) => recorder.run().await,
             RecorderType::Douyin(recorder) => recorder.run().await,
             RecorderType::Huya(recorder) => recorder.run().await,
+            RecorderType::Kuaishou(recorder) => recorder.run().await,
+            RecorderType::Xiaohongshu(recorder) => recorder.run().await,
+            RecorderType::TikTok(recorder) => recorder.run().await,
+            RecorderType::Weibo(recorder) => recorder.run().await,
         }
     }
 
@@ -89,6 +101,10 @@ impl RecorderType {
             RecorderType::BiliBili(recorder) => recorder.stop().await,
             RecorderType::Douyin(recorder) => recorder.stop().await,
             RecorderType::Huya(recorder) => recorder.stop().await,
+            RecorderType::Kuaishou(recorder) => recorder.stop().await,
+            RecorderType::Xiaohongshu(recorder) => recorder.stop().await,
+            RecorderType::TikTok(recorder) => recorder.stop().await,
+            RecorderType::Weibo(recorder) => recorder.stop().await,
         }
     }
 
@@ -97,6 +113,10 @@ impl RecorderType {
             RecorderType::BiliBili(recorder) => recorder.info().await,
             RecorderType::Douyin(recorder) => recorder.info().await,
             RecorderType::Huya(recorder) => recorder.info().await,
+            RecorderType::Kuaishou(recorder) => recorder.info().await,
+            RecorderType::Xiaohongshu(recorder) => recorder.info().await,
+            RecorderType::TikTok(recorder) => recorder.info().await,
+            RecorderType::Weibo(recorder) => recorder.info().await,
         }
     }
 
@@ -105,6 +125,10 @@ impl RecorderType {
             RecorderType::BiliBili(recorder) => recorder.enable().await,
             RecorderType::Douyin(recorder) => recorder.enable().await,
             RecorderType::Huya(recorder) => recorder.enable().await,
+            RecorderType::Kuaishou(recorder) => recorder.enable().await,
+            RecorderType::Xiaohongshu(recorder) => recorder.enable().await,
+            RecorderType::TikTok(recorder) => recorder.enable().await,
+            RecorderType::Weibo(recorder) => recorder.enable().await,
         }
     }
 
@@ -113,6 +137,10 @@ impl RecorderType {
             RecorderType::BiliBili(recorder) => recorder.disable().await,
             RecorderType::Douyin(recorder) => recorder.disable().await,
             RecorderType::Huya(recorder) => recorder.disable().await,
+            RecorderType::Kuaishou(recorder) => recorder.disable().await,
+            RecorderType::Xiaohongshu(recorder) => recorder.disable().await,
+            RecorderType::TikTok(recorder) => recorder.disable().await,
+            RecorderType::Weibo(recorder) => recorder.disable().await,
         }
     }
 }
@@ -229,7 +257,7 @@ impl RecorderManager {
                         self.app_handle
                             .notification()
                             .builder()
-                            .title("BiliShadowReplay - 直播开始")
+                            .title("ShadowVerse - 直播开始")
                             .body(format!(
                                 "{} 开启了直播：{}",
                                 recorder.user_info.user_name, recorder.room_info.room_title
@@ -254,7 +282,7 @@ impl RecorderManager {
                         self.app_handle
                             .notification()
                             .builder()
-                            .title("BiliShadowReplay - 直播结束")
+                            .title("ShadowVerse - 直播结束")
                             .body(format!(
                                 "{} 结束了直播：{}",
                                 recorder.user_info.user_name, recorder.room_info.room_title
@@ -268,6 +296,19 @@ impl RecorderManager {
                     let platform = PlatformType::from_str(&recorder.room_info.platform).unwrap();
                     let room_id = recorder.room_info.room_id.clone();
                     log::info!("Record start: {recorder:?}");
+
+                    // Store cover path in format: {platform}/{room_id}/{live_id}/cover.jpg
+                    let cover_path = if !recorder.room_info.room_cover.is_empty() {
+                        Some(format!(
+                            "{}/{}/{}/cover.jpg",
+                            platform.as_str(),
+                            &room_id,
+                            &recorder.live_id
+                        ))
+                    } else {
+                        None
+                    };
+
                     if let Err(e) = self
                         .db
                         .add_record(
@@ -276,7 +317,7 @@ impl RecorderManager {
                             &recorder.live_id,
                             &room_id,
                             &recorder.room_info.room_title,
-                            None,
+                            cover_path,
                         )
                         .await
                     {
@@ -392,6 +433,7 @@ impl RecorderManager {
                             platform.as_str().to_string(),
                             &room_id,
                             live_record.parent_id,
+                            None,
                         )
                         .await
                     {
@@ -455,6 +497,14 @@ impl RecorderManager {
             for recorder in recorders {
                 let platform = PlatformType::from_str(&recorder.platform).unwrap();
                 let room_id = recorder.room_id;
+                if matches!(platform, PlatformType::Xiaohongshu | PlatformType::Weibo) {
+                    log::info!(
+                        "Skip disabled platform recorder: {} {}",
+                        platform.as_str(),
+                        room_id
+                    );
+                    continue;
+                }
                 let auto_start = recorder.auto_start;
                 let extra = recorder.extra;
                 recorder_map.insert((platform, room_id), (auto_start, extra));
@@ -472,12 +522,20 @@ impl RecorderManager {
                 if self.is_migrating.load(std::sync::atomic::Ordering::Relaxed) {
                     break;
                 }
+                if matches!(platform, PlatformType::Xiaohongshu | PlatformType::Weibo) {
+                    continue;
+                }
                 let (auto_start, extra) = recorder_map.get(&(platform, room_id.clone())).unwrap();
                 let account = self
                     .db
                     .get_account_by_platform(platform.clone().as_str())
                     .await;
-                if platform != PlatformType::Huya && account.is_err() {
+                let account_required = !matches!(
+                    platform,
+                    PlatformType::Huya
+                        | PlatformType::Kuaishou
+                );
+                if account_required && account.is_err() {
                     log::warn!("Failed to find an account for {platform:?} {room_id}");
                     continue;
                 }
@@ -511,6 +569,11 @@ impl RecorderManager {
         extra: &str,
         enabled: bool,
     ) -> Result<(), RecorderManagerError> {
+        if matches!(platform, PlatformType::Xiaohongshu | PlatformType::Weibo) {
+            return Err(RecorderManagerError::InvalidPlatformType {
+                platform: format!("{} (temporarily disabled)", platform.as_str()),
+            });
+        }
         let recorder_id = format!("{}:{}", platform.as_str(), room_id);
         if self.recorders.read().await.contains_key(&recorder_id) {
             return Err(RecorderManagerError::AlreadyExisted {
@@ -549,6 +612,50 @@ impl RecorderManager {
             ),
             PlatformType::Huya => RecorderType::Huya(
                 HuyaRecorder::new(
+                    room_id,
+                    account,
+                    cache_dir,
+                    event_tx,
+                    update_interval,
+                    enabled,
+                )
+                .await?,
+            ),
+            PlatformType::Kuaishou => RecorderType::Kuaishou(
+                KuaishouRecorder::new(
+                    room_id,
+                    account,
+                    cache_dir,
+                    event_tx,
+                    update_interval,
+                    enabled,
+                )
+                .await?,
+            ),
+            PlatformType::Xiaohongshu => RecorderType::Xiaohongshu(
+                XiaohongshuRecorder::new(
+                    room_id,
+                    account,
+                    cache_dir,
+                    event_tx,
+                    update_interval,
+                    enabled,
+                )
+                .await?,
+            ),
+            PlatformType::TikTok => RecorderType::TikTok(
+                TikTokRecorder::new(
+                    room_id,
+                    account,
+                    cache_dir,
+                    event_tx,
+                    update_interval,
+                    enabled,
+                )
+                .await?,
+            ),
+            PlatformType::Weibo => RecorderType::Weibo(
+                WeiboRecorder::new(
                     room_id,
                     account,
                     cache_dir,
@@ -842,6 +949,45 @@ impl RecorderManager {
         let playlists = futures::future::join_all(playlists).await;
 
         playlists
+    }
+
+    async fn get_related_playlists_by_live_ids(
+        &self,
+        platform: &PlatformType,
+        room_id: &str,
+        live_ids: &[String],
+    ) -> Vec<RelatedPlaylist> {
+        if live_ids.is_empty() {
+            return Vec::new();
+        }
+        let cache_path = self.config.read().await.cache.clone();
+        let cache_path = Path::new(&cache_path);
+        let mut archives: Vec<RecordRow> = Vec::new();
+        for live_id in live_ids {
+            match self.db.get_record(room_id, live_id).await {
+                Ok(record) => archives.push(record),
+                Err(e) => {
+                    log::warn!("Failed to load record {} {}: {}", room_id, live_id, e);
+                }
+            }
+        }
+        archives.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+
+        let playlists = archives
+            .iter()
+            .map(async |record| {
+                let work_dir =
+                    CachePath::new(cache_path.to_path_buf(), *platform, room_id, &record.live_id);
+
+                RelatedPlaylist {
+                    live_id: record.live_id.clone(),
+                    title: record.title.clone(),
+                    path: work_dir.with_filename("playlist.m3u8").full_path(),
+                }
+            })
+            .collect::<Vec<_>>();
+
+        futures::future::join_all(playlists).await
     }
 
     pub async fn clip_range(
@@ -1379,6 +1525,7 @@ impl RecorderManager {
         platform: String,
         room_id: &str,
         parent_id: String,
+        live_ids: Option<Vec<String>>,
     ) -> Result<(), RecorderManagerError> {
         let platform = PlatformType::from_str(&platform).map_err(|_| {
             RecorderManagerError::InvalidPlatformType {
@@ -1386,15 +1533,32 @@ impl RecorderManager {
             }
         })?;
 
-        let playlists = self
-            .get_related_playlists(&platform, room_id, &parent_id)
-            .await;
+        let playlists = if let Some(live_ids) = live_ids.as_ref() {
+            self.get_related_playlists_by_live_ids(&platform, room_id, live_ids)
+                .await
+        } else {
+            self.get_related_playlists(&platform, room_id, &parent_id)
+                .await
+        };
         if playlists.is_empty() {
-            log::error!("No related playlists found: {parent_id}");
+            if let Some(live_ids) = live_ids.as_ref() {
+                log::error!("No related playlists found: {room_id} {live_ids:?}");
+            } else {
+                log::error!("No related playlists found: {parent_id}");
+            }
             return Ok(());
         }
 
         let title = playlists.first().unwrap().title.clone();
+        let parent_tag = if let Some(live_ids) = live_ids.as_ref() {
+            if !parent_id.is_empty() {
+                parent_id.clone()
+            } else {
+                live_ids.first().cloned().unwrap_or_default()
+            }
+        } else {
+            parent_id.clone()
+        };
 
         // generate archive danmu ass file for all playlists
         let danmu_ass_files = if encode_danmu {
@@ -1416,7 +1580,7 @@ impl RecorderManager {
         let timestamp = chrono::Local::now().format("%Y%m%d%H%M%S").to_string();
 
         let sanitized_filename = sanitize_filename::sanitize(format!(
-            "[full][{platform:?}][{room_id}][{parent_id}][{timestamp}]{title}.mp4"
+            "[full][{platform:?}][{room_id}][{parent_tag}][{timestamp}]{title}.mp4"
         ));
         let output_filename = Path::new(&sanitized_filename);
         let cover_filename = output_filename.with_extension("jpg");

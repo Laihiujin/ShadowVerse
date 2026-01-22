@@ -205,11 +205,8 @@
               <div class="flex items-center justify-between">
                 <div>
                   <h3 class="text-sm font-medium text-gray-900 dark:text-white">
-                    夜晚模式
+                    暗黑模式
                   </h3>
-                  <p class="text-sm text-gray-500 dark:text-gray-400">
-                    反转文字与背景，黑色背景，白色文字
-                  </p>
                 </div>
                 <label class="relative inline-block w-11 h-6">
                   <input

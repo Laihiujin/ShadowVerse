@@ -4,7 +4,6 @@
   import Summary from "./page/Summary.svelte";
   import Setting from "./page/Setting.svelte";
   import Account from "./page/Account.svelte";
-  import About from "./page/About.svelte";
   import { log, onOpenUrl } from "./lib/invoker";
   import Clip from "./page/Clip.svelte";
   import Task from "./page/Task.svelte";
@@ -22,7 +21,11 @@
 
   onMount(async () => {
     const theme = localStorage.getItem("theme");
-    applyTheme(theme === "dark");
+    const isDark = theme ? theme === "dark" : true;
+    applyTheme(isDark);
+    if (!theme) {
+      localStorage.setItem("theme", "dark");
+    }
 
     await onOpenUrl((urls: string[]) => {
       console.log("Received Deep Link:", urls);
@@ -36,16 +39,30 @@
         let platform = "";
         let room_id = "";
 
-        if (url.startsWith("bsr://live.bilibili.com/")) {
-          // 1. remove bsr://live.bilibili.com/
-          // 2. remove all query params
-          room_id = url.replace("bsr://live.bilibili.com/", "").split("?")[0];
-          platform = "bilibili";
+        const bilibiliPrefixes = [
+          "bsr://live.bilibili.com/",
+          "https://live.bilibili.com/",
+          "http://live.bilibili.com/",
+        ];
+        for (const prefix of bilibiliPrefixes) {
+          if (url.startsWith(prefix)) {
+            room_id = url.replace(prefix, "").split("?")[0];
+            platform = "bilibili";
+            break;
+          }
         }
 
-        if (url.startsWith("bsr://live.douyin.com/")) {
-          room_id = url.replace("bsr://live.douyin.com/", "").split("?")[0];
-          platform = "douyin";
+        const douyinPrefixes = [
+          "bsr://live.douyin.com/",
+          "https://live.douyin.com/",
+          "http://live.douyin.com/",
+        ];
+        for (const prefix of douyinPrefixes) {
+          if (url.startsWith(prefix)) {
+            room_id = url.replace(prefix, "").split("?")[0];
+            platform = "douyin";
+            break;
+          }
         }
 
         if (url.startsWith("bsr://live.kuaishou.com/")) {
@@ -104,9 +121,6 @@
       </div>
       <div class="page" class:visible={active == "设置"}>
         <Setting />
-      </div>
-      <div class="page" class:visible={active == "关于"}>
-        <About />
       </div>
     </div>
   </div>

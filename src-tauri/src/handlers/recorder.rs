@@ -19,12 +19,76 @@ use recorder::platforms::bilibili;
 use recorder::platforms::douyin;
 use recorder::platforms::PlatformType;
 use recorder::RecorderInfo;
-
 #[cfg(feature = "gui")]
 use tauri::State as TauriState;
 
 use serde::Deserialize;
 use serde::Serialize;
+
+fn normalize_kuaishou_room_id(room_id: &str) -> String {
+    let trimmed = room_id.trim();
+    if let Some(query) = trimmed.split('?').nth(1) {
+        let candidate = query
+            .split('&')
+            .next()
+            .unwrap_or("")
+            .trim_matches('/');
+        let candidate = candidate.trim_end_matches(".html");
+        if !candidate.is_empty() {
+            return candidate.to_string();
+        }
+    }
+    let without_query = trimmed.split('?').next().unwrap_or(trimmed);
+    let without_trailing = without_query.trim_end_matches('/');
+
+    if let Some(pos) = without_trailing.find("/u/") {
+        return without_trailing[(pos + 3)..].to_string();
+    }
+
+    if let Some(pos) = without_trailing.find("/profile/") {
+        return without_trailing[(pos + 9)..].to_string();
+    }
+
+    if without_trailing.contains("kuaishou.com") {
+        if let Some(last) = without_trailing.rsplit('/').next() {
+            return last.to_string();
+        }
+    }
+
+    trimmed.to_string()
+}
+
+fn normalize_tiktok_room_id(room_id: &str) -> String {
+    let trimmed = room_id.trim();
+    let without_query = trimmed.split('?').next().unwrap_or(trimmed);
+    let without_trailing = without_query.trim_end_matches('/');
+
+    if let Some(after_at) = without_trailing.split("/@").nth(1) {
+        let name = after_at.split('/').next().unwrap_or("").trim();
+        if !name.is_empty() {
+            return format!("@{}", name.trim_start_matches('@'));
+        }
+    }
+
+    if without_trailing.starts_with('@') {
+        return without_trailing.to_string();
+    }
+
+    if without_trailing.contains("tiktok.com") {
+        if let Some(last) = without_trailing.rsplit('/').next() {
+            let name = last.trim_start_matches('@');
+            if !name.is_empty() && name != "live" {
+                return format!("@{}", name);
+            }
+        }
+    }
+
+    if trimmed.is_empty() {
+        trimmed.to_string()
+    } else {
+        format!("@{}", trimmed.trim_start_matches('@'))
+    }
+}
 
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn get_recorder_list(state: state_type!()) -> Result<RecorderList, ()> {
@@ -38,8 +102,35 @@ pub async fn add_recorder(
     room_id: String,
     mut extra: String,
 ) -> Result<RecorderRow, String> {
-    log::info!("Add recorder: {platform} {room_id}");
-    let platform = PlatformType::from_str(&platform).unwrap();
+    let platform_str = platform;
+    let platform = PlatformType::from_str(&platform_str).unwrap();
+    if matches!(platform, PlatformType::Xiaohongshu | PlatformType::Weibo) {
+        return Err("平台暂未支持".to_string());
+    }
+    let mut room_id = room_id;
+    if platform == PlatformType::Kuaishou {
+        let normalized = normalize_kuaishou_room_id(&room_id);
+        if normalized != room_id {
+            log::info!(
+                "Normalized kuaishou room id: {} -> {}",
+                room_id,
+                normalized
+            );
+            room_id = normalized;
+        }
+    }
+    if platform == PlatformType::TikTok {
+        let normalized = normalize_tiktok_room_id(&room_id);
+        if normalized != room_id {
+            log::info!(
+                "Normalized tiktok room id: {} -> {}",
+                room_id,
+                normalized
+            );
+            room_id = normalized;
+        }
+    }
+    log::info!("Add recorder: {} {}", platform.as_str(), room_id);
     let account = match platform {
         PlatformType::BiliBili => {
             if let Ok(account) = state.db.get_account_by_platform("bilibili").await {
@@ -69,6 +160,26 @@ pub async fn add_recorder(
             } else {
                 Ok(Account::default())
             }
+        }
+        PlatformType::Kuaishou => {
+            if let Ok(account) = state.db.get_account_by_platform("kuaishou").await {
+                Ok(account.to_account())
+            } else {
+                Ok(Account::default())
+            }
+        }
+        PlatformType::TikTok => {
+            if let Ok(account) = state.db.get_account_by_platform("tiktok").await {
+                Ok(account.to_account())
+            } else {
+                Ok(Account::default())
+            }
+        }
+        PlatformType::Weibo => {
+            Err("微博暂未支持".to_string())
+        }
+        PlatformType::Xiaohongshu => {
+            Err("小红书暂未支持".to_string())
         }
         _ => Err("不支持的平台".to_string()),
     };
@@ -438,6 +549,7 @@ pub async fn generate_whole_clip(
     platform: String,
     room_id: String,
     parent_id: String,
+    live_ids: Option<Vec<String>>,
 ) -> Result<TaskRow, String> {
     log::info!("Generate whole clip for {platform} {room_id} {parent_id}");
 
@@ -450,6 +562,7 @@ pub async fn generate_whole_clip(
                 "platform": platform,
                 "room_id": room_id,
                 "parent_id": parent_id,
+                "live_ids": live_ids,
                 "encode_danmu": encode_danmu,
             })
             .to_string(),
@@ -484,6 +597,7 @@ pub async fn generate_whole_clip(
                         platform,
                         &room_id,
                         parent_id,
+                        live_ids,
                     )
                     .await
                 {
@@ -508,4 +622,72 @@ pub async fn generate_whole_clip(
         ))
         .await?;
     Ok(task)
+}
+
+/// Fix cover paths for existing archives that have cover.jpg files but no database entry
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn fix_archive_covers(state: state_type!()) -> Result<usize, String> {
+    use recorder::platforms::PlatformType;
+    use std::path::PathBuf;
+
+    log::info!("Starting to fix archive covers...");
+    let mut fixed_count = 0;
+
+    // Get all recorders to know which rooms to check
+    let recorders = state.db.get_recorders().await.map_err(|e| e.to_string())?;
+
+    for recorder_row in recorders {
+        let platform = PlatformType::from_str(&recorder_row.platform).map_err(|e| e.to_string())?;
+        let room_id = &recorder_row.room_id;
+
+        // Get all records for this room
+        let records = state
+            .db
+            .get_records(room_id, 0, 1000)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        for record in records {
+            // Skip if already has cover
+            if record.cover.is_some() {
+                continue;
+            }
+
+            // Check if cover.jpg exists in cache directory
+            let cache_path = PathBuf::from(&state.config.read().await.cache);
+            let cover_path = cache_path.join(format!(
+                "{}/{}/{}/cover.jpg",
+                platform.as_str(),
+                room_id,
+                record.live_id
+            ));
+
+            if cover_path.exists() {
+                // Update database with cover path
+                let cover_db_path = format!(
+                    "{}/{}/{}/cover.jpg",
+                    platform.as_str(),
+                    room_id,
+                    record.live_id
+                );
+
+                match state
+                    .db
+                    .update_record_cover(&record.live_id, Some(cover_db_path.clone()))
+                    .await
+                {
+                    Ok(_) => {
+                        log::info!("Fixed cover for {}/{}: {}", platform.as_str(), room_id, record.live_id);
+                        fixed_count += 1;
+                    }
+                    Err(e) => {
+                        log::error!("Failed to update cover for {}: {}", record.live_id, e);
+                    }
+                }
+            }
+        }
+    }
+
+    log::info!("Fixed {} archive covers", fixed_count);
+    Ok(fixed_count)
 }

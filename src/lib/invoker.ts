@@ -75,7 +75,7 @@ async function invoke<T>(
     // if status is 405, it means the command is not allowed
     if (response.status === 405) {
       throw new Error(
-        `Command ${command} is not allowed, maybe bili-shadowreplay is running in readonly mode or HTTP method mismatch`
+        `Command ${command} is not allowed, maybe ShadowVerse is running in readonly mode or HTTP method mismatch`
       );
     }
     if (!response.ok) {
@@ -99,7 +99,28 @@ async function invoke<T>(
 
 async function get(url: string) {
   if (TAURI_ENV) {
-    return await tauri_fetch(url);
+    try {
+      const result = (await invoke("fetch_url", { url })) as {
+        bytes: number[];
+        contentType?: string | null;
+      };
+      const blob = new Blob([new Uint8Array(result.bytes)], {
+        type: result.contentType || "application/octet-stream",
+      });
+      return {
+        ok: true,
+        status: 200,
+        blob: async () => blob,
+      } as Response;
+    } catch (error) {
+      console.warn("Failed to fetch url:", url, error);
+      const blob = new Blob([]);
+      return {
+        ok: false,
+        status: 0,
+        blob: async () => blob,
+      } as Response;
+    }
   }
   const response = await fetch(`${ENDPOINT}/api/fetch`, {
     method: "POST",

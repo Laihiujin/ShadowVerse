@@ -9,13 +9,31 @@ use crate::recorder_manager::RecorderManagerError;
 use recorder::entry::EntryStore;
 use recorder::platforms::PlatformType;
 
+fn is_safe_path_component(value: &str) -> bool {
+    if value.is_empty() || value.ends_with(' ') || value.ends_with('.') {
+        return false;
+    }
+    !value.chars().any(|c| matches!(c, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*'))
+}
+
+fn is_disabled_platform(platform: &str) -> bool {
+    matches!(platform, "xiaohongshu" | "weibo")
+}
+
 pub async fn try_rebuild_archives(
     db: &Arc<Database>,
     cache_path: PathBuf,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let rooms = db.get_recorders().await?;
     for room in rooms {
+        if is_disabled_platform(&room.platform) {
+            continue;
+        }
         let room_id = room.room_id;
+        if !is_safe_path_component(&room_id) {
+            log::warn!("Skip rebuild archives for unsafe room id: {}", room_id);
+            continue;
+        }
         let room_cache_path = cache_path.join(format!("{}/{}", room.platform, room_id));
         let mut files = tokio::fs::read_dir(room_cache_path).await?;
         while let Some(file) = files.next_entry().await? {
@@ -23,6 +41,9 @@ pub async fn try_rebuild_archives(
                 // use folder name as live_id
                 let live_id = file.file_name();
                 let live_id = live_id.to_str().unwrap();
+                if !is_safe_path_component(live_id) {
+                    continue;
+                }
                 // check if live_id is in db
                 let record = db.get_record(&room_id, live_id).await;
                 if record.is_ok() {
@@ -58,11 +79,21 @@ pub async fn try_convert_live_covers(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let rooms = db.get_recorders().await?;
     for room in rooms {
+        if is_disabled_platform(&room.platform) {
+            continue;
+        }
         let room_id = room.room_id;
+        if !is_safe_path_component(&room_id) {
+            log::warn!("Skip convert live covers for unsafe room id: {}", room_id);
+            continue;
+        }
         let room_cache_path = cache_path.join(format!("{}/{}", room.platform, room_id));
         let records = db.get_records(&room_id, 0, 999_999_999).await?;
         for record in &records {
             let record_path = room_cache_path.join(record.live_id.clone());
+            if !is_safe_path_component(&record.live_id) {
+                continue;
+            }
             let cover = record.cover.clone();
             if cover.is_none() {
                 continue;
@@ -129,6 +160,9 @@ pub async fn try_add_parent_id_to_records(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let rooms = db.get_recorders().await?;
     for room in &rooms {
+        if is_disabled_platform(&room.platform) {
+            continue;
+        }
         let records = db.get_records(&room.room_id, 0, 999_999_999).await?;
         for record in &records {
             if record.parent_id.is_empty() {
@@ -146,8 +180,21 @@ pub async fn try_convert_entry_to_m3u8(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let rooms = db.get_recorders().await?;
     for room in &rooms {
+        if is_disabled_platform(&room.platform) {
+            continue;
+        }
+        if !is_safe_path_component(&room.room_id) {
+            log::warn!(
+                "Skip convert entry to m3u8 for unsafe room id: {}",
+                room.room_id
+            );
+            continue;
+        }
         let records = db.get_records(&room.room_id, 0, 999_999_999).await?;
         for record in &records {
+            if !is_safe_path_component(&record.live_id) {
+                continue;
+            }
             let record_path = cache_path.join(format!(
                 "{}/{}/{}",
                 room.platform, room.room_id, record.live_id

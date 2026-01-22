@@ -1,7 +1,6 @@
 <script>
   import {
     FileVideo,
-    Info,
     LayoutDashboard,
     List,
     Settings,
@@ -10,7 +9,6 @@
     Brain,
     History,
   } from "lucide-svelte";
-  import { hasNewVersion } from "../stores/version";
   import SidebarItem from "./SidebarItem.svelte";
   import { createEventDispatcher } from "svelte";
 
@@ -68,16 +66,6 @@
     <SidebarItem label="设置" {activeUrl} on:activeChange={navigate}>
       <div slot="icon">
         <Settings class="w-5 h-5" />
-      </div>
-    </SidebarItem>
-    <SidebarItem
-      label="关于"
-      {activeUrl}
-      on:activeChange={navigate}
-      dot={$hasNewVersion}
-    >
-      <div slot="icon">
-        <Info class="w-5 h-5" />
       </div>
     </SidebarItem>
   </nav>

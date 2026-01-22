@@ -8,7 +8,7 @@ import {
   type Profile,
 } from "../interface";
 
-const platform_list = ["bilibili", "douyin"];
+const platform_list = ["bilibili", "douyin", "huya", "kuaishou", "tiktok"];
 
 // @ts-ignore
 const get_accounts = tool(

@@ -3,10 +3,10 @@ members = ["crates/danmu_stream", "crates/recorder"]
 resolver = "2"
 
 [package]
-name = "bili-shadowreplay"
-version = "2.17.0"
-description = "BiliBili ShadowReplay"
-authors = ["Xinrea"]
+name = "shadowverse"
+version = "2.17.1"
+description = "ShadowVerse"
+authors = ["Laihiujin+Xinrea"]
 license = ""
 repository = ""
 edition = "2021"
@@ -66,6 +66,10 @@ sanitize-filename = "0.6.0"
 socketioxide = "0.17.2"
 scraper = "0.24.0"
 sentry = { version = "0.46.0", features = ["log", "logs"] }
+aes-gcm = "0.10"
+aead = "0.5"
+rusqlite = "0.32"
+anyhow = "1.0"
 
 [features]
 # this feature is used for production builds or when `devPath` points to the filesystem
@@ -148,6 +152,8 @@ optional = true
 
 [target.'cfg(windows)'.dependencies]
 whisper-rs = { version = "0.15.1", default-features = false }
+winreg = "0.52"
+windows-sys = { version = "0.52", features = ["Win32_Security_Cryptography", "Win32_Foundation", "Win32_Storage_FileSystem"] }
 
 [target.'cfg(darwin)'.dependencies.whisper-rs]
 version = "0.15.1"
