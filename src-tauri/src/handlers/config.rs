@@ -259,6 +259,13 @@ pub async fn update_use_default_accounts(
     let mut config = state.config.write().await;
     config.use_default_accounts = use_default_accounts;
     config.save();
+    let config_snapshot = config.clone();
+    drop(config);
+    if use_default_accounts {
+        crate::handlers::account::ensure_default_accounts(&state.db, &config_snapshot).await;
+    } else {
+        crate::handlers::account::remove_default_accounts(&state.db, &config_snapshot).await;
+    }
     Ok(())
 }
 

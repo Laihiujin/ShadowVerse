@@ -812,6 +812,41 @@ fn extract_qr_message(value: &Value) -> Option<String> {
     }
 }
 
+fn has_captcha_signal(value: &Value) -> bool {
+    match value {
+        Value::Object(map) => {
+            for (key, val) in map {
+                let key_lower = key.to_ascii_lowercase();
+                if key_lower.contains("captcha")
+                    || key_lower.contains("verify")
+                    || key_lower.contains("risk")
+                    || key_lower.contains("slider")
+                {
+                    return true;
+                }
+                if let Value::String(text) = val {
+                    let lower = text.to_ascii_lowercase();
+                    if lower.contains("captcha")
+                        || lower.contains("verify")
+                        || lower.contains("slider")
+                        || text.contains("\u6ed1\u5757")
+                    {
+                        return true;
+                    }
+                }
+            }
+            for child in map.values() {
+                if has_captcha_signal(child) {
+                    return true;
+                }
+            }
+            false
+        }
+        Value::Array(values) => values.iter().any(has_captcha_signal),
+        _ => false,
+    }
+}
+
 /// Get room information from web page
 pub async fn get_room_info(
     client: &Client,
@@ -1798,6 +1833,13 @@ pub async fn get_qr_status(
                 code: 2,
                 cookies: String::new(),
                 message: Some(message),
+            });
+        }
+        if has_captcha_signal(&callback_json) {
+            return Ok(QrStatus {
+                code: 2,
+                cookies: String::new(),
+                message: Some("\u9700\u8981\u6ed1\u5757\u9a8c\u8bc1".to_string()),
             });
         }
         return Err(RecorderError::ApiError {

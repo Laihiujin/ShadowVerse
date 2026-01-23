@@ -534,6 +534,16 @@ fn build_douyin_passport_params(
             .or_else(|| read_env("DOUYIN_ACCOUNT_SDK_SOURCE_INFO"))
             .unwrap_or_default(),
     );
+    push_param(
+        &mut params,
+        "service",
+        param_value(
+            overrides,
+            &["service"],
+            "DOUYIN_SERVICE",
+            "https://live.douyin.com",
+        ),
+    );
     push_param(&mut params, "p_js_v", env_or("DOUYIN_P_JS_V", "3.1.3"));
     push_param(&mut params, "p_js_t", env_or("DOUYIN_P_JS_T", "pro"));
     push_param(&mut params, "p_zt", env_or("DOUYIN_P_ZT", "3.3.10"));
@@ -583,6 +593,14 @@ fn build_douyin_passport_params(
             "web_app",
         ),
     );
+    let verify_fp = override_value(overrides, &["verifyFp", "verify_fp"])
+        .or_else(|| read_env("DOUYIN_VERIFY_FP"))
+        .unwrap_or_else(|| params::gen_verify_fp());
+    let fp = override_value(overrides, &["fp"])
+        .or_else(|| read_env("DOUYIN_FP"))
+        .unwrap_or_else(|| verify_fp.clone());
+    push_param(&mut params, "verifyFp", verify_fp);
+    push_param(&mut params, "fp", fp);
     let ms_token = override_value(overrides, &["msToken", "ms_token"])
         .or_else(|| read_env("DOUYIN_MS_TOKEN"))
         .unwrap_or_else(|| generate_ms_token());

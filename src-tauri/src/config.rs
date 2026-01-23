@@ -82,6 +82,7 @@ pub struct DouyinPassportConfig {
     pub is_from_iesaccountsaas: String,
     pub account_sdk_source: String,
     pub account_sdk_source_info: String,
+    pub service: String,
     pub p_ui: String,
     pub p_ca: String,
     pub p_ca_real: String,
@@ -96,6 +97,8 @@ pub struct DouyinPassportConfig {
     pub p_no: String,
     pub biz_trace_id: String,
     pub device_platform: String,
+    pub verify_fp: String,
+    pub fp: String,
     pub ms_token: String,
     pub a_bogus: String,
     pub x_tt_passport_csrf_token: String,
@@ -186,6 +189,7 @@ fn default_douyin_passport() -> DouyinPassportConfig {
         is_from_iesaccountsaas: "1".to_string(),
         account_sdk_source: "web".to_string(),
         account_sdk_source_info: String::new(),
+        service: "https://live.douyin.com".to_string(),
         p_ui: "2.1.4".to_string(),
         p_ca: "4.0.17".to_string(),
         p_ca_real: "1.0.0.729".to_string(),
@@ -200,6 +204,8 @@ fn default_douyin_passport() -> DouyinPassportConfig {
         p_no: String::new(),
         biz_trace_id: String::new(),
         device_platform: "web_app".to_string(),
+        verify_fp: String::new(),
+        fp: String::new(),
         ms_token: String::new(),
         a_bogus: String::new(),
         x_tt_passport_csrf_token: String::new(),
@@ -481,6 +487,7 @@ impl Config {
         std::env::set_var("DOUYIN_IS_FROM_IESACCOUNTSAAS", &cfg.is_from_iesaccountsaas);
         std::env::set_var("DOUYIN_ACCOUNT_SDK_SOURCE", &cfg.account_sdk_source);
         std::env::set_var("DOUYIN_ACCOUNT_SDK_SOURCE_INFO", &cfg.account_sdk_source_info);
+        std::env::set_var("DOUYIN_SERVICE", &cfg.service);
         std::env::set_var("DOUYIN_P_UI", &cfg.p_ui);
         std::env::set_var("DOUYIN_P_CA", &cfg.p_ca);
         std::env::set_var("DOUYIN_P_CA_REAL", &cfg.p_ca_real);
@@ -495,6 +502,8 @@ impl Config {
         std::env::set_var("DOUYIN_P_NO", &cfg.p_no);
         std::env::set_var("DOUYIN_BIZ_TRACE_ID", &cfg.biz_trace_id);
         std::env::set_var("DOUYIN_DEVICE_PLATFORM", &cfg.device_platform);
+        std::env::set_var("DOUYIN_VERIFY_FP", &cfg.verify_fp);
+        std::env::set_var("DOUYIN_FP", &cfg.fp);
         std::env::set_var("DOUYIN_MS_TOKEN", &cfg.ms_token);
         std::env::set_var("DOUYIN_A_BOGUS", &cfg.a_bogus);
         std::env::set_var("DOUYIN_X_TT_PASSPORT_CSRF_TOKEN", &cfg.x_tt_passport_csrf_token);

@@ -70,21 +70,36 @@ pub async fn update_default_account(
         return Err("Empty cookies".to_string());
     }
     let _ = build_account_row(&platform, &cookies).await?;
-    let mut config = state.config.write().await;
-    if let Some(entry) = config
-        .default_accounts
-        .iter_mut()
-        .find(|entry| entry.platform == platform)
+    let mut old_cookies: Option<String> = None;
     {
-        entry.cookies = cookies;
-    } else {
-        config.default_accounts.push(DefaultAccountConfig { platform, cookies });
+        let mut config = state.config.write().await;
+        if let Some(entry) = config
+            .default_accounts
+            .iter_mut()
+            .find(|entry| entry.platform == platform)
+        {
+            if entry.cookies.trim() != cookies.trim() && !entry.cookies.trim().is_empty() {
+                old_cookies = Some(entry.cookies.clone());
+            }
+            entry.cookies = cookies.clone();
+        } else {
+            config.default_accounts.push(DefaultAccountConfig {
+                platform: platform.clone(),
+                cookies: cookies.clone(),
+            });
+        }
+        config.save();
     }
-    config.save();
+    if let Some(old_cookies) = old_cookies {
+        remove_accounts_by_platform_cookies(&state.db, &platform, &old_cookies).await;
+    }
     Ok(())
 }
 
 pub async fn ensure_default_accounts(db: &Database, config: &Config) {
+    if !config.use_default_accounts {
+        return;
+    }
     if config.default_accounts.is_empty() {
         return;
     }
@@ -146,6 +161,42 @@ pub async fn ensure_default_accounts(db: &Database, config: &Config) {
                     e
                 );
             }
+        }
+    }
+}
+
+pub async fn remove_default_accounts(db: &Database, config: &Config) {
+    if config.default_accounts.is_empty() {
+        return;
+    }
+
+    for entry in &config.default_accounts {
+        remove_accounts_by_platform_cookies(db, &entry.platform, &entry.cookies).await;
+    }
+}
+
+async fn remove_accounts_by_platform_cookies(db: &Database, platform: &str, cookies: &str) {
+    let cookies = cookies.trim();
+    if cookies.is_empty() {
+        return;
+    }
+    let accounts = match db.get_accounts().await {
+        Ok(accounts) => accounts,
+        Err(e) => {
+            log::warn!("Failed to load accounts for cleanup: {}", e);
+            return;
+        }
+    };
+    for account in accounts
+        .iter()
+        .filter(|account| account.platform == platform && account.cookies == cookies)
+    {
+        if let Err(e) = db.remove_account(platform, &account.uid).await {
+            log::warn!(
+                "Failed to remove default account for {}: {}",
+                platform,
+                e
+            );
         }
     }
 }
