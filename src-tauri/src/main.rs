@@ -87,7 +87,7 @@ async fn open_log_file(log_dir: &Path) -> Result<File, Box<dyn std::error::Error
         .open(&log_filename)?)
 }
 
-#[cfg(all(feature = "gui", target_os = "windows"))]
+#[cfg(target_os = "windows")]
 fn choose_windows_output_path(default_output: &Path) -> PathBuf {
     let default_str = default_output.to_string_lossy();
     let default_drive = default_str
@@ -108,6 +108,29 @@ fn choose_windows_output_path(default_output: &Path) -> PathBuf {
     }
 
     default_output.to_path_buf()
+}
+
+#[cfg(target_os = "windows")]
+fn choose_windows_cache_path(default_cache: &Path) -> PathBuf {
+    let default_str = default_cache.to_string_lossy();
+    let default_drive = default_str
+        .chars()
+        .next()
+        .map(|c| c.to_ascii_uppercase());
+    if default_drive != Some('C') {
+        return default_cache.to_path_buf();
+    }
+
+    for drive in b'D'..=b'Z' {
+        let root = format!("{}:\\", drive as char);
+        if Path::new(&root).exists() {
+            return PathBuf::from(root)
+                .join("cn.ShadowVerse")
+                .join("cache");
+        }
+    }
+
+    default_cache.to_path_buf()
 }
 
 async fn setup_logging(log_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
@@ -465,8 +488,20 @@ async fn setup_server_state(args: Args) -> Result<State, Box<dyn std::error::Err
     setup_logging(Path::new("./")).await?;
     log::info!("Setting up server state...");
     let config_path = PathBuf::from(&args.config);
-    let cache_path = PathBuf::from("./cache");
-    let output_path = PathBuf::from("./output");
+    let (cache_path, output_path) = {
+        #[cfg(target_os = "windows")]
+        {
+            let app_dirs = platform_dirs::AppDirs::new(Some("cn.ShadowVerse"), false).unwrap();
+            (
+                choose_windows_cache_path(&app_dirs.cache_dir.join("cache")),
+                choose_windows_output_path(&app_dirs.data_dir.join("output")),
+            )
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            (PathBuf::from("./cache"), PathBuf::from("./output"))
+        }
+    };
     let config = match Config::load(&config_path, &cache_path, &output_path) {
         Ok(config) => config,
         Err(e) => {
@@ -554,6 +589,9 @@ async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::
     log::info!("Setting up app state...");
     let app_dirs = AppDirs::new(Some("cn.ShadowVerse"), false).unwrap();
     let config_path = app_dirs.config_dir.join("Conf.toml");
+    #[cfg(target_os = "windows")]
+    let cache_path = choose_windows_cache_path(&app_dirs.cache_dir.join("cache"));
+    #[cfg(not(target_os = "windows"))]
     let cache_path = app_dirs.cache_dir.join("cache");
     #[cfg(target_os = "windows")]
     let output_path = choose_windows_output_path(&app_dirs.data_dir.join("output"));
