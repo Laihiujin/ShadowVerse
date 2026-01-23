@@ -1,4 +1,4 @@
-# bili-shadowreplay contribute guide
+# ShadowVerse contribute guide
 
 ## Project Setup
 
