@@ -28,14 +28,22 @@ use serde::Serialize;
 fn normalize_kuaishou_room_id(room_id: &str) -> String {
     let trimmed = room_id.trim();
     if let Some(query) = trimmed.split('?').nth(1) {
-        let candidate = query
-            .split('&')
-            .next()
-            .unwrap_or("")
-            .trim_matches('/');
-        let candidate = candidate.trim_end_matches(".html");
-        if !candidate.is_empty() {
-            return candidate.to_string();
+        for pair in query.split('&') {
+            let (key, value) = match pair.split_once('=') {
+                Some((key, value)) => (key, value),
+                None => continue,
+            };
+            let key = key.trim();
+            let value = value.trim().trim_matches('/').trim_end_matches(".html");
+            if value.is_empty() {
+                continue;
+            }
+            if key.eq_ignore_ascii_case("principalId")
+                || key.eq_ignore_ascii_case("userId")
+                || key.eq_ignore_ascii_case("user_id")
+            {
+                return value.to_string();
+            }
         }
     }
     let without_query = trimmed.split('?').next().unwrap_or(trimmed);

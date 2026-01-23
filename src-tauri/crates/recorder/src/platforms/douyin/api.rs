@@ -564,14 +564,14 @@ fn build_douyin_passport_params(
         "p_no",
         override_value(overrides, &["p_no"])
             .or_else(|| read_env("DOUYIN_P_NO"))
-            .unwrap_or_default(),
+            .unwrap_or_else(|| now_secs.clone()),
     );
     push_param(
         &mut params,
         "biz_trace_id",
         override_value(overrides, &["biz_trace_id"])
             .or_else(|| read_env("DOUYIN_BIZ_TRACE_ID"))
-            .unwrap_or_default(),
+            .unwrap_or_else(|| now_ms.clone()),
     );
     push_param(
         &mut params,

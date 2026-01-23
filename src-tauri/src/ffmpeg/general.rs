@@ -55,8 +55,9 @@ pub async fn handle_ffmpeg_process(
             _ => {}
         }
     }
-    if let Err(e) = child.wait().await {
-        return Err(e.to_string());
+    let status = child.wait().await.map_err(|e| e.to_string())?;
+    if !status.success() {
+        return Err(format!("ffmpeg exited with status: {}", status));
     }
 
     Ok(())
@@ -67,6 +68,24 @@ pub async fn concat_videos(
     videos: &[PathBuf],
     output_path: &Path,
 ) -> Result<(), String> {
+    if videos.is_empty() {
+        return Err("No videos to concat".to_string());
+    }
+    if videos.len() == 1 {
+        let input = &videos[0];
+        if input != output_path {
+            if let Some(output_folder) = output_path.parent() {
+                if !output_folder.exists() {
+                    std::fs::create_dir_all(output_folder).unwrap();
+                }
+            }
+            let _ = tokio::fs::remove_file(output_path).await;
+            tokio::fs::rename(input, output_path)
+                .await
+                .map_err(|e| format!("Failed to rename output file: {}", e))?;
+        }
+        return Ok(());
+    }
     // ffmpeg -i input1.mp4 -i input2.mp4 -i input3.mp4 -c copy output.mp4
     let mut ffmpeg_process = tokio::process::Command::new(ffmpeg_path());
     #[cfg(target_os = "windows")]
@@ -78,13 +97,16 @@ pub async fn concat_videos(
     }
 
     let filelist_filename = format!("filelist_{}.txt", random_filename().await);
+    let filelist_path = output_folder.join(&filelist_filename);
 
-    let mut filelist = tokio::fs::File::create(&output_folder.join(&filelist_filename))
-        .await
-        .unwrap();
+    let mut filelist = tokio::fs::File::create(&filelist_path).await.unwrap();
     for video in videos {
+        let escaped_path = video
+            .to_string_lossy()
+            .replace('\\', "/")
+            .replace('\'', "'\\''");
         filelist
-            .write_all(format!("file '{}'\n", video.display()).as_bytes())
+            .write_all(format!("file '{}'\n", escaped_path).as_bytes())
             .await
             .unwrap();
     }
@@ -118,10 +140,10 @@ pub async fn concat_videos(
     ffmpeg_process.args(["-progress", "pipe:2"]);
     ffmpeg_process.args(["-y"]);
 
-    handle_ffmpeg_process(reporter, &mut ffmpeg_process).await?;
+    let result = handle_ffmpeg_process(reporter, &mut ffmpeg_process).await;
 
     // clean up filelist
-    let _ = tokio::fs::remove_file(output_folder.join(&filelist_filename)).await;
+    let _ = tokio::fs::remove_file(&filelist_path).await;
 
-    Ok(())
+    result
 }

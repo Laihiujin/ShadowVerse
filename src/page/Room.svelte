@@ -67,29 +67,61 @@
     return coverMap[platform] || "/imgs/huya.png";
   }
 
-  let avatar_cache: Map<string, string> = new Map();
-  async function get_avatar_url(user_id: string, url: string) {
-    if (avatar_cache.has(user_id)) {
-      return avatar_cache.get(user_id);
+  const avatar_cache: Map<string, string> = new Map();
+  const avatar_last_key: Map<string, string> = new Map();
+  function build_avatar_cache_key(room_id: string, url: string) {
+    return `${room_id}:${url}`;
+  }
+  function cleanup_avatar_cache(room_id: string, next_key: string) {
+    const prev_key = avatar_last_key.get(room_id);
+    if (prev_key && prev_key !== next_key) {
+      const prev_blob = avatar_cache.get(prev_key);
+      if (prev_blob) {
+        URL.revokeObjectURL(prev_blob);
+      }
+      avatar_cache.delete(prev_key);
+    }
+    avatar_last_key.set(room_id, next_key);
+  }
+  async function get_avatar_url(room_id: string, url: string) {
+    const cache_key = build_avatar_cache_key(room_id, url);
+    if (avatar_cache.has(cache_key)) {
+      return avatar_cache.get(cache_key);
     }
     console.log("get avatar url:", url);
     const response = await get(url);
     const blob = await response.blob();
     const avatar_url = URL.createObjectURL(blob);
-    avatar_cache.set(user_id, avatar_url);
+    avatar_cache.set(cache_key, avatar_url);
     return avatar_url;
   }
 
-  let image_cache: Map<string, string> = new Map();
-  async function get_image_url(url: string) {
-    if (image_cache.has(url)) {
-      return image_cache.get(url);
+  const image_cache: Map<string, string> = new Map();
+  const cover_last_key: Map<string, string> = new Map();
+  function build_cover_cache_key(room_id: string, url: string) {
+    return `${room_id}:${url}`;
+  }
+  function cleanup_cover_cache(room_id: string, next_key: string) {
+    const prev_key = cover_last_key.get(room_id);
+    if (prev_key && prev_key !== next_key) {
+      const prev_blob = image_cache.get(prev_key);
+      if (prev_blob) {
+        URL.revokeObjectURL(prev_blob);
+      }
+      image_cache.delete(prev_key);
+    }
+    cover_last_key.set(room_id, next_key);
+  }
+  async function get_image_url(room_id: string, url: string) {
+    const cache_key = build_cover_cache_key(room_id, url);
+    if (image_cache.has(cache_key)) {
+      return image_cache.get(cache_key);
     }
     console.log("get image url:", url);
     const response = await get(url);
     const blob = await response.blob();
     const cover_url = URL.createObjectURL(blob);
-    image_cache.set(url, cover_url);
+    image_cache.set(cache_key, cover_url);
     return cover_url;
   }
 
@@ -113,8 +145,12 @@
     // process room cover
     for (const room of new_summary.recorders) {
       if (room.user_info.user_avatar != "") {
+        cleanup_avatar_cache(
+          room.room_info.room_id,
+          build_avatar_cache_key(room.room_info.room_id, room.user_info.user_avatar)
+        );
         room.user_info.user_avatar = await get_avatar_url(
-          room.user_info.user_id,
+          room.room_info.room_id,
           room.user_info.user_avatar
         );
       } else {
@@ -122,7 +158,12 @@
       }
 
       if (room.room_info.room_cover != "") {
+        cleanup_cover_cache(
+          room.room_info.room_id,
+          build_cover_cache_key(room.room_info.room_id, room.room_info.room_cover)
+        );
         room.room_info.room_cover = await get_image_url(
+          room.room_info.room_id,
           room.room_info.room_cover
         );
       } else if (room.user_info.user_avatar != "") {
@@ -146,24 +187,44 @@
   let addValid = false;
   let addErrorMsg = "";
   let selectedPlatform = "bilibili";
+  let batchMode = false;
+  let batchInput = "";
+  let batchValidCount = 0;
+  let batchInvalidCount = 0;
+  let batchEntries: { roomId: string; platform: string }[] = [];
   $: {
-    const trimmed = addRoom.trim();
-    const parsed = parseRoomInput(trimmed);
-    const normalizedRoomId =
-      parsed.platform === selectedPlatform && parsed.roomId
-        ? parsed.roomId
-        : trimmed;
-    const needsNumeric =
-      selectedPlatform === "bilibili" || selectedPlatform === "douyin";
-    if (!normalizedRoomId) {
-      addValid = false;
-      addErrorMsg = "";
-    } else if (needsNumeric && !Number.isInteger(Number(normalizedRoomId))) {
-      addValid = false;
-      addErrorMsg =
-        "\u0049\u0044\u683c\u5f0f\u9519\u8bef\uff0c\u8bf7\u68c0\u67e5\u8f93\u5165";
+    if (!batchMode) {
+      const trimmed = addRoom.trim();
+      const parsed = parseRoomInput(trimmed);
+      const normalizedRoomId =
+        parsed.platform === selectedPlatform && parsed.roomId
+          ? parsed.roomId
+          : trimmed;
+      const needsNumeric =
+        selectedPlatform === "bilibili" || selectedPlatform === "douyin";
+      if (!normalizedRoomId) {
+        addValid = false;
+        addErrorMsg = "";
+      } else if (needsNumeric && !Number.isInteger(Number(normalizedRoomId))) {
+        addValid = false;
+        addErrorMsg =
+          "\u0049\u0044\u683c\u5f0f\u9519\u8bef\uff0c\u8bf7\u68c0\u67e5\u8f93\u5165";
+      } else {
+        addValid = true;
+        addErrorMsg = "";
+      }
+      batchValidCount = 0;
+      batchInvalidCount = 0;
+      batchEntries = [];
     } else {
-      addValid = true;
+      const { entries, invalidCount } = buildBatchEntries(
+        batchInput,
+        selectedPlatform
+      );
+      batchEntries = entries;
+      batchValidCount = entries.length;
+      batchInvalidCount = invalidCount;
+      addValid = entries.length > 0;
       addErrorMsg = "";
     }
   }
@@ -453,6 +514,61 @@
     return { roomId: trimmed, platform };
   }
 
+  function normalizeBatchInput(raw: string, defaultPlatform: string) {
+    const parsed = parseRoomInput(raw);
+    const trimmed = raw.trim();
+    if (parsed.roomId) {
+      return { roomId: parsed.roomId, platform: parsed.platform || defaultPlatform };
+    }
+    return { roomId: trimmed, platform: defaultPlatform };
+  }
+
+  function buildBatchEntries(raw: string, defaultPlatform: string) {
+    const lines = raw.split(/\r?\n/);
+    const entries: { roomId: string; platform: string }[] = [];
+    const seen = new Set<string>();
+    let invalidCount = 0;
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      const normalized = normalizeBatchInput(trimmed, defaultPlatform);
+      if (!normalized.roomId) {
+        invalidCount += 1;
+        continue;
+      }
+      const needsNumeric =
+        normalized.platform === "bilibili" || normalized.platform === "douyin";
+      if (needsNumeric && !Number.isInteger(Number(normalized.roomId))) {
+        invalidCount += 1;
+        continue;
+      }
+      const key = `${normalized.platform}:${normalized.roomId}`;
+      if (seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+      entries.push(normalized);
+    }
+
+    return { entries, invalidCount };
+  }
+
+  function applyBatchNormalization() {
+    const { entries, invalidCount } = buildBatchEntries(
+      batchInput,
+      selectedPlatform
+    );
+    const normalizedLines = entries.map((entry) =>
+      entry.platform === selectedPlatform
+        ? entry.roomId
+        : `${entry.platform} ${entry.roomId}`
+    );
+    batchInput = normalizedLines.join("\n");
+    batchValidCount = entries.length;
+    batchInvalidCount = invalidCount;
+  }
+
   function addNewRecorder(room_id: string, platform: string, extra: string) {
     // if extra contains ?, remove it
     if (extra.includes("?")) {
@@ -471,6 +587,53 @@
       .catch(async (e) => {
         await message(e);
       });
+  }
+
+  async function addBatchRecorders() {
+    if (batchEntries.length === 0) {
+      await message("\u6ca1\u6709\u53ef\u6dfb\u52a0\u7684\u76f4\u64ad\u95f4");
+      return;
+    }
+    let success = 0;
+    let failed = 0;
+    const failures: { platform: string; roomId: string; error: string }[] = [];
+    for (const entry of batchEntries) {
+      try {
+        await invoke("add_recorder", {
+          roomId: entry.roomId,
+          platform: entry.platform,
+          extra: "",
+        });
+        success += 1;
+      } catch (e) {
+        failed += 1;
+        failures.push({
+          platform: entry.platform,
+          roomId: entry.roomId,
+          error: String(e),
+        });
+      }
+    }
+    addModal = false;
+    addRoom = "";
+    batchInput = "";
+    const detail = failed > 0 ? `\uff0c\u5931\u8d25 ${failed} \u4e2a` : "";
+    const summary = `\u6210\u529f ${success} \u4e2a${detail}`;
+    if (failures.length > 0) {
+      const maxLines = 20;
+      const lines = failures
+        .slice(0, maxLines)
+        .map((failure) => `${failure.platform}:${failure.roomId} - ${failure.error}`);
+      const more =
+        failures.length > maxLines
+          ? `\n... (${failures.length - maxLines} \u6761)`
+          : "";
+      await message(
+        `${summary}\n\n\u5931\u8d25\u660e\u7ec6:\n${lines.join("\n")}${more}`
+      );
+    } else {
+      await message(summary);
+    }
   }
 
   let generateWholeClipModal = false;
@@ -835,13 +998,17 @@
       <div class="p-6 space-y-6">
         <div class="space-y-4">
           <div class="space-y-2">
-            <label
-              for="platform"
+            <div
+              id="platform-label"
               class="block text-sm font-medium text-gray-700 dark:text-gray-300"
             >
               平台
-            </label>
-            <div class="grid grid-cols-5 gap-2 p-0.5 bg-[#f5f5f7] dark:bg-[#1c1c1e] rounded-lg">
+            </div>
+            <div
+              class="grid grid-cols-5 gap-2 p-0.5 bg-[#f5f5f7] dark:bg-[#1c1c1e] rounded-lg"
+              role="group"
+              aria-labelledby="platform-label"
+            >
               <button
                 class="px-3 py-2 text-sm font-medium rounded-md transition-colors {selectedPlatform ===
                 'bilibili'
@@ -891,6 +1058,41 @@
           </div>
 
           <div class="space-y-2">
+            <div
+              id="add-mode-label"
+              class="block text-sm font-medium text-gray-700 dark:text-gray-300"
+            >
+              添加模式
+            </div>
+            <div
+              class="grid grid-cols-2 gap-2 p-0.5 bg-[#f5f5f7] dark:bg-[#1c1c1e] rounded-lg"
+              role="group"
+              aria-labelledby="add-mode-label"
+            >
+              <button
+                class="px-3 py-2 text-sm font-medium rounded-md transition-colors {batchMode
+                ? 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'
+                : 'bg-white dark:bg-[#323234] shadow-sm text-gray-900 dark:text-white'}"
+                on:click={() => {
+                  batchMode = false;
+                }}
+              >
+                单个
+              </button>
+              <button
+                class="px-3 py-2 text-sm font-medium rounded-md transition-colors {batchMode
+                ? 'bg-white dark:bg-[#323234] shadow-sm text-gray-900 dark:text-white'
+                : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'}"
+                on:click={() => {
+                  batchMode = true;
+                }}
+              >
+                批量
+              </button>
+            </div>
+          </div>
+
+          <div class="space-y-2">
             <label
               for="room_id"
               class="block text-sm font-medium text-gray-700 dark:text-gray-300"
@@ -901,17 +1103,36 @@
                   ? "直播间链接/ID"
                   : "直播间ID"}
             </label>
-            <input
-              id="room_id"
-              type="text"
-              bind:value={addRoom}
-              class="w-full px-3 py-2 bg-[#f5f5f7] dark:bg-[#1c1c1e] border-0 rounded-lg focus:ring-2 focus:ring-blue-500 text-gray-900 dark:text-white placeholder-gray-500 dark:placeholder-gray-400"
-              placeholder={selectedPlatform === "kuaishou" || selectedPlatform === "tiktok"
-                ? "请输入直播间链接"
-                : selectedPlatform === "bilibili" || selectedPlatform === "douyin"
-                  ? "请输入直播间链接或房间号"
-                  : "请输入直播间房间号"}
-            />
+            {#if batchMode}
+              <textarea
+                id="room_id"
+                rows="6"
+                bind:value={batchInput}
+                class="w-full px-3 py-2 bg-[#f5f5f7] dark:bg-[#1c1c1e] border-0 rounded-lg focus:ring-2 focus:ring-blue-500 text-gray-900 dark:text-white placeholder-gray-500 dark:placeholder-gray-400"
+                placeholder="批量粘贴直播间链接/ID，可包含标题或其他文字"
+              ></textarea>
+              <div class="text-xs text-gray-500 dark:text-gray-400">
+                检测到 {batchValidCount} 个可添加，忽略 {batchInvalidCount} 个
+              </div>
+              <button
+                class="mt-2 text-xs text-blue-600 dark:text-blue-400 hover:underline"
+                on:click={() => applyBatchNormalization()}
+              >
+                {"\u4e00\u952e\u53bb\u91cd/\u6821\u9a8c"}
+              </button>
+            {:else}
+              <input
+                id="room_id"
+                type="text"
+                bind:value={addRoom}
+                class="w-full px-3 py-2 bg-[#f5f5f7] dark:bg-[#1c1c1e] border-0 rounded-lg focus:ring-2 focus:ring-blue-500 text-gray-900 dark:text-white placeholder-gray-500 dark:placeholder-gray-400"
+                placeholder={selectedPlatform === "kuaishou" || selectedPlatform === "tiktok"
+                  ? "请输入直播间链接"
+                  : selectedPlatform === "bilibili" || selectedPlatform === "douyin"
+                    ? "请输入直播间链接或房间号"
+                    : "请输入直播间房间号"}
+              />
+            {/if}
             {#if addErrorMsg}
               <p class="text-sm text-red-600 dark:text-red-500">
                 {addErrorMsg}
@@ -932,6 +1153,10 @@
               class="px-4 py-2 bg-[#0A84FF] hover:bg-[#0A84FF]/90 text-white text-sm font-medium rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               disabled={!addValid}
               on:click={() => {
+                if (batchMode) {
+                  addBatchRecorders();
+                  return;
+                }
                 const normalized = normalizeRoomInput(
                   addRoom,
                   selectedPlatform

@@ -152,6 +152,7 @@ export interface Config {
   webhook_url: string;
   danmu_ass_options: Danmu2AssOptions;
   powerlive_key: string;
+  use_default_accounts: boolean;
 }
 
 export interface Danmu2AssOptions {

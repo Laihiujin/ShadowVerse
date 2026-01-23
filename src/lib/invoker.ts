@@ -181,10 +181,22 @@ function createSocket() {
     transports: ["websocket", "polling"],
     autoConnect: true,
     reconnection: true,
+    reconnectionAttempts: Infinity,
+    reconnectionDelay: 500,
+    reconnectionDelayMax: 5000,
+    timeout: 20000,
   });
 
   socket.on("connect", () => {
     console.log("[Socket.IO] Connected to server");
+  });
+
+  socket.io.on("reconnect", (attempt) => {
+    console.log("[Socket.IO] Reconnected to server after attempts:", attempt);
+  });
+
+  socket.io.on("reconnect_attempt", (attempt) => {
+    console.log("[Socket.IO] Reconnect attempt:", attempt);
   });
 
   socket.on("disconnect", (reason) => {

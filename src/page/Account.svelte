@@ -226,11 +226,15 @@ function toggleDropdown(uid) {
           cookies: qr_status.cookies,
           platform: selectedPlatform,
         });
+        await invoke("update_default_account", {
+          cookies: qr_status.cookies,
+          platform: selectedPlatform,
+        });
         await update_accounts();
         addModal = false;
         return;
       }
-      if (qr_status.code == 1) {
+      if (qr_status.code == 1 || qr_status.code == 2) {
         if (qr_status.message && qr_status.message !== "new") {
           qr_error = qr_status.message;
           if (qr_status.message.includes("\u8bbf\u95ee\u592a\u9891\u7e41")) {

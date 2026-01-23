@@ -12,6 +12,7 @@
     Captions,
     DiscAlbum,
     SquareBottomDashedScissors,
+    Users,
   } from "lucide-svelte";
   import { onMount } from "svelte";
 
@@ -43,12 +44,14 @@
       font_size: 36,
       opacity: 0.8,
     },
+    use_default_accounts: false,
   };
 
   let showModal = false;
   let endpoint = localStorage.getItem("endpoint") || "";
   let endpointValue = endpoint;
   let darkMode = localStorage.getItem("theme") === "dark";
+  let defaultAccountPlatforms: string[] = [];
 
   function updateTheme() {
     localStorage.setItem("theme", darkMode ? "dark" : "light");
@@ -65,6 +68,10 @@
     let config: Config = await invoke("get_config");
     setting_model = config;
     console.log(config);
+  }
+
+  async function get_default_account_platforms() {
+    defaultAccountPlatforms = await invoke("get_default_account_platforms");
   }
 
   async function browse_folder() {
@@ -159,6 +166,12 @@
     });
   }
 
+  async function update_use_default_accounts() {
+    await invoke("update_use_default_accounts", {
+      useDefaultAccounts: setting_model.use_default_accounts,
+    });
+  }
+
 
   async function update_danmu_ass_options() {
     await invoke("update_danmu_ass_options", {
@@ -169,6 +182,7 @@
 
   onMount(async () => {
     await get_config();
+    await get_default_account_platforms();
   });
 </script>
 
@@ -270,14 +284,61 @@
             </div>
           </div>
         </div>
-        <!-- API Server Settings -->
+        <div class="space-y-4">
+          <h2
+            class="text-lg font-medium text-gray-900 dark:text-white flex items-center space-x-2"
+          >
+            <Users class="w-5 h-5 dark:icon-white" />
+            <span>账号设置</span>
+          </h2>
+          <div
+            class="bg-white dark:bg-[#3c3c3e] rounded-xl border border-gray-200 dark:border-gray-700 divide-y divide-gray-200 dark:divide-gray-700"
+          >
+            <div class="p-4">
+              <div class="flex items-center justify-between">
+                <div>
+                  <h3 class="text-sm font-medium text-gray-900 dark:text-white">使用默认账号</h3>
+                  <p class="text-sm text-gray-500 dark:text-gray-400">
+                    启用后优先使用配置文件中的默认账号
+                  </p>
+                </div>
+                <label class="relative inline-block w-11 h-6">
+                  <input
+                    type="checkbox"
+                    class="peer opacity-0 w-0 h-0"
+                    bind:checked={setting_model.use_default_accounts}
+                    on:change={update_use_default_accounts}
+                  />
+                  <span
+                    class="switch-slider absolute cursor-pointer top-0 left-0 right-0 bottom-0 bg-gray-300 dark:bg-gray-600 rounded-full transition-all duration-300 before:absolute before:h-4 before:w-4 before:left-1 before:bottom-1 before:bg-white before:rounded-full before:transition-all before:duration-300 peer-checked:bg-blue-500 peer-checked:before:translate-x-5"
+                  ></span>
+                </label>
+              </div>
+            </div>
+            <div class="p-4">
+              <div class="flex items-center justify-between">
+                <div>
+                  <h3 class="text-sm font-medium text-gray-900 dark:text-white">默认账号平台</h3>
+                  <p class="text-sm text-gray-500 dark:text-gray-400">
+                    {#if defaultAccountPlatforms.length > 0}
+                      {defaultAccountPlatforms.join(" / ")}
+                    {:else}
+                      无
+                    {/if}
+                  </p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
         {#if !TAURI_ENV}
           <div class="space-y-4">
             <h2
               class="text-lg font-medium text-gray-900 dark:text-white flex items-center space-x-2"
             >
-              <FileText class="w-5 h-5 dark:icon-white" />
-              <span>API 服务器配置</span>
+              <SquareBottomDashedScissors class="w-5 h-5 dark:icon-white" />
+              <span>API 设置</span>
             </h2>
             <div
               class="bg-white dark:bg-[#3c3c3e] rounded-xl border border-gray-200 dark:border-gray-700 divide-y divide-gray-200 dark:divide-gray-700"
@@ -287,11 +348,9 @@
                   <div>
                     <h3
                       class="text-sm font-medium text-gray-900 dark:text-white"
-                    >
-                      API 服务器地址
-                    </h3>
+                    >API 地址</h3>
                     <p class="text-sm text-gray-500 dark:text-gray-400">
-                      设置 API 服务器的地址
+                      设置后端 API 地址，用于访问服务端
                     </p>
                   </div>
                   <div class="flex items-center space-x-2">
@@ -609,8 +668,7 @@
                   </div>
                 </div>
               {:else}
-                {#if TAURI_ENV && setting_model.subtitle_generator_type === "whisper"}
-                  <div class="p-4">
+                <div class="p-4">
                     <div class="flex items-center justify-between">
                       <div>
                         <h3
@@ -750,7 +808,6 @@
                     </div>
                   </div>
                 </div>
-              {/if}
             </div>
           </div>
 

@@ -8,7 +8,7 @@ pub struct ProgressManager {
 
 impl ProgressManager {
     pub fn new() -> Self {
-        let (progress_sender, progress_receiver) = broadcast::channel(256);
+        let (progress_sender, progress_receiver) = broadcast::channel(2048);
         Self {
             progress_sender,
             progress_receiver,

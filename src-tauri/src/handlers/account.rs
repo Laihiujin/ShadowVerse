@@ -1,6 +1,8 @@
 use std::str::FromStr;
 
 use crate::database::account::AccountRow;
+use crate::config::{Config, DefaultAccountConfig};
+use crate::database::Database;
 use crate::state::State;
 use crate::state_type;
 use crate::utils::browser::BrowserCookieCollector;
@@ -53,35 +55,126 @@ pub async fn add_account(
     platform: String,
     cookies: &str,
 ) -> Result<(), String> {
-    // check if cookies is valid
+    let account = build_account_row(&platform, cookies).await?;
+    state.db.add_account(&account).await?;
+    Ok(())
+}
+
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn update_default_account(
+    state: state_type!(),
+    platform: String,
+    cookies: String,
+) -> Result<(), String> {
+    if cookies.trim().is_empty() {
+        return Err("Empty cookies".to_string());
+    }
+    let _ = build_account_row(&platform, &cookies).await?;
+    let mut config = state.config.write().await;
+    if let Some(entry) = config
+        .default_accounts
+        .iter_mut()
+        .find(|entry| entry.platform == platform)
+    {
+        entry.cookies = cookies;
+    } else {
+        config.default_accounts.push(DefaultAccountConfig { platform, cookies });
+    }
+    config.save();
+    Ok(())
+}
+
+pub async fn ensure_default_accounts(db: &Database, config: &Config) {
+    if config.default_accounts.is_empty() {
+        return;
+    }
+
+    for entry in &config.default_accounts {
+        let cookies = entry.cookies.trim();
+        if cookies.is_empty() {
+            continue;
+        }
+        let platform = match PlatformType::from_str(&entry.platform) {
+            Ok(platform) => platform,
+            Err(_) => {
+                log::warn!("Skip default account with invalid platform: {}", entry.platform);
+                continue;
+            }
+        };
+        let accounts = match db.get_accounts().await {
+            Ok(accounts) => accounts,
+            Err(e) => {
+                log::warn!("Failed to load accounts for validation: {}", e);
+                continue;
+            }
+        };
+        let existing = accounts.iter().find(|account| {
+            account.platform == platform.as_str() && account.cookies == cookies
+        });
+        if let Some(existing) = existing {
+            if let Err(e) = build_account_row(platform.as_str(), cookies).await {
+                log::warn!(
+                    "Default account invalid for {}: {}, reimporting",
+                    platform.as_str(),
+                    e
+                );
+                if let Err(e) = db.remove_account(platform.as_str(), &existing.uid).await {
+                    log::warn!(
+                        "Failed to remove invalid default account for {}: {}",
+                        platform.as_str(),
+                        e
+                    );
+                }
+            } else {
+                continue;
+            }
+        }
+        match build_account_row(platform.as_str(), cookies).await {
+            Ok(account) => {
+                if let Err(e) = db.add_account(&account).await {
+                    log::warn!(
+                        "Failed to add default account for {}: {}",
+                        platform.as_str(),
+                        e
+                    );
+                }
+            }
+            Err(e) => {
+                log::warn!(
+                    "Failed to build default account for {}: {}",
+                    platform.as_str(),
+                    e
+                );
+            }
+        }
+    }
+}
+
+async fn build_account_row(platform: &str, cookies: &str) -> Result<AccountRow, String> {
     if let Err(e) = cookies.parse::<HeaderValue>() {
         return Err(format!("Invalid cookies: {e}"));
     }
 
-    let platform = PlatformType::from_str(&platform).map_err(|_| "Invalid platform".to_string())?;
+    let platform = PlatformType::from_str(platform).map_err(|_| "Invalid platform".to_string())?;
 
     let csrf = match platform {
-        PlatformType::BiliBili => {
-            cookies
-                .split(';')
-                .map(str::trim)
-                .find_map(|cookie| -> Option<String> {
-                    if cookie.starts_with("bili_jct=") {
-                        let var_name = &"bili_jct=";
-                        Some(cookie[var_name.len()..].to_string())
-                    } else {
-                        None
-                    }
-                })
-        }
+        PlatformType::BiliBili => cookies
+            .split(';')
+            .map(str::trim)
+            .find_map(|cookie| {
+                if cookie.starts_with("bili_jct=") {
+                    let var_name = &"bili_jct=";
+                    Some(cookie[var_name.len()..].to_string())
+                } else {
+                    None
+                }
+            }),
         _ => Some(String::new()),
     };
 
-    // fetch basic account user info
     let client = reqwest::Client::new();
     let user_info = match platform {
         PlatformType::BiliBili => {
-            // For Bilibili, extract numeric uid from cookies
             if csrf.is_none() {
                 return Err("Invalid bilibili cookies".to_string());
             }
@@ -103,9 +196,7 @@ pub async fn add_account(
                     user_name: user_info.user_name,
                     user_avatar: user_info.user_avatar_url,
                 },
-                Err(e) => {
-                    return Err(e.to_string());
-                }
+                Err(e) => return Err(e.to_string()),
             }
         }
         PlatformType::Douyin => {
@@ -121,7 +212,6 @@ pub async fn add_account(
 
             match douyin::api::get_user_info(&client, &tmp_account.to_account()).await {
                 Ok(user_info) => {
-                    // For Douyin, use sec_uid as the primary identifier in id_str field
                     let avatar_url = user_info
                         .avatar_thumb
                         .url_list
@@ -135,9 +225,7 @@ pub async fn add_account(
                         user_avatar: avatar_url,
                     }
                 }
-                Err(e) => {
-                    return Err(format!("Failed to get Douyin user info: {e}"));
-                }
+                Err(e) => return Err(format!("Failed to get Douyin user info: {e}")),
             }
         }
         PlatformType::Huya => {
@@ -159,9 +247,7 @@ pub async fn add_account(
                     user_name: user_info.user_name,
                     user_avatar: user_info.user_avatar,
                 },
-                Err(e) => {
-                    return Err(format!("Failed to get Huya user info: {e}"));
-                }
+                Err(e) => return Err(format!("Failed to get Huya user info: {e}")),
             }
         }
         PlatformType::Kuaishou => {
@@ -235,12 +321,11 @@ pub async fn add_account(
             }
         }
         PlatformType::Youtube => {
-            // unsupported
             return Err("Unsupported platform".to_string());
         }
     };
 
-    let account = AccountRow {
+    Ok(AccountRow {
         platform: platform.as_str().to_string(),
         uid: user_info.user_id,
         name: user_info.user_name,
@@ -248,9 +333,7 @@ pub async fn add_account(
         csrf: csrf.unwrap(),
         cookies: cookies.into(),
         created_at: Utc::now().to_rfc3339(),
-    };
-    state.db.add_account(&account).await?;
-    Ok(())
+    })
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]
@@ -286,14 +369,8 @@ fn domain_for_platform(platform: &str) -> Option<&'static str> {
     }
 }
 
-#[cfg_attr(feature = "gui", tauri::command)]
-pub async fn get_browser_cookies(
-    _state: state_type!(),
-    platform: String,
-) -> Result<String, String> {
-    let domain = domain_for_platform(&platform)
-        .ok_or_else(|| format!("Unsupported platform: {platform}"))?;
-
+fn collect_browser_cookies_for_platform(platform: &str) -> Option<String> {
+    let domain = domain_for_platform(platform)?;
     let mut cookie_sets = Vec::new();
     if let Some(collector) = BrowserCookieCollector::new_chrome() {
         if let Ok(cookies) = collector.get_cookies_as_string(domain) {
@@ -311,10 +388,21 @@ pub async fn get_browser_cookies(
     }
 
     if cookie_sets.is_empty() {
-        return Err("No browser cookies found".to_string());
+        None
+    } else {
+        Some(cookie_sets.join("; "))
     }
+}
 
-    Ok(cookie_sets.join("; "))
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn get_browser_cookies(
+    _state: state_type!(),
+    platform: String,
+) -> Result<String, String> {
+    match collect_browser_cookies_for_platform(&platform) {
+        Some(cookies) => Ok(cookies),
+        None => Err("No browser cookies found".to_string()),
+    }
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]
@@ -372,7 +460,7 @@ pub async fn get_qr_status(
                     Ok(PlatformQrStatus {
                         code: qr_status.code,
                         cookies: qr_status.cookies,
-                        message: None,
+                        message: qr_status.message,
                     })
                 }
                 Err(e) => Err(e.to_string()),

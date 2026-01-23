@@ -1,5 +1,5 @@
-// Prevents additional console window on Windows in release, DO NOT REMOVE!!
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+// Prevents additional console window on Windows, DO NOT REMOVE!!
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
 mod config;
 mod constants;
@@ -34,7 +34,7 @@ use recorder_manager::RecorderManager;
 use simplelog::ConfigBuilder;
 use state::State;
 use std::fs::File;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -85,6 +85,29 @@ async fn open_log_file(log_dir: &Path) -> Result<File, Box<dyn std::error::Error
         .create(true)
         .append(true)
         .open(&log_filename)?)
+}
+
+#[cfg(all(feature = "gui", target_os = "windows"))]
+fn choose_windows_output_path(default_output: &Path) -> PathBuf {
+    let default_str = default_output.to_string_lossy();
+    let default_drive = default_str
+        .chars()
+        .next()
+        .map(|c| c.to_ascii_uppercase());
+    if default_drive != Some('C') {
+        return default_output.to_path_buf();
+    }
+
+    for drive in b'D'..=b'Z' {
+        let root = format!("{}:\\", drive as char);
+        if Path::new(&root).exists() {
+            return PathBuf::from(root)
+                .join("cn.ShadowVerse")
+                .join("output");
+        }
+    }
+
+    default_output.to_path_buf()
 }
 
 async fn setup_logging(log_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
@@ -479,6 +502,8 @@ async fn setup_server_state(args: Args) -> Result<State, Box<dyn std::error::Err
 
     db.set(db_pool).await;
     db.finish_pending_tasks().await?;
+    let config_snapshot = config.read().await.clone();
+    crate::handlers::account::ensure_default_accounts(&db, &config_snapshot).await;
 
     let progress_manager = Arc::new(ProgressManager::new());
     let emitter = EventEmitter::new(progress_manager.get_event_sender());
@@ -530,6 +555,9 @@ async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::
     let app_dirs = AppDirs::new(Some("cn.ShadowVerse"), false).unwrap();
     let config_path = app_dirs.config_dir.join("Conf.toml");
     let cache_path = app_dirs.cache_dir.join("cache");
+    #[cfg(target_os = "windows")]
+    let output_path = choose_windows_output_path(&app_dirs.data_dir.join("output"));
+    #[cfg(not(target_os = "windows"))]
     let output_path = app_dirs.data_dir.join("output");
     log::info!("Loading config from {config_path:?}");
     let config = match Config::load(&config_path, &cache_path, &output_path) {
@@ -555,6 +583,8 @@ async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::
     };
     db_clone.set(sqlite_pool.unwrap().clone()).await;
     db_clone.finish_pending_tasks().await?;
+    let config_snapshot = config.read().await.clone();
+    crate::handlers::account::ensure_default_accounts(&db, &config_snapshot).await;
     let webhook_poster =
         webhook::poster::create_webhook_poster(&config.read().await.webhook_url, None).unwrap();
     let mut task_manager = TaskManager::new();
@@ -643,6 +673,7 @@ fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
     builder.invoke_handler(tauri::generate_handler![
         crate::handlers::account::get_accounts,
         crate::handlers::account::add_account,
+        crate::handlers::account::update_default_account,
         crate::handlers::account::remove_account,
         crate::handlers::account::get_browser_cookies,
         crate::handlers::account::get_account_count,
@@ -661,11 +692,13 @@ fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
         crate::handlers::config::update_openai_api_key,
         crate::handlers::config::update_openai_api_endpoint,
         crate::handlers::config::update_auto_generate,
+        crate::handlers::config::update_use_default_accounts,
         crate::handlers::config::update_status_check_interval,
         crate::handlers::config::update_whisper_language,
         crate::handlers::config::update_webhook_url,
         crate::handlers::config::update_danmu_ass_options,
         crate::handlers::config::update_powerlive_key,
+        crate::handlers::config::get_default_account_platforms,
         crate::handlers::message::get_messages,
         crate::handlers::message::read_message,
         crate::handlers::message::delete_message,
@@ -721,6 +754,7 @@ fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
         crate::handlers::utils::fetch_url,
         crate::handlers::utils::open_live,
         crate::handlers::utils::open_clip,
+        crate::handlers::utils::open_video_folder,
         crate::handlers::utils::open_log_folder,
         crate::handlers::utils::file_exists,
         crate::handlers::utils::console_log,

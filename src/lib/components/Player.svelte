@@ -429,6 +429,15 @@ ${mediaPlaylistUrl}`;
         }
       } else {
         await player.load(direct_url);
+        if (global_offset === 0) {
+          try {
+            const { offset } = await load_metadata(direct_url);
+            global_offset = offset;
+          } catch (error) {
+            log.warn("Failed to load metadata for offset, fallback to live_id", error);
+            global_offset = parseInt(live_id) / 1000;
+          }
+        }
       }
 
       // This runs if the asynchronous load is successful.
@@ -583,7 +592,7 @@ ${mediaPlaylistUrl}`;
       // listen to danmaku event
       await listen(`danmu:${room_id}`, (event: { payload: DanmuEntry }) => {
         if (global_offset == 0) {
-          return;
+          global_offset = parseInt(live_id) / 1000;
         }
 
         if (event.payload.ts < global_offset * 1000) {

@@ -17,9 +17,11 @@ const MOBILE_USER_AGENT: &str =
 const MOBILE_REFERER: &str = "https://www.kuaishou.com/short-video/3x224rwabjmuc9y?fid=1712760877&cc=share_copylink&followRefer=151&shareMethod=TOKEN&docId=9&kpn=KUAISHOU&subBiz=BROWSE_SLIDE_PHOTO&photoId=3x224rwabjmuc9y&shareId=17144298796566&shareToken=X-6FTMeYTsY97qYL&shareResourceType=PHOTO_OTHER&userId=3xtnuitaz2982eg&shareType=1&et=1_i/2000048330179867715_h3052&shareMode=APP&originShareId=17144298796566&appType=21&shareObjectId=5230086626478274600&shareUrlOpened=0&timestamp=1663833792288&utm_source=app_share&utm_medium=app_share&utm_campaign=app_share&location=app_share";
 const MOBILE_FALLBACK_COOKIE: &str = "did=web_e988652e11b545469633396abe85a89f; didv=1796004001000";
 const MOBILE_RATE_LIMIT_COOLDOWN_SECS: i64 = 120;
+const WEB_RATE_LIMIT_COOLDOWN_SECS: i64 = 120;
 
 static MOBILE_COOLDOWN_UNTIL: AtomicI64 = AtomicI64::new(0);
 static MOBILE_DISABLED: AtomicI64 = AtomicI64::new(-1);
+static WEB_COOLDOWN_UNTIL: AtomicI64 = AtomicI64::new(0);
 
 fn mobile_api_disabled() -> bool {
     let cached = MOBILE_DISABLED.load(Ordering::Relaxed);
@@ -45,10 +47,25 @@ fn is_rate_limit_message(message: &str) -> bool {
             || trimmed.contains("\u{8bf7}\u{7a0d}\u{540e}\u{518d}\u{8bd5}"))
 }
 
+fn is_room_disabled_message(message: &str) -> bool {
+    let trimmed = message.trim();
+    !trimmed.is_empty() && trimmed.contains("\u{672a}\u{542f}\u{7528}")
+}
+
 fn set_mobile_cooldown(reason: &str) {
     let until = Utc::now().timestamp() + MOBILE_RATE_LIMIT_COOLDOWN_SECS;
     MOBILE_COOLDOWN_UNTIL.store(until, Ordering::Relaxed);
     log::info!("[Kuaishou] Mobile API cooldown set ({}s): {}", MOBILE_RATE_LIMIT_COOLDOWN_SECS, reason);
+}
+
+fn set_web_cooldown(reason: &str) {
+    let until = Utc::now().timestamp() + WEB_RATE_LIMIT_COOLDOWN_SECS;
+    WEB_COOLDOWN_UNTIL.store(until, Ordering::Relaxed);
+    log::info!(
+        "[Kuaishou] Web cooldown set ({}s): {}",
+        WEB_RATE_LIMIT_COOLDOWN_SECS,
+        reason
+    );
 }
 
 fn mobile_api_allowed() -> bool {
@@ -59,9 +76,21 @@ fn mobile_api_allowed() -> bool {
     now >= MOBILE_COOLDOWN_UNTIL.load(Ordering::Relaxed)
 }
 
+fn web_api_allowed() -> bool {
+    let now = Utc::now().timestamp();
+    now >= WEB_COOLDOWN_UNTIL.load(Ordering::Relaxed)
+}
+
 pub fn is_rate_limited_error(error: &RecorderError) -> bool {
     match error {
         RecorderError::ApiError { error } => is_rate_limit_message(error),
+        _ => false,
+    }
+}
+
+pub fn is_room_disabled_error(error: &RecorderError) -> bool {
+    match error {
+        RecorderError::ApiError { error } => is_room_disabled_message(error),
         _ => false,
     }
 }
@@ -80,6 +109,25 @@ fn decode_json_string(raw: &str) -> Option<String> {
                 Some(decoded)
             }
         })
+}
+
+fn extract_rate_limit_message_from_body(body: &str) -> Option<String> {
+    if let Ok(value) = serde_json::from_str::<Value>(body) {
+        let keys = ["error_msg", "errorMsg", "errMsg", "message", "msg"];
+        for key in keys {
+            if let Some(msg) = value.get(key).and_then(|v| v.as_str()) {
+                if is_rate_limit_message(msg) {
+                    return Some(msg.to_string());
+                }
+            }
+        }
+    }
+
+    if is_rate_limit_message(body) {
+        return Some(body.trim().to_string());
+    }
+
+    None
 }
 
 fn extract_hls_play_url(html_str: &str) -> Option<String> {
@@ -315,6 +363,11 @@ async fn fetch_web_html(
     account: &Account,
     url: &str,
 ) -> Result<(String, reqwest::Url), RecorderError> {
+    if !web_api_allowed() {
+        return Err(RecorderError::ApiError {
+            error: "访问太快，请稍后再试。".to_string(),
+        });
+    }
     let mut headers = reqwest::header::HeaderMap::new();
     headers.insert("User-Agent", USER_AGENT.parse().unwrap());
     headers.insert(
@@ -360,6 +413,10 @@ async fn fetch_web_html(
                 status,
                 final_url
             );
+            if let Some(msg) = extract_rate_limit_message_from_body(&html_str) {
+                set_web_cooldown(&msg);
+                return Err(RecorderError::ApiError { error: msg });
+            }
             let snippet_len = html_str.len().min(200);
             if snippet_len > 0 {
                 log::debug!(
@@ -379,6 +436,10 @@ async fn fetch_web_html(
                 html_str.len(),
                 final_url
             );
+            if let Some(msg) = extract_rate_limit_message_from_body(&html_str) {
+                set_web_cooldown(&msg);
+                return Err(RecorderError::ApiError { error: msg });
+            }
             let snippet_len = html_str.len().min(200);
             if snippet_len > 0 {
                 log::debug!(
@@ -700,6 +761,7 @@ pub struct StreamInfo {
 pub struct QrStatus {
     pub code: u8,
     pub cookies: String,
+    pub message: Option<String>,
 }
 
 fn gen_web_did() -> String {
@@ -719,6 +781,37 @@ fn build_qr_cookie() -> String {
     format!("did={did}; didv={didv}; kwpsecproductname=PCLive")
 }
 
+fn extract_qr_message(value: &Value) -> Option<String> {
+    match value {
+        Value::Object(map) => {
+            let keys = ["error_msg", "errorMsg", "errMsg", "message", "msg", "prompt"];
+            for key in keys {
+                if let Some(Value::String(msg)) = map.get(key) {
+                    let trimmed = msg.trim();
+                    if !trimmed.is_empty() {
+                        return Some(trimmed.to_string());
+                    }
+                }
+            }
+            for child in map.values() {
+                if let Some(msg) = extract_qr_message(child) {
+                    return Some(msg);
+                }
+            }
+            None
+        }
+        Value::Array(values) => {
+            for child in values {
+                if let Some(msg) = extract_qr_message(child) {
+                    return Some(msg);
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
 /// Get room information from web page
 pub async fn get_room_info(
     client: &Client,
@@ -735,8 +828,10 @@ pub async fn get_room_info(
         }
     };
     if is_rate_limit_message(&html_str) {
+        let message = "访问太快，请稍后再试。";
+        set_web_cooldown(message);
         return Err(RecorderError::ApiError {
-            error: "Rate limited by Kuaishou web page".to_string(),
+            error: message.to_string(),
         });
     }
     let has_fallback_stream = extract_hls_play_url(&html_str).is_some();
@@ -1609,9 +1704,11 @@ pub async fn get_qr_status(
 
     // If not scanned yet, return pending status
     if scan_data["result"].as_u64().unwrap_or(1) != 1 {
+        let message = extract_qr_message(&scan_data);
         return Ok(QrStatus {
             code: 1,
             cookies: String::new(),
+            message,
         });
     }
 
@@ -1628,9 +1725,11 @@ pub async fn get_qr_status(
 
     // If not accepted yet, return pending status
     if accept_data["result"].as_u64().unwrap_or(1) != 1 {
+        let message = extract_qr_message(&accept_data);
         return Ok(QrStatus {
             code: 2,
             cookies: String::new(),
+            message,
         });
     }
 
@@ -1649,6 +1748,7 @@ pub async fn get_qr_status(
     let callback_headers = callback_response.headers().clone();
     let callback_json: serde_json::Value = callback_response.json().await.unwrap_or_default();
     log::warn!("[Kuaishou] QR callback: {}", callback_json);
+    let callback_message = extract_qr_message(&callback_json);
 
     let mut cookies_map: HashMap<String, String> = HashMap::new();
     for cookie_header in callback_headers.get_all("set-cookie") {
@@ -1693,6 +1793,13 @@ pub async fn get_qr_status(
     let cookies = cookies_vec.join("; ");
 
     if cookies.is_empty() {
+        if let Some(message) = callback_message {
+            return Ok(QrStatus {
+                code: 2,
+                cookies: String::new(),
+                message: Some(message),
+            });
+        }
         return Err(RecorderError::ApiError {
             error: "Failed to extract cookies from response".to_string(),
         });
@@ -1701,6 +1808,7 @@ pub async fn get_qr_status(
     Ok(QrStatus {
         code: 0,
         cookies,
+        message: None,
     })
 }
 

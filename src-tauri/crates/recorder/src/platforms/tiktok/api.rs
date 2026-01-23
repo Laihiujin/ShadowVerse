@@ -1859,6 +1859,23 @@ pub async fn get_room_info(
             }
         }
         if let Some(reason) = detect_blocked_page(&html_str) {
+            if let Some(mobile_url) = to_mobile_url(url) {
+                let mobile_headers = build_page_headers(&mobile_url, MOBILE_USER_AGENT, true);
+                if let Ok(mobile_response) = request_client
+                    .get(&mobile_url)
+                    .headers(mobile_headers)
+                    .send()
+                    .await
+                {
+                    let mobile_status = mobile_response.status();
+                    let mobile_html = mobile_response.text().await.unwrap_or_default();
+                    if mobile_status.is_success()
+                        && detect_blocked_page(&mobile_html).is_none()
+                    {
+                        html_str = mobile_html;
+                    }
+                }
+            }
             let dump_path = maybe_dump_html("blocked_room_info", &html_str);
             return Err(RecorderError::ApiError {
                 error: if let Some(path) = dump_path {
@@ -2206,6 +2223,23 @@ pub async fn get_stream_url(
             }
         }
         if let Some(reason) = detect_blocked_page(&html_str) {
+            if let Some(mobile_url) = to_mobile_url(url) {
+                let mobile_headers = build_page_headers(&mobile_url, MOBILE_USER_AGENT, true);
+                if let Ok(mobile_response) = request_client
+                    .get(&mobile_url)
+                    .headers(mobile_headers)
+                    .send()
+                    .await
+                {
+                    let mobile_status = mobile_response.status();
+                    let mobile_html = mobile_response.text().await.unwrap_or_default();
+                    if mobile_status.is_success()
+                        && detect_blocked_page(&mobile_html).is_none()
+                    {
+                        html_str = mobile_html;
+                    }
+                }
+            }
             let dump_path = maybe_dump_html("blocked_stream", &html_str);
             return Err(RecorderError::ApiError {
                 error: if let Some(path) = dump_path {

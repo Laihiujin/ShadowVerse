@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::state::State;
 use crate::state_type;
@@ -333,6 +333,25 @@ pub async fn open_clip(state: state_type!(), video_id: i64) -> Result<(), String
         log::error!("clip window build failed: {e}");
     }
 
+    Ok(())
+}
+
+#[cfg(feature = "gui")]
+#[tauri::command]
+pub async fn open_video_folder(state: state_type!(), video_id: i64) -> Result<(), String> {
+    let video = state.db.get_video(video_id).await?;
+    let file_path = PathBuf::from(&video.file);
+    let full_path = if file_path.is_absolute() {
+        file_path
+    } else {
+        Path::new(&state.config.read().await.output).join(&video.file)
+    };
+
+    if !full_path.exists() {
+        return Err("文件不存在".to_string());
+    }
+
+    show_in_folder(full_path.to_string_lossy().to_string());
     Ok(())
 }
 

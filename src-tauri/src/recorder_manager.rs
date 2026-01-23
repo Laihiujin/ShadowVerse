@@ -209,7 +209,7 @@ impl RecorderManager {
         task_manager: Arc<TaskManager>,
         webhook_poster: WebhookPoster,
     ) -> RecorderManager {
-        let (event_tx, _) = broadcast::channel(100);
+        let (event_tx, _) = broadcast::channel(2048);
         let manager = RecorderManager {
             #[cfg(not(feature = "headless"))]
             app_handle,
@@ -240,6 +240,34 @@ impl RecorderManager {
 
     pub fn get_event_sender(&self) -> broadcast::Sender<RecorderEvent> {
         self.event_tx.clone()
+    }
+
+    async fn select_account_for_platform(
+        &self,
+        platform: PlatformType,
+    ) -> Result<Option<Account>, DatabaseError> {
+        let config = self.config.read().await.clone();
+        if config.use_default_accounts {
+            let default_cookie = config
+                .default_accounts
+                .iter()
+                .find(|entry| entry.platform == platform.as_str() && !entry.cookies.trim().is_empty())
+                .map(|entry| entry.cookies.clone());
+            if let Some(default_cookie) = default_cookie {
+                let accounts = self.db.get_accounts().await?;
+                let matched = accounts.iter().find(|account| {
+                    account.platform == platform.as_str() && account.cookies == default_cookie
+                });
+                return Ok(matched.map(|account| account.to_account()));
+            }
+            return Ok(None);
+        }
+
+        match self.db.get_account_by_platform(platform.as_str()).await {
+            Ok(account) => Ok(Some(account.to_account())),
+            Err(DatabaseError::NotFound) => Ok(None),
+            Err(e) => Err(e),
+        }
     }
 
     async fn handle_events(&self) {
@@ -526,24 +554,19 @@ impl RecorderManager {
                     continue;
                 }
                 let (auto_start, extra) = recorder_map.get(&(platform, room_id.clone())).unwrap();
-                let account = self
-                    .db
-                    .get_account_by_platform(platform.clone().as_str())
-                    .await;
-                let account_required = !matches!(
-                    platform,
-                    PlatformType::Huya
-                        | PlatformType::Kuaishou
-                );
-                if account_required && account.is_err() {
+                let account_required = !matches!(platform, PlatformType::Huya | PlatformType::Kuaishou);
+                let account = match self.select_account_for_platform(platform).await {
+                    Ok(account) => account,
+                    Err(e) => {
+                        log::error!("Failed to load account for {platform:?}: {e}");
+                        None
+                    }
+                };
+                if account_required && account.is_none() {
                     log::info!("Skip recorder without account: {platform:?} {room_id}");
                     continue;
                 }
-                let account = if let Ok(account) = account {
-                    account.to_account()
-                } else {
-                    Account::default()
-                };
+                let account = account.unwrap_or_default();
 
                 if let Err(e) = self
                     .add_recorder(&account, platform, &room_id, extra, *auto_start)

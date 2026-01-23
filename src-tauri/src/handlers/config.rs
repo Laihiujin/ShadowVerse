@@ -8,7 +8,11 @@ use tauri::State as TauriState;
 
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn get_config(state: state_type!()) -> Result<Config, ()> {
-    Ok(state.config.read().await.clone())
+    let mut config = state.config.read().await.clone();
+    for entry in &mut config.default_accounts {
+        entry.cookies = String::new();
+    }
+    Ok(config)
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]
@@ -245,6 +249,32 @@ pub async fn update_auto_generate(
     config.auto_generate.encode_danmu = encode_danmu;
     config.save();
     Ok(())
+}
+
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn update_use_default_accounts(
+    state: state_type!(),
+    use_default_accounts: bool,
+) -> Result<(), ()> {
+    let mut config = state.config.write().await;
+    config.use_default_accounts = use_default_accounts;
+    config.save();
+    Ok(())
+}
+
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn get_default_account_platforms(state: state_type!()) -> Result<Vec<String>, ()> {
+    let config = state.config.read().await;
+    let mut platforms = Vec::new();
+    for entry in &config.default_accounts {
+        if entry.cookies.trim().is_empty() {
+            continue;
+        }
+        if !platforms.contains(&entry.platform) {
+            platforms.push(entry.platform.clone());
+        }
+    }
+    Ok(platforms)
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]

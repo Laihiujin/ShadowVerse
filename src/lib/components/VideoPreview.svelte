@@ -1922,21 +1922,7 @@
             {/if}
           </button>
 
-          <button
-            class="px-6 py-3 text-sm font-medium transition-all duration-200 relative"
-            class:text-white={activeTab === "upload"}
-            class:text-gray-400={activeTab !== "upload"}
-            class:bg-[#2c2c2e]={activeTab === "upload"}
-            class:bg-transparent={activeTab !== "upload"}
-            on:click={() => (activeTab = "upload")}
-          >
-            快速投稿
-            {#if activeTab === "upload"}
-              <div
-                class="absolute bottom-0 left-0 right-0 h-0.5 bg-[#0A84FF]"
-              ></div>
-            {/if}
-          </button>
+          
         </div>
 
         <!-- Tab 内容 -->
@@ -2075,7 +2061,7 @@
               {/each}
             </div>
           </div>
-        {:else if activeTab === "upload"}
+        {:else if false}
           <!-- 投稿 Tab 内容 -->
           <div class="p-4 space-y-6">
             <!-- 封面预览 -->

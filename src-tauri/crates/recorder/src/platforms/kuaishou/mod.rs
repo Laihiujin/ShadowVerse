@@ -247,6 +247,10 @@ impl KuaishouRecorder {
                     self.log_info("Rate limited, backing off");
                     return false;
                 }
+                if api::is_room_disabled_error(&e) {
+                    self.log_info("Room not enabled, skipping polling");
+                    return false;
+                }
                 self.log_error(&format!("Update room status failed: {}", e));
                 pre_live_status
             }

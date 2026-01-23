@@ -12,6 +12,7 @@ use crate::{
     handlers::{
         account::{
             add_account, get_account_count, get_accounts, get_qr, get_qr_status, remove_account,
+            update_default_account,
         },
         config::{
             get_config, get_static_port, update_auto_generate, update_clip_name_format,
@@ -141,6 +142,21 @@ async fn handler_add_account(
     Json(param): Json<AddAccountRequest>,
 ) -> Result<Json<ApiResponse<()>>, ApiError> {
     add_account(state.0, param.platform, &param.cookies).await?;
+    Ok(Json(ApiResponse::success(())))
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateDefaultAccountRequest {
+    platform: String,
+    cookies: String,
+}
+
+async fn handler_update_default_account(
+    state: axum::extract::State<State>,
+    Json(param): Json<UpdateDefaultAccountRequest>,
+) -> Result<Json<ApiResponse<()>>, ApiError> {
+    update_default_account(state.0, param.platform, param.cookies).await?;
     Ok(Json(ApiResponse::success(())))
 }
 
@@ -1713,6 +1729,10 @@ pub async fn start_api_server(state: State) {
             .route("/api/get_qr", post(handler_get_qr))
             .route("/api/get_qr_status", post(handler_get_qr_status))
             .route("/api/add_account", post(handler_add_account))
+            .route(
+                "/api/update_default_account",
+                post(handler_update_default_account),
+            )
             .route("/api/remove_account", post(handler_remove_account))
             .route(
                 "/api/update_whisper_model",

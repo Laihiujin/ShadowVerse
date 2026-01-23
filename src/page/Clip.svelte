@@ -21,6 +21,7 @@
     Download,
     RotateCw,
     Edit,
+    FolderOpen,
   } from "lucide-svelte";
   import { AnnotationOutline } from "flowbite-svelte-icons";
   import BilibiliIcon from "../lib/components/BilibiliIcon.svelte";
@@ -388,6 +389,14 @@
     }
   }
 
+  async function openVideoFolder(video: VideoItem) {
+    try {
+      await invoke("open_video_folder", { videoId: video.id });
+    } catch (error) {
+      console.error("Failed to open video folder:", error);
+    }
+  }
+
   function handleVideoImported() {
     // 视频导入完成后刷新列表
     loadVideos();
@@ -715,11 +724,11 @@
                   >直播间</th
                 >
                 <th
-                  class="px-4 py-3 text-left text-sm font-medium text-gray-500 dark:text-gray-400 w-64"
+                  class="px-4 py-3 text-left text-sm font-medium text-gray-500 dark:text-gray-400"
                   >视频</th
                 >
                 <th
-                  class="px-4 py-3 text-left text-sm font-medium text-gray-500 dark:text-gray-400 w-20"
+                  class="px-4 py-3 text-left text-sm font-medium text-gray-500 dark:text-gray-400"
                   >备注</th
                 >
                 <th
@@ -733,10 +742,6 @@
                 <th
                   class="px-4 py-3 text-left text-sm font-medium text-gray-500 dark:text-gray-400 w-28"
                   >创建时间</th
-                >
-                <th
-                  class="px-4 py-3 text-left text-sm font-medium text-gray-500 dark:text-gray-400 w-28"
-                  >投稿状态</th
                 >
                 <th
                   class="px-4 py-3 text-left text-sm font-medium text-gray-500 dark:text-gray-400 w-28"
@@ -876,7 +881,7 @@
                     </div>
                   </td>
 
-                  <td class="px-4 py-3 w-64">
+                  <td class="px-4 py-3">
                     <div class="flex items-center space-x-3 w-full">
                       <div
                         class="w-12 h-8 rounded-lg overflow-hidden bg-gray-100 dark:bg-gray-700 flex items-center justify-center flex-shrink-0"
@@ -905,7 +910,7 @@
                           </svg>
                         {/if}
                       </div>
-                      <div class="min-w-0 flex-1 w-64">
+                      <div class="min-w-0 flex-1">
                         <p
                           class="text-sm font-medium text-gray-900 dark:text-white truncate w-full"
                           title={video.title || video.file}
@@ -922,8 +927,8 @@
                     </div>
                   </td>
 
-                  <td class="px-4 py-3 w-20">
-                    <div class="flex items-center space-x-2">
+                  <td class="px-4 py-3">
+                    <div class="flex items-center space-x-2 min-w-0">
                       <AnnotationOutline class="table-icon text-gray-400" />
                       <span class="text-sm text-gray-800 truncate"
                         >{video.note}</span
@@ -972,9 +977,7 @@
                           {video.bvid}
                         </a>
                       {:else}
-                        <span class="text-gray-500 dark:text-gray-400 text-sm"
-                          >未投稿</span
-                        >
+                        <!-- 未投稿 -->
                       {/if}
                     </div>
                   </td>
@@ -988,6 +991,15 @@
                       >
                         <Play class="w-4 h-4 text-blue-500" />
                       </button>
+                      {#if TAURI_ENV}
+                        <button
+                          class="p-1.5 rounded-lg hover:bg-blue-500/10 transition-colors"
+                          title="打开文件夹"
+                          on:click={() => openVideoFolder(video)}
+                        >
+                          <FolderOpen class="w-4 h-4 text-blue-500" />
+                        </button>
+                      {/if}
                       <button
                         class="p-1.5 rounded-lg hover:bg-green-500/10 transition-colors"
                         title="编辑备注"

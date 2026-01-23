@@ -21,6 +21,7 @@ use tokio::sync::RwLock;
 use tokio_tungstenite::{
     connect_async, tungstenite::Message as WsMessage, MaybeTlsStream, WebSocketStream,
 };
+use url::Url;
 
 use crate::{provider::DanmuProvider, DanmuMessage, DanmuMessageType, DanmuStreamError};
 
@@ -45,6 +46,10 @@ impl DouyinDanmu {
         tx: mpsc::UnboundedSender<DanmuMessageType>,
     ) -> Result<(), DanmuStreamError> {
         let url = self.get_wss_url().await?;
+        let host = Url::parse(&url)
+            .ok()
+            .and_then(|parsed| parsed.host_str().map(|s| s.to_string()))
+            .unwrap_or_else(|| "webcast5-ws-web-hl.douyin.com".to_string());
 
         let request = tokio_tungstenite::tungstenite::http::Request::builder()
             .uri(url)
@@ -62,7 +67,7 @@ impl DouyinDanmu {
             )
             .header(
                 tokio_tungstenite::tungstenite::http::header::HOST,
-                "webcast5-ws-web-hl.douyin.com",
+                host,
             )
             .header(
                 tokio_tungstenite::tungstenite::http::header::UPGRADE,

@@ -52,6 +52,10 @@ pub struct Config {
     pub powerlive_key: String,
     #[serde(default = "default_douyin_passport")]
     pub douyin_passport: DouyinPassportConfig,
+    #[serde(default = "default_default_accounts")]
+    pub default_accounts: Vec<DefaultAccountConfig>,
+    #[serde(default = "default_use_default_accounts")]
+    pub use_default_accounts: bool,
 }
 
 #[derive(Deserialize, Serialize, Clone)]
@@ -101,6 +105,12 @@ pub struct DouyinPassportConfig {
     pub x_tt_session_dtrait: String,
     pub qr_origin: String,
     pub qr_referer: String,
+}
+
+#[derive(Deserialize, Serialize, Clone, PartialEq, Eq)]
+pub struct DefaultAccountConfig {
+    pub platform: String,
+    pub cookies: String,
 }
 
 fn default_danmu_ass_options() -> Danmu2AssOptions {
@@ -202,6 +212,14 @@ fn default_douyin_passport() -> DouyinPassportConfig {
     }
 }
 
+fn default_default_accounts() -> Vec<DefaultAccountConfig> {
+    Vec::new()
+}
+
+fn default_use_default_accounts() -> bool {
+    false
+}
+
 fn normalize_proxy_url(raw: &str) -> Option<String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
@@ -266,6 +284,32 @@ fn detect_windows_proxy() -> Option<String> {
 }
 
 impl Config {
+    fn ensure_storage_dirs(&self) {
+        for path in [&self.cache, &self.output] {
+            let dir_path = Path::new(path);
+            if let Err(e) = std::fs::create_dir_all(dir_path) {
+                log::warn!("Failed to create storage dir {dir_path:?}: {e}");
+            }
+        }
+    }
+
+    fn apply_default_account_override(&mut self) -> bool {
+        let example = toml::from_str::<Config>(include_str!("../config.example.toml")).ok();
+        let Some(example) = example else {
+            return false;
+        };
+        let mut changed = false;
+        if self.default_accounts != example.default_accounts {
+            self.default_accounts = example.default_accounts;
+            changed = true;
+        }
+        if self.use_default_accounts != example.use_default_accounts {
+            self.use_default_accounts = example.use_default_accounts;
+            changed = true;
+        }
+        changed
+    }
+
     pub fn load(
         config_path: &PathBuf,
         default_cache: &Path,
@@ -275,6 +319,10 @@ impl Config {
             if let Ok(mut config) = toml::from_str::<Config>(&content) {
                 config.config_path = config_path.to_str().unwrap().into();
                 config.update_interval = Arc::new(AtomicU64::new(config.status_check_interval));
+                if config.apply_default_account_override() {
+                    config.save();
+                }
+                config.ensure_storage_dirs();
                 return Ok(config);
             }
         }
@@ -308,8 +356,11 @@ impl Config {
             update_interval: Arc::new(AtomicU64::new(default_status_check_interval())),
             powerlive_key: default_powerlive_key(),
             douyin_passport: default_douyin_passport(),
+            default_accounts: default_default_accounts(),
+            use_default_accounts: default_use_default_accounts(),
         };
 
+        config.ensure_storage_dirs();
         config.save();
 
         Ok(config)

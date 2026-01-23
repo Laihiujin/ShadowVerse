@@ -12,6 +12,7 @@ use futures_util::{SinkExt, StreamExt, TryStreamExt};
 use log::{error, info};
 use pct_str::{PctString, URIReserved};
 use regex::Regex;
+use url::Url;
 use serde::{Deserialize, Serialize};
 use tokio::{
     sync::{mpsc, RwLock},
@@ -325,21 +326,40 @@ impl BiliDanmu {
             .await?
             .json()
             .await?;
-        let re = Regex::new(r"wbi/(.*).png").unwrap();
-        let img = re
-            .captures(nav_info["data"]["wbi_img"]["img_url"].as_str().unwrap())
-            .unwrap()
-            .get(1)
-            .unwrap()
-            .as_str();
-        let sub = re
-            .captures(nav_info["data"]["wbi_img"]["sub_url"].as_str().unwrap())
-            .unwrap()
-            .get(1)
-            .unwrap()
-            .as_str();
+        let img_url = nav_info["data"]["wbi_img"]["img_url"]
+            .as_str()
+            .ok_or_else(|| DanmuStreamError::MessageParseError {
+                err: "Missing bilibili wbi img url".to_string(),
+            })?;
+        let sub_url = nav_info["data"]["wbi_img"]["sub_url"]
+            .as_str()
+            .ok_or_else(|| DanmuStreamError::MessageParseError {
+                err: "Missing bilibili wbi sub url".to_string(),
+            })?;
+        let img = BiliDanmu::extract_wbi_key(img_url)?;
+        let sub = BiliDanmu::extract_wbi_key(sub_url)?;
         let raw_string = format!("{}{}", img, sub);
         Ok(raw_string)
+    }
+
+    fn extract_wbi_key(url: &str) -> Result<String, DanmuStreamError> {
+        let parsed = Url::parse(url)?;
+        let file_name = parsed
+            .path_segments()
+            .and_then(|mut segs| segs.next_back())
+            .ok_or_else(|| DanmuStreamError::MessageParseError {
+                err: format!("Invalid bilibili wbi url: {url}"),
+            })?;
+        let key = file_name
+            .rsplit_once('.')
+            .map(|(stem, _)| stem)
+            .unwrap_or(file_name);
+        if key.is_empty() {
+            return Err(DanmuStreamError::MessageParseError {
+                err: format!("Invalid bilibili wbi filename: {file_name}"),
+            });
+        }
+        Ok(key.to_string())
     }
 
     pub async fn get_sign(
