@@ -1,6 +1,8 @@
 use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::Aes256Gcm;
+#[cfg(target_os = "windows")]
 use base64::{engine::general_purpose, Engine as _};
+#[cfg(target_os = "windows")]
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::{fs, io};
@@ -14,6 +16,7 @@ use windows_sys::Win32::Storage::FileSystem::{FILE_SHARE_DELETE, FILE_SHARE_READ
 type DataBlob = CRYPT_INTEGER_BLOB;
 
 #[derive(Debug, serde::Serialize)]
+#[cfg_attr(feature = "headless", allow(dead_code))]
 pub struct BrowserCookie {
     pub host: String,
     pub name: String,
@@ -22,11 +25,13 @@ pub struct BrowserCookie {
     pub expires: i64,
 }
 
+#[cfg_attr(feature = "headless", allow(dead_code))]
 pub struct BrowserCookieCollector {
     pub profile_path: PathBuf,
 }
 
 impl BrowserCookieCollector {
+    #[cfg_attr(feature = "headless", allow(dead_code))]
     pub fn new_chrome() -> Option<Self> {
         let local_app_data = std::env::var("LOCALAPPDATA").ok()?;
         let path = Path::new(&local_app_data).join("Google/Chrome/User Data");
@@ -39,6 +44,7 @@ impl BrowserCookieCollector {
         }
     }
 
+    #[cfg_attr(feature = "headless", allow(dead_code))]
     pub fn new_edge() -> Option<Self> {
         let local_app_data = std::env::var("LOCALAPPDATA").ok()?;
         let path = Path::new(&local_app_data).join("Microsoft/Edge/User Data");
@@ -52,6 +58,7 @@ impl BrowserCookieCollector {
     }
 
     #[cfg(target_os = "windows")]
+    #[cfg_attr(feature = "headless", allow(dead_code))]
     fn get_master_key(&self) -> anyhow::Result<Vec<u8>> {
         let local_state_path = self.profile_path.join("Local State");
         let content = fs::read_to_string(local_state_path)?;
@@ -102,6 +109,7 @@ impl BrowserCookieCollector {
         Err(anyhow::anyhow!("Non-windows platforms not supported yet"))
     }
 
+    #[cfg_attr(feature = "headless", allow(dead_code))]
     pub fn get_cookies(&self, domain_filter: &str) -> anyhow::Result<Vec<BrowserCookie>> {
         let master_key = self.get_master_key()?;
         let mut cookies = Vec::new();
@@ -198,6 +206,7 @@ impl BrowserCookieCollector {
         Ok(cookies)
     }
 
+    #[cfg_attr(feature = "headless", allow(dead_code))]
     pub fn get_cookies_as_string(&self, domain_filter: &str) -> anyhow::Result<String> {
         let cookies = self.get_cookies(domain_filter)?;
         let cookie_str = cookies
@@ -208,6 +217,7 @@ impl BrowserCookieCollector {
         Ok(cookie_str)
     }
 
+    #[cfg_attr(feature = "headless", allow(dead_code))]
     fn decrypt_cookie(&self, encrypted_value: &[u8], master_key: &[u8]) -> anyhow::Result<String> {
         if encrypted_value.is_empty() {
             return Ok(String::new());
@@ -261,6 +271,7 @@ impl BrowserCookieCollector {
     }
 }
 
+#[cfg_attr(feature = "headless", allow(dead_code))]
 fn copy_cookie_db(src: &Path, dst: &Path) -> io::Result<()> {
     if let Ok(_) = fs::copy(src, dst) {
         return Ok(());

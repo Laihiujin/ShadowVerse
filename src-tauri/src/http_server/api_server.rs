@@ -56,11 +56,7 @@ use axum::{
 };
 use recorder::{
     danmu::DanmuEntry,
-    platforms::bilibili::{
-        api::{QrInfo, QrStatus},
-        profile::Profile,
-        response::Typelist,
-    },
+    platforms::bilibili::{profile::Profile, response::Typelist},
     RecorderInfo,
 };
 use serde::{Deserialize, Serialize};
@@ -1437,6 +1433,7 @@ async fn handler_fetch(
     Json(param): Json<HttpProxyRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     let client = reqwest::Client::builder()
+        .no_proxy()
         .timeout(std::time::Duration::from_secs(30))
         .build()
         .map_err(|e| e.to_string())?;

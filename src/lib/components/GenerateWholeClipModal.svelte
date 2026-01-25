@@ -120,6 +120,24 @@
     }
   }
 
+  function default_cover(platform: string) {
+    const coverMap = {
+      bilibili: "/imgs/bilibili.png",
+      douyin: "/imgs/douyin.svg",
+      huya: "/imgs/huya.png",
+      kuaishou: "/imgs/kuaishou.svg",
+      tiktok: "/imgs/Tiktok.svg",
+    };
+    return coverMap[platform] || "/imgs/huya.png";
+  }
+
+  function handle_cover_error(event: Event, platform: string) {
+    const target = event.currentTarget;
+    if (target && target instanceof HTMLImageElement) {
+      target.src = default_cover(platform);
+    }
+  }
+
   function closeModal() {
     showModal = false;
     wholeClipArchives = [];
@@ -244,6 +262,8 @@
                         src={archiveItem.cover}
                         alt="cover"
                         class="w-16 h-10 rounded object-cover flex-shrink-0"
+                        on:error={(e) =>
+                          handle_cover_error(e, archiveItem.platform)}
                       />
                     {/if}
 

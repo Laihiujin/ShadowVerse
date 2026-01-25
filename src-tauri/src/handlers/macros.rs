@@ -1,8 +1,8 @@
-#[cfg(feature = "gui")]
+#[cfg(all(feature = "gui", not(feature = "headless")))]
 #[macro_export]
 macro_rules! state_type {
     () => {
-        TauriState<'_, State>
+        tauri::State<'_, State>
     };
 }
 

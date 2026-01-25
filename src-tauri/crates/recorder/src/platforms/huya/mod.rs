@@ -41,7 +41,7 @@ impl HuyaRecorder {
             platform: PlatformType::Huya,
             room_id: room_id.to_string(),
             account: account.clone(),
-            client: reqwest::Client::new(),
+            client: crate::utils::no_proxy_client(),
             event_channel: channel,
             cache_dir,
             quit: Arc::new(atomic::AtomicBool::new(false)),
@@ -228,10 +228,9 @@ impl crate::traits::RecorderTrait<HuyaExtra> for HuyaRecorder {
                     continue;
                 }
 
-                tokio::time::sleep(Duration::from_secs(
-                    self_clone.update_interval.load(atomic::Ordering::Relaxed),
-                ))
-                .await;
+                let interval = self_clone.update_interval.load(atomic::Ordering::Relaxed);
+                let sleep_secs = crate::utils::jitter_interval_secs(interval, 10);
+                tokio::time::sleep(Duration::from_secs(sleep_secs)).await;
             }
             log::info!("[{}]Recording thread quit.", &self_clone.room_id);
         }));

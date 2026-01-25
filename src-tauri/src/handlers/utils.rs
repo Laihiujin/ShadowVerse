@@ -1,13 +1,12 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use crate::state::State;
 use crate::state_type;
 
-#[cfg(feature = "gui")]
+#[cfg(all(feature = "gui", not(feature = "headless")))]
 use {
     recorder::platforms::PlatformType,
     std::process::Command,
-    tauri::State as TauriState,
     tauri::{Manager, Theme},
     tauri_utils::config::WindowEffectsConfig,
     tokio::fs::OpenOptions,
@@ -32,7 +31,7 @@ pub fn copy_dir_all(
     Ok(())
 }
 
-#[cfg(feature = "gui")]
+#[cfg(all(feature = "gui", not(feature = "headless")))]
 #[cfg_attr(feature = "gui", tauri::command)]
 pub fn show_in_folder(path: String) {
     #[cfg(target_os = "windows")]
@@ -99,6 +98,7 @@ pub struct DiskInfo {
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "headless", allow(dead_code))]
 pub struct FetchUrlResponse {
     pub bytes: Vec<u8>,
     pub content_type: Option<String>,
@@ -130,6 +130,7 @@ pub async fn console_log(_state: state_type!(), level: &str, message: &str) -> R
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]
+#[cfg_attr(feature = "headless", allow(dead_code))]
 pub async fn fetch_url(_state: state_type!(), url: String) -> Result<FetchUrlResponse, String> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(20))
@@ -212,7 +213,7 @@ pub async fn get_disk_info_inner(target: PathBuf) -> Result<DiskInfo, ()> {
     }
 }
 
-#[cfg(feature = "gui")]
+#[cfg(all(feature = "gui", not(feature = "headless")))]
 #[tauri::command]
 pub async fn export_to_file(
     _state: state_type!(),
@@ -238,10 +239,10 @@ pub async fn export_to_file(
     Ok(())
 }
 
-#[cfg(feature = "gui")]
+#[cfg(all(feature = "gui", not(feature = "headless")))]
 #[tauri::command]
 pub async fn open_log_folder(state: state_type!()) -> Result<(), String> {
-    #[cfg(feature = "gui")]
+    #[cfg(all(feature = "gui", not(feature = "headless")))]
     {
         let log_dir = state.app_handle.path().app_log_dir().unwrap();
         show_in_folder(log_dir.to_str().unwrap().to_string());
@@ -249,7 +250,7 @@ pub async fn open_log_folder(state: state_type!()) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(feature = "gui")]
+#[cfg(all(feature = "gui", not(feature = "headless")))]
 #[tauri::command]
 pub async fn open_live(
     state: state_type!(),
@@ -258,7 +259,7 @@ pub async fn open_live(
     live_id: String,
 ) -> Result<(), String> {
     log::info!("Open player window: {room_id} {live_id}");
-    #[cfg(feature = "gui")]
+    #[cfg(all(feature = "gui", not(feature = "headless")))]
     {
         use std::str::FromStr;
 
@@ -307,7 +308,7 @@ pub async fn open_live(
     Ok(())
 }
 
-#[cfg(feature = "gui")]
+#[cfg(all(feature = "gui", not(feature = "headless")))]
 #[tauri::command]
 pub async fn open_clip(state: state_type!(), video_id: i64) -> Result<(), String> {
     log::info!("Open clip window: {video_id}");
@@ -336,7 +337,7 @@ pub async fn open_clip(state: state_type!(), video_id: i64) -> Result<(), String
     Ok(())
 }
 
-#[cfg(feature = "gui")]
+#[cfg(all(feature = "gui", not(feature = "headless")))]
 #[tauri::command]
 pub async fn open_video_folder(state: state_type!(), video_id: i64) -> Result<(), String> {
     let video = state.db.get_video(video_id).await?;
@@ -344,7 +345,7 @@ pub async fn open_video_folder(state: state_type!(), video_id: i64) -> Result<()
     let full_path = if file_path.is_absolute() {
         file_path
     } else {
-        Path::new(&state.config.read().await.output).join(&video.file)
+        std::path::Path::new(&state.config.read().await.output).join(&video.file)
     };
 
     if !full_path.exists() {

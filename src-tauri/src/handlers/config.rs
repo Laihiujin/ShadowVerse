@@ -4,7 +4,6 @@ use crate::state::State;
 use crate::state_type;
 
 #[cfg(feature = "gui")]
-use tauri::State as TauriState;
 
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn get_config(state: state_type!()) -> Result<Config, ()> {
@@ -239,6 +238,24 @@ pub async fn update_openai_api_endpoint(
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]
+#[cfg_attr(feature = "headless", allow(dead_code))]
+pub async fn update_network_config(
+    state: state_type!(),
+    http_proxy: String,
+    https_proxy: String,
+) -> Result<(), ()> {
+    log::info!(
+        "Updating network proxy: http_proxy='{}' https_proxy='{}'",
+        http_proxy,
+        https_proxy
+    );
+    let mut config = state.config.write().await;
+    config.set_network_config(&http_proxy, &https_proxy);
+    config.apply_network_env();
+    Ok(())
+}
+
+#[cfg_attr(feature = "gui", tauri::command)]
 pub async fn update_auto_generate(
     state: state_type!(),
     enabled: bool,
@@ -252,6 +269,7 @@ pub async fn update_auto_generate(
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]
+#[cfg_attr(feature = "headless", allow(dead_code))]
 pub async fn update_use_default_accounts(
     state: state_type!(),
     use_default_accounts: bool,
@@ -270,6 +288,7 @@ pub async fn update_use_default_accounts(
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]
+#[cfg_attr(feature = "headless", allow(dead_code))]
 pub async fn get_default_account_platforms(state: state_type!()) -> Result<Vec<String>, ()> {
     let config = state.config.read().await;
     let mut platforms = Vec::new();
@@ -343,11 +362,10 @@ pub async fn update_danmu_ass_options(
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]
+#[cfg_attr(feature = "headless", allow(dead_code))]
 pub async fn update_powerlive_key(state: state_type!(), powerlive_key: String) -> Result<(), ()> {
     state.config.write().await.powerlive_key = powerlive_key.clone();
     state.config.write().await.save();
     log::info!("Updated powerlive key");
     Ok(())
 }
-
-// proxy is controlled by system settings now

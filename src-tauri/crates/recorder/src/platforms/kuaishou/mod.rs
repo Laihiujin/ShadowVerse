@@ -16,7 +16,7 @@ use chrono::Utc;
 use danmu_stream::danmu_stream::DanmuStream;
 use danmu_stream::provider::ProviderType;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{atomic, Arc};
 use std::time::Duration;
 use tokio::sync::{broadcast, Mutex, RwLock};
@@ -31,6 +31,7 @@ pub struct KuaishouExtra {
     stream_url: Arc<RwLock<Option<String>>>,
     pre_live_id: Arc<RwLock<Option<String>>>,
     should_continue: Arc<AtomicBool>,
+    last_error_ts: Arc<AtomicI64>,
 }
 
 pub type KuaishouRecorder = Recorder<KuaishouExtra>;
@@ -53,12 +54,14 @@ impl KuaishouRecorder {
 
         let client = reqwest::Client::builder()
             .default_headers(default_headers)
+            .no_proxy()
             .build()
             .map_err(|e| RecorderError::ApiError{ error: e.to_string() })?;
         let extra = KuaishouExtra {
             stream_url: Arc::new(RwLock::new(None)),
             pre_live_id: Arc::new(RwLock::new(None)),
             should_continue: Arc::new(AtomicBool::new(false)),
+            last_error_ts: Arc::new(AtomicI64::new(0)),
         };
 
         let recorder = Self {
@@ -113,6 +116,9 @@ impl KuaishouRecorder {
         *self.danmu_storage.write().await = None;
         *self.platform_live_id.write().await = String::new();
         *self.live_id.write().await = String::new();
+        self.extra
+            .last_error_ts
+            .store(0, atomic::Ordering::Relaxed);
         if let Some(danmu_task) = self.danmu_task.lock().await.take() {
             danmu_task.abort();
             let _ = danmu_task.await;
@@ -132,11 +138,34 @@ impl KuaishouRecorder {
 
         match api::get_room_info(&self.client, &self.account, &url).await {
             Ok(room_info) => {
+                let prev_room = self.room_info.read().await.clone();
+                let prev_user = self.user_info.read().await.clone();
+                let final_title = if room_info.room_title.is_empty() {
+                    prev_room.room_title.clone()
+                } else {
+                    room_info.room_title.clone()
+                };
+                let final_cover = if room_info.room_cover_url.is_empty() {
+                    prev_room.room_cover.clone()
+                } else {
+                    room_info.room_cover_url.clone()
+                };
+                let final_user_name = if room_info.user_name.is_empty() {
+                    prev_user.user_name.clone()
+                } else {
+                    room_info.user_name.clone()
+                };
+                let final_avatar = if room_info.user_avatar.is_empty() {
+                    prev_user.user_avatar.clone()
+                } else {
+                    room_info.user_avatar.clone()
+                };
+
                 *self.room_info.write().await = RoomInfo {
                     platform: "kuaishou".to_string(),
                     room_id: self.room_id.to_string(),
-                    room_title: room_info.room_title.clone(),
-                    room_cover: room_info.room_cover_url.clone(),
+                    room_title: final_title,
+                    room_cover: final_cover,
                     status: room_info.live_status,
                 };
 
@@ -144,8 +173,8 @@ impl KuaishouRecorder {
                 if self.user_info.read().await.user_id != room_info.user_id {
                     *self.user_info.write().await = UserInfo {
                         user_id: room_info.user_id.to_string(),
-                        user_name: room_info.user_name.clone(),
-                        user_avatar: room_info.user_avatar.clone(),
+                        user_name: final_user_name,
+                        user_avatar: final_avatar,
                     }
                 }
 
@@ -245,13 +274,22 @@ impl KuaishouRecorder {
             Err(e) => {
                 if api::is_rate_limited_error(&e) {
                     self.log_info("Rate limited, backing off");
+                    self.extra
+                        .last_error_ts
+                        .store(Utc::now().timestamp(), atomic::Ordering::Relaxed);
                     return false;
                 }
                 if api::is_room_disabled_error(&e) {
                     self.log_info("Room not enabled, skipping polling");
+                    self.extra
+                        .last_error_ts
+                        .store(Utc::now().timestamp(), atomic::Ordering::Relaxed);
                     return false;
                 }
                 self.log_error(&format!("Update room status failed: {}", e));
+                self.extra
+                    .last_error_ts
+                    .store(Utc::now().timestamp(), atomic::Ordering::Relaxed);
                 pre_live_status
             }
         }
@@ -488,11 +526,22 @@ impl RecorderTrait<KuaishouExtra> for KuaishouRecorder {
                 }
 
                 let interval = self_clone.update_interval.load(atomic::Ordering::Relaxed);
-                let sleep_secs = if interval <= 10 {
-                    rand::random::<u64>() % 11 + 10
-                } else {
-                    interval + rand::random::<u64>() % 5
-                };
+                let mut sleep_secs = crate::utils::jitter_interval_secs(interval, 10);
+                let error_backoff = std::env::var("BSR_KUAISHOU_ERROR_BACKOFF_SECS")
+                    .ok()
+                    .and_then(|v| v.trim().parse::<u64>().ok())
+                    .unwrap_or(60);
+                let error_window = std::env::var("BSR_KUAISHOU_ERROR_WINDOW_SECS")
+                    .ok()
+                    .and_then(|v| v.trim().parse::<u64>().ok())
+                    .unwrap_or(120);
+                let last_error_ts = self_clone.extra.last_error_ts.load(atomic::Ordering::Relaxed);
+                if last_error_ts > 0 {
+                    let now = Utc::now().timestamp();
+                    if now.saturating_sub(last_error_ts) <= error_window as i64 {
+                        sleep_secs = sleep_secs.saturating_add(error_backoff);
+                    }
+                }
                 tokio::time::sleep(Duration::from_secs(sleep_secs)).await;
             }
         }));

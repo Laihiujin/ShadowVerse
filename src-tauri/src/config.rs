@@ -16,6 +16,10 @@ use crate::{danmu2ass::Danmu2AssOptions, recorder_manager::ClipRangeParams};
 pub struct Config {
     pub cache: String,
     pub output: String,
+    #[serde(default = "default_http_proxy")]
+    pub http_proxy: String,
+    #[serde(default = "default_https_proxy")]
+    pub https_proxy: String,
     pub live_start_notify: bool,
     pub live_end_notify: bool,
     pub clip_notify: bool,
@@ -226,6 +230,14 @@ fn default_use_default_accounts() -> bool {
     false
 }
 
+fn default_http_proxy() -> String {
+    String::new()
+}
+
+fn default_https_proxy() -> String {
+    String::new()
+}
+
 fn normalize_proxy_url(raw: &str) -> Option<String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
@@ -290,6 +302,19 @@ fn detect_windows_proxy() -> Option<String> {
 }
 
 impl Config {
+    fn normalize_storage_paths(&mut self, default_cache: &Path, default_output: &Path) -> bool {
+        let mut changed = false;
+        if self.cache.trim().is_empty() || Path::new(&self.cache).is_relative() {
+            self.cache = default_cache.to_str().unwrap().into();
+            changed = true;
+        }
+        if self.output.trim().is_empty() || Path::new(&self.output).is_relative() {
+            self.output = default_output.to_str().unwrap().into();
+            changed = true;
+        }
+        changed
+    }
+
     fn ensure_storage_dirs(&self) {
         for path in [&self.cache, &self.output] {
             let dir_path = Path::new(path);
@@ -325,6 +350,9 @@ impl Config {
             if let Ok(mut config) = toml::from_str::<Config>(&content) {
                 config.config_path = config_path.to_str().unwrap().into();
                 config.update_interval = Arc::new(AtomicU64::new(config.status_check_interval));
+                if config.normalize_storage_paths(default_cache, default_output) {
+                    config.save();
+                }
                 if config.apply_default_account_override() {
                     config.save();
                 }
@@ -342,6 +370,8 @@ impl Config {
         let config = Config {
             cache: default_cache.to_str().unwrap().into(),
             output: default_output.to_str().unwrap().into(),
+            http_proxy: default_http_proxy(),
+            https_proxy: default_https_proxy(),
             live_start_notify: true,
             live_end_notify: true,
             clip_notify: true,
@@ -449,6 +479,32 @@ impl Config {
         self.update_interval
             .store(interval, atomic::Ordering::Relaxed);
         self.save();
+    }
+
+    pub fn set_network_config(&mut self, http_proxy: &str, https_proxy: &str) {
+        let http = http_proxy.trim();
+        let https = https_proxy.trim();
+        self.http_proxy = http.to_string();
+        self.https_proxy = https.to_string();
+        if http.is_empty() {
+            std::env::remove_var("http_proxy");
+            std::env::remove_var("HTTP_PROXY");
+        } else {
+            std::env::set_var("http_proxy", http);
+            std::env::set_var("HTTP_PROXY", http);
+        }
+        if https.is_empty() {
+            std::env::remove_var("https_proxy");
+            std::env::remove_var("HTTPS_PROXY");
+        } else {
+            std::env::set_var("https_proxy", https);
+            std::env::set_var("HTTPS_PROXY", https);
+        }
+        self.save();
+    }
+
+    pub fn apply_network_env(&self) {
+        self.apply_proxy_env();
     }
 
     pub fn apply_proxy_env(&self) {

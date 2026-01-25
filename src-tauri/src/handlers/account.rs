@@ -1,3 +1,4 @@
+use std::env;
 use std::str::FromStr;
 
 use crate::database::account::AccountRow;
@@ -14,8 +15,11 @@ use recorder::UserInfo;
 use serde::{Deserialize, Serialize};
 
 use hyper::header::HeaderValue;
-#[cfg(feature = "gui")]
-use tauri::State as TauriState;
+use reqwest::header::{HeaderMap, USER_AGENT};
+#[cfg(all(feature = "gui", not(feature = "headless")))]
+use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
+#[cfg(all(feature = "gui", not(feature = "headless")))]
+use url::Url;
 
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn get_accounts(state: state_type!()) -> Result<super::AccountInfo, String> {
@@ -34,6 +38,94 @@ fn get_item_from_cookies(name: &str, cookies: &str) -> Result<String, String> {
         .to_string())
 }
 
+fn normalize_cookie_input(raw: &str) -> String {
+    let replaced = raw
+        .replace('；', ";")
+        .replace('，', ",")
+        .replace('＝', "=");
+    let parts: Vec<&str> = replaced
+        .split(';')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .collect();
+    parts.join("; ")
+}
+
+fn sanitize_cookie_header(raw: &str) -> Result<String, String> {
+    let normalized = normalize_cookie_input(raw);
+    if HeaderValue::from_str(&normalized).is_ok() {
+        return Ok(normalized);
+    }
+    let ascii_only: String = normalized.chars().filter(|c| c.is_ascii()).collect();
+    if HeaderValue::from_str(&ascii_only).is_ok() {
+        return Ok(ascii_only);
+    }
+    Err("Invalid cookies".to_string())
+}
+
+fn get_item_from_cookies_ci(name: &str, cookies: &str) -> Result<String, String> {
+    let target = name.to_ascii_lowercase();
+    for cookie in cookies.split(';').map(str::trim) {
+        if let Some((key, value)) = cookie.split_once('=') {
+            if key.trim().to_ascii_lowercase() == target {
+                return Ok(value.to_string());
+            }
+        }
+    }
+    Err(format!("Invalid cookies: missing {name}").to_string())
+}
+
+fn extract_numeric_after_marker(text: &str, marker: &str) -> Option<String> {
+    let bytes = text.as_bytes();
+    let needle = marker.as_bytes();
+    if needle.is_empty() || bytes.len() < needle.len() {
+        return None;
+    }
+    let mut i = 0;
+    while i + needle.len() <= bytes.len() {
+        if &bytes[i..i + needle.len()] == needle {
+            let mut j = i + needle.len();
+            let max = (j + 200).min(bytes.len());
+            while j < max && !bytes[j].is_ascii_digit() {
+                j += 1;
+            }
+            let start = j;
+            while j < max && bytes[j].is_ascii_digit() {
+                j += 1;
+            }
+            if j > start {
+                return Some(String::from_utf8_lossy(&bytes[start..j]).to_string());
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
+async fn fetch_huya_uid_from_cookie(client: &reqwest::Client, cookies: &str) -> Option<String> {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        USER_AGENT,
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            .parse()
+            .ok()?,
+    );
+    headers.insert("cookie", HeaderValue::from_str(cookies).ok()?);
+    let urls = ["https://i.huya.com/", "https://www.huya.com/"];
+    for url in urls {
+        let response = client.get(url).headers(headers.clone()).send().await.ok()?;
+        let body = response.text().await.ok()?;
+        for key in ["yyuid", "udb_uid", "uid"] {
+            if let Some(uid) = extract_numeric_after_marker(&body, key) {
+                if uid.len() >= 5 {
+                    return Some(uid);
+                }
+            }
+        }
+    }
+    None
+}
+
 fn extract_tiktok_uid(cookies: &str) -> Option<String> {
     for cookie in cookies.split(';').map(str::trim) {
         if let Some((name, _)) = cookie.split_once('=') {
@@ -47,6 +139,17 @@ fn extract_tiktok_uid(cookies: &str) -> Option<String> {
     get_item_from_cookies("sessionid", cookies)
         .or_else(|_| get_item_from_cookies("uid_tt", cookies))
         .ok()
+}
+
+fn extract_douyin_uid(cookies: &str) -> Option<String> {
+    get_item_from_cookies("uid_tt", cookies)
+        .or_else(|_| get_item_from_cookies("uid_tt_ss", cookies))
+        .or_else(|_| get_item_from_cookies("sessionid", cookies))
+        .ok()
+}
+
+fn fallback_uid_from_cookies(cookies: &str) -> String {
+    format!("cookie_{:x}", md5::compute(cookies))
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]
@@ -92,6 +195,10 @@ pub async fn update_default_account(
     }
     if let Some(old_cookies) = old_cookies {
         remove_accounts_by_platform_cookies(&state.db, &platform, &old_cookies).await;
+    }
+    if platform == "tiktok" {
+        let config_snapshot = state.config.read().await.clone();
+        sync_tiktok_webview_cookies(&state.db, &config_snapshot).await;
     }
     Ok(())
 }
@@ -165,6 +272,30 @@ pub async fn ensure_default_accounts(db: &Database, config: &Config) {
     }
 }
 
+pub async fn sync_tiktok_webview_cookies(db: &Database, config: &Config) {
+    let mut cookies = None;
+    if config.use_default_accounts {
+        cookies = config
+            .default_accounts
+            .iter()
+            .find(|entry| entry.platform == "tiktok" && !entry.cookies.trim().is_empty())
+            .map(|entry| entry.cookies.clone());
+    }
+    if cookies.is_none() {
+        if let Ok(account) = db.get_account_by_platform("tiktok").await {
+            if !account.cookies.trim().is_empty() {
+                cookies = Some(account.cookies);
+            }
+        }
+    }
+    if let Some(cookies) = cookies {
+        env::set_var("TIKTOK_WEBVIEW_COOKIES", cookies);
+    } else {
+        env::remove_var("TIKTOK_WEBVIEW_COOKIES");
+    }
+}
+
+#[cfg_attr(feature = "headless", allow(dead_code))]
 pub async fn remove_default_accounts(db: &Database, config: &Config) {
     if config.default_accounts.is_empty() {
         return;
@@ -202,9 +333,8 @@ async fn remove_accounts_by_platform_cookies(db: &Database, platform: &str, cook
 }
 
 async fn build_account_row(platform: &str, cookies: &str) -> Result<AccountRow, String> {
-    if let Err(e) = cookies.parse::<HeaderValue>() {
-        return Err(format!("Invalid cookies: {e}"));
-    }
+    let cookies = sanitize_cookie_header(cookies)
+        .map_err(|e| format!("Invalid cookies: {e}"))?;
 
     let platform = PlatformType::from_str(platform).map_err(|_| "Invalid platform".to_string())?;
 
@@ -223,20 +353,18 @@ async fn build_account_row(platform: &str, cookies: &str) -> Result<AccountRow, 
         _ => Some(String::new()),
     };
 
-    let client = reqwest::Client::new();
+    let client = crate::utils::http::no_proxy_client();
     let user_info = match platform {
         PlatformType::BiliBili => {
-            if csrf.is_none() {
-                return Err("Invalid bilibili cookies".to_string());
-            }
-            let uid = get_item_from_cookies("DedeUserID", cookies)?;
+            let uid = get_item_from_cookies("DedeUserID", &cookies)
+                .unwrap_or_else(|_| fallback_uid_from_cookies(&cookies));
             let tmp_account = AccountRow {
                 platform: platform.as_str().to_string(),
                 uid,
                 name: String::new(),
                 avatar: String::new(),
-                csrf: csrf.clone().unwrap(),
-                cookies: cookies.into(),
+                csrf: csrf.clone().unwrap_or_default(),
+                cookies: cookies.clone(),
                 created_at: Utc::now().to_rfc3339(),
             };
             match bilibili::api::get_user_info(&client, &tmp_account.to_account(), &tmp_account.uid)
@@ -247,7 +375,18 @@ async fn build_account_row(platform: &str, cookies: &str) -> Result<AccountRow, 
                     user_name: user_info.user_name,
                     user_avatar: user_info.user_avatar_url,
                 },
-                Err(e) => return Err(e.to_string()),
+                Err(e) => {
+                    log::warn!(
+                        "BiliBili user info unavailable, using fallback uid: {}, error: {}",
+                        tmp_account.uid,
+                        e
+                    );
+                    UserInfo {
+                        user_id: tmp_account.uid.clone(),
+                        user_name: "BiliBili".to_string(),
+                        user_avatar: String::new(),
+                    }
+                }
             }
         }
         PlatformType::Douyin => {
@@ -257,7 +396,7 @@ async fn build_account_row(platform: &str, cookies: &str) -> Result<AccountRow, 
                 name: String::new(),
                 avatar: String::new(),
                 csrf: "".into(),
-                cookies: cookies.into(),
+                cookies: cookies.clone(),
                 created_at: Utc::now().to_rfc3339(),
             };
 
@@ -276,29 +415,81 @@ async fn build_account_row(platform: &str, cookies: &str) -> Result<AccountRow, 
                         user_avatar: avatar_url,
                     }
                 }
-                Err(e) => return Err(format!("Failed to get Douyin user info: {e}")),
+                Err(e) => {
+                    let uid = extract_douyin_uid(&cookies)
+                        .unwrap_or_else(|| fallback_uid_from_cookies(&cookies));
+                    log::warn!(
+                        "Douyin user info unavailable, fallback uid from cookies: {}, error: {}",
+                        uid,
+                        e
+                    );
+                    UserInfo {
+                        user_id: uid,
+                        user_name: "Douyin".to_string(),
+                        user_avatar: String::new(),
+                    }
+                }
             }
         }
         PlatformType::Huya => {
-            let user_id = get_item_from_cookies("yyuid", cookies)?;
+            let user_id = get_item_from_cookies("yyuid", &cookies)
+                .or_else(|_| get_item_from_cookies("udb_uid", &cookies))
+                .or_else(|_| get_item_from_cookies("uid", &cookies))
+                .or_else(|_| get_item_from_cookies_ci("yyuid", &cookies))
+                .or_else(|_| get_item_from_cookies_ci("udb_uid", &cookies))
+                .or_else(|_| get_item_from_cookies_ci("uid", &cookies));
+            let (user_id, has_real_uid) = match user_id {
+                Ok(user_id) => (user_id, true),
+                Err(_) => {
+                    if let Some(uid) = fetch_huya_uid_from_cookie(&client, &cookies).await {
+                        (uid, true)
+                    } else {
+                        let fallback = fallback_uid_from_cookies(&cookies);
+                        (fallback, false)
+                    }
+                }
+            };
 
             let tmp_account = AccountRow {
                 platform: platform.as_str().to_string(),
-                uid: user_id,
+                uid: user_id.clone(),
                 name: String::new(),
                 avatar: String::new(),
                 csrf: "".into(),
-                cookies: cookies.into(),
+                cookies: cookies.clone(),
                 created_at: Utc::now().to_rfc3339(),
             };
 
-            match huya::api::get_user_info(&client, &tmp_account.to_account()).await {
-                Ok(user_info) => UserInfo {
-                    user_id: user_info.user_id,
-                    user_name: user_info.user_name,
-                    user_avatar: user_info.user_avatar,
-                },
-                Err(e) => return Err(format!("Failed to get Huya user info: {e}")),
+            if has_real_uid {
+                match huya::api::get_user_info(&client, &tmp_account.to_account()).await {
+                    Ok(user_info) => UserInfo {
+                        user_id: user_info.user_id,
+                        user_name: user_info.user_name,
+                        user_avatar: user_info.user_avatar,
+                    },
+                    Err(e) => {
+                        log::warn!(
+                            "Huya user info unavailable, using fallback uid: {}, error: {}",
+                            user_id,
+                            e
+                        );
+                        UserInfo {
+                            user_id: user_id.clone(),
+                            user_name: "Huya".to_string(),
+                            user_avatar: String::new(),
+                        }
+                    }
+                }
+            } else {
+                log::warn!(
+                    "Huya cookies missing yyuid, using fallback uid: {}",
+                    user_id
+                );
+                UserInfo {
+                    user_id: user_id.clone(),
+                    user_name: "Huya".to_string(),
+                    user_avatar: String::new(),
+                }
             }
         }
         PlatformType::Kuaishou => {
@@ -308,12 +499,22 @@ async fn build_account_row(platform: &str, cookies: &str) -> Result<AccountRow, 
                 name: String::new(),
                 avatar: String::new(),
                 csrf: "".into(),
-                cookies: cookies.into(),
+                cookies: cookies.clone(),
                 created_at: Utc::now().to_rfc3339(),
             };
             match kuaishou::api::get_user_info(&client, &tmp_account.to_account()).await {
                 Ok(user_info) => user_info,
-                Err(e) => return Err(format!("Failed to get Kuaishou user info: {e}")),
+                Err(e) => {
+                    log::warn!(
+                        "Kuaishou user info unavailable, using fallback uid, error: {}",
+                        e
+                    );
+                    UserInfo {
+                        user_id: fallback_uid_from_cookies(&cookies),
+                        user_name: "Kuaishou".to_string(),
+                        user_avatar: String::new(),
+                    }
+                }
             }
         }
         PlatformType::Xiaohongshu => {
@@ -323,12 +524,22 @@ async fn build_account_row(platform: &str, cookies: &str) -> Result<AccountRow, 
                 name: String::new(),
                 avatar: String::new(),
                 csrf: "".into(),
-                cookies: cookies.into(),
+                cookies: cookies.clone(),
                 created_at: Utc::now().to_rfc3339(),
             };
             match xiaohongshu::api::get_user_info(&client, &tmp_account.to_account()).await {
                 Ok(user_info) => user_info,
-                Err(e) => return Err(format!("Failed to get Xiaohongshu user info: {e}")),
+                Err(e) => {
+                    log::warn!(
+                        "Xiaohongshu user info unavailable, using fallback uid, error: {}",
+                        e
+                    );
+                    UserInfo {
+                        user_id: fallback_uid_from_cookies(&cookies),
+                        user_name: "Xiaohongshu".to_string(),
+                        user_avatar: String::new(),
+                    }
+                }
             }
         }
         PlatformType::TikTok => {
@@ -338,20 +549,28 @@ async fn build_account_row(platform: &str, cookies: &str) -> Result<AccountRow, 
                 name: String::new(),
                 avatar: String::new(),
                 csrf: "".into(),
-                cookies: cookies.into(),
+                cookies: cookies.clone(),
                 created_at: Utc::now().to_rfc3339(),
             };
             match tiktok::api::get_user_info(&client, &tmp_account.to_account()).await {
                 Ok(user_info) => user_info,
                 Err(e) => {
-                    if let Some(uid) = extract_tiktok_uid(cookies) {
+                    if let Some(uid) = extract_tiktok_uid(&cookies) {
                         UserInfo {
                             user_id: uid,
                             user_name: "TikTok".to_string(),
                             user_avatar: String::new(),
                         }
                     } else {
-                        return Err(format!("Failed to get TikTok user info: {e}"));
+                        log::warn!(
+                            "TikTok user info unavailable, fallback uid from cookies: {}",
+                            e
+                        );
+                        UserInfo {
+                            user_id: fallback_uid_from_cookies(&cookies),
+                            user_name: "TikTok".to_string(),
+                            user_avatar: String::new(),
+                        }
                     }
                 }
             }
@@ -363,12 +582,22 @@ async fn build_account_row(platform: &str, cookies: &str) -> Result<AccountRow, 
                 name: String::new(),
                 avatar: String::new(),
                 csrf: "".into(),
-                cookies: cookies.into(),
+                cookies: cookies.clone(),
                 created_at: Utc::now().to_rfc3339(),
             };
             match weibo::api::get_user_info(&client, &tmp_account.to_account()).await {
                 Ok(user_info) => user_info,
-                Err(e) => return Err(format!("Failed to get Weibo user info: {e}")),
+                Err(e) => {
+                    log::warn!(
+                        "Weibo user info unavailable, using fallback uid, error: {}",
+                        e
+                    );
+                    UserInfo {
+                        user_id: fallback_uid_from_cookies(&cookies),
+                        user_name: "Weibo".to_string(),
+                        user_avatar: String::new(),
+                    }
+                }
             }
         }
         PlatformType::Youtube => {
@@ -381,7 +610,7 @@ async fn build_account_row(platform: &str, cookies: &str) -> Result<AccountRow, 
         uid: user_info.user_id,
         name: user_info.user_name,
         avatar: user_info.user_avatar,
-        csrf: csrf.unwrap(),
+        csrf: csrf.unwrap_or_default(),
         cookies: cookies.into(),
         created_at: Utc::now().to_rfc3339(),
     })
@@ -395,7 +624,7 @@ pub async fn remove_account(
 ) -> Result<(), String> {
     if platform == "bilibili" {
         let account = state.db.get_account(&platform, &uid).await?;
-        let client = reqwest::Client::new();
+        let client = crate::utils::http::no_proxy_client();
         let _ = bilibili::api::logout(&client, &account.to_account()).await;
     }
     Ok(state.db.remove_account(&platform, &uid).await?)
@@ -406,6 +635,7 @@ pub async fn get_account_count(state: state_type!()) -> Result<u64, String> {
     Ok(state.db.get_accounts().await?.len() as u64)
 }
 
+#[cfg_attr(feature = "headless", allow(dead_code))]
 fn domain_for_platform(platform: &str) -> Option<&'static str> {
     match platform {
         "bilibili" => Some("bilibili.com"),
@@ -420,20 +650,27 @@ fn domain_for_platform(platform: &str) -> Option<&'static str> {
     }
 }
 
+#[cfg_attr(feature = "headless", allow(dead_code))]
 fn collect_browser_cookies_for_platform(platform: &str) -> Option<String> {
-    let domain = domain_for_platform(platform)?;
+    let mut domains = vec![domain_for_platform(platform)?];
+    if platform == "huya" {
+        // Huya login cookies often live on yy.com (udb.yy.com / passport.yy.com).
+        domains.push("yy.com");
+    }
     let mut cookie_sets = Vec::new();
-    if let Some(collector) = BrowserCookieCollector::new_chrome() {
-        if let Ok(cookies) = collector.get_cookies_as_string(domain) {
-            if !cookies.is_empty() {
-                cookie_sets.push(cookies);
+    for domain in domains {
+        if let Some(collector) = BrowserCookieCollector::new_chrome() {
+            if let Ok(cookies) = collector.get_cookies_as_string(domain) {
+                if !cookies.is_empty() {
+                    cookie_sets.push(cookies);
+                }
             }
         }
-    }
-    if let Some(collector) = BrowserCookieCollector::new_edge() {
-        if let Ok(cookies) = collector.get_cookies_as_string(domain) {
-            if !cookies.is_empty() {
-                cookie_sets.push(cookies);
+        if let Some(collector) = BrowserCookieCollector::new_edge() {
+            if let Ok(cookies) = collector.get_cookies_as_string(domain) {
+                if !cookies.is_empty() {
+                    cookie_sets.push(cookies);
+                }
             }
         }
     }
@@ -446,6 +683,7 @@ fn collect_browser_cookies_for_platform(platform: &str) -> Option<String> {
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]
+#[cfg_attr(feature = "headless", allow(dead_code))]
 pub async fn get_browser_cookies(
     _state: state_type!(),
     platform: String,
@@ -456,6 +694,658 @@ pub async fn get_browser_cookies(
     }
 }
 
+#[cfg(all(feature = "gui", not(feature = "headless")))]
+#[tauri::command]
+pub async fn open_tiktok_login_window(
+    state: state_type!(),
+    user_agent: Option<String>,
+) -> Result<(), String> {
+    let label = "tiktok-login";
+    if let Some(window) = state.app_handle.get_webview_window(label) {
+        let _ = window.show();
+        let _ = window.set_focus();
+        return Ok(());
+    }
+
+    let url = Url::parse("https://www.tiktok.com/login")
+        .map_err(|e| format!("Invalid login URL: {e}"))?;
+    let mut builder = WebviewWindowBuilder::new(
+        &state.app_handle,
+        label,
+        WebviewUrl::External(url),
+    )
+    .title("TikTok 登录")
+    .inner_size(1100.0, 800.0);
+
+    let fallback_ua = std::env::var("TIKTOK_WEBVIEW_USER_AGENT")
+        .or_else(|_| std::env::var("DOUYIN_PASSPORT_USER_AGENT"))
+        .unwrap_or_default();
+    let ua = user_agent
+        .as_ref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            let trimmed = fallback_ua.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed)
+            }
+        });
+    if let Some(ua) = ua {
+        builder = builder.user_agent(ua);
+    }
+
+    builder
+        .build()
+        .map_err(|e| format!("Failed to open login window: {e}"))?;
+    Ok(())
+}
+
+#[cfg(all(feature = "gui", not(feature = "headless")))]
+#[tauri::command]
+pub async fn get_tiktok_webview_cookies(state: state_type!()) -> Result<String, String> {
+    let label = "tiktok-login";
+    let window = state
+        .app_handle
+        .get_webview_window(label)
+        .ok_or_else(|| "未找到内置浏览器窗口，请先打开登录窗口".to_string())?;
+    let mut urls: Vec<String> = vec![
+        "https://www.tiktok.com",
+        "https://tiktok.com",
+        "https://m.tiktok.com",
+        "https://www.tiktok.com/login",
+        "https://www.tiktok.com/passport/",
+        "https://www.tiktok.com/live",
+        "https://www.tiktok.com/foryou",
+        "https://www.tiktok.com/@tiktok",
+        "https://www.tiktok.com/@tiktok/live",
+        "https://web-va.tiktok.com",
+        "https://login-no1a.www.tiktok.com",
+        "https://us.tiktok.com",
+    ]
+    .into_iter()
+    .map(|url| url.to_string())
+    .collect();
+    if let Ok(extra) = std::env::var("TIKTOK_WEBVIEW_COOKIE_URLS") {
+        for raw in extra.split(',') {
+            let trimmed = raw.trim();
+            if !trimmed.is_empty() {
+                urls.push(trimmed.to_string());
+            }
+        }
+    }
+    let mut cookie_map: HashMap<String, String> = HashMap::new();
+    let mut cookie_map_lower: HashMap<String, String> = HashMap::new();
+
+    for raw in urls {
+        let url = Url::parse(&raw).map_err(|e| format!("Invalid cookie URL: {e}"))?;
+        let cookies = window
+            .cookies_for_url(url)
+            .map_err(|e| format!("读取 Cookie 失败: {e}"))?;
+        for cookie in cookies {
+            let value = cookie.value();
+            if value.is_empty() {
+                continue;
+            }
+            let name = cookie.name().to_string();
+            let lower = name.to_ascii_lowercase();
+            cookie_map.insert(name, value.to_string());
+            cookie_map_lower.insert(lower, value.to_string());
+        }
+    }
+
+    let cookie_str = cookie_map
+        .iter()
+        .map(|(name, value)| format!("{name}={value}"))
+        .collect::<Vec<_>>()
+        .join("; ");
+
+    if cookie_str.is_empty() {
+        return Err("未读取到 Cookie，请先在内置浏览器完成登录".to_string());
+    }
+
+    let has_login = cookie_map.contains_key("sessionid")
+        || cookie_map.contains_key("sessionid_ss")
+        || cookie_map.contains_key("sid_guard")
+        || cookie_map.contains_key("sid_tt")
+        || cookie_map.contains_key("uid_tt")
+        || cookie_map.contains_key("uid_tt_ss")
+        || cookie_map.contains_key("passport_csrf_token")
+        || cookie_map.contains_key("passport_csrf_token_default")
+        || cookie_map_lower.contains_key("sessionid")
+        || cookie_map_lower.contains_key("sessionid_ss")
+        || cookie_map_lower.contains_key("sid_guard")
+        || cookie_map_lower.contains_key("sid_tt")
+        || cookie_map_lower.contains_key("uid_tt")
+        || cookie_map_lower.contains_key("uid_tt_ss")
+        || cookie_map_lower.contains_key("passport_csrf_token")
+        || cookie_map_lower.contains_key("passport_csrf_token_default");
+    if !has_login {
+        log::warn!(
+            "[Account] TikTok webview cookies missing login tokens (sessionid/sid_guard/sid_tt)."
+        );
+        return Err("未检测到登录态或 Cookie 已失效，请在内置浏览器重新登录后再导入".to_string());
+    }
+
+    let required_keys = [
+        "sessionid",
+        "sessionid_ss",
+        "sid_tt",
+        "sid_guard",
+        "uid_tt",
+        "uid_tt_ss",
+        "ttwid",
+        "msToken",
+        "passport_csrf_token",
+        "tt_csrf_token",
+        "s_v_web_id",
+        "tt-target-idc",
+        "store-idc",
+        "store-country-code",
+        "_ttp",
+        "_waftokenid",
+    ];
+    let mut missing = Vec::new();
+    for key in required_keys {
+        if !(cookie_map.contains_key(key) || cookie_map_lower.contains_key(&key.to_ascii_lowercase()))
+        {
+            missing.push(key);
+        }
+    }
+    if !missing.is_empty() {
+        log::warn!(
+            "[Account] TikTok webview cookies missing keys: {}",
+            missing.join(", ")
+        );
+    }
+
+    std::env::set_var("TIKTOK_WEBVIEW_COOKIES", &cookie_str);
+    std::env::set_var("TIKTOK_WEBVIEW_REFRESH_NEEDED", "0");
+    {
+        let config = state.config.write().await;
+        config.save();
+    }
+    let account = build_account_row("tiktok", &cookie_str).await?;
+    state.db.add_account(&account).await?;
+
+    Ok(cookie_str)
+}
+
+#[cfg(all(feature = "gui", not(feature = "headless")))]
+#[tauri::command]
+pub async fn open_douyin_login_window(
+    state: state_type!(),
+    user_agent: Option<String>,
+) -> Result<(), String> {
+    let label = "douyin-login";
+    if let Some(window) = state.app_handle.get_webview_window(label) {
+        let _ = window.show();
+        let _ = window.set_focus();
+        return Ok(());
+    }
+
+    let url = Url::parse("https://www.douyin.com")
+        .map_err(|e| format!("Invalid login URL: {e}"))?;
+    let mut builder = WebviewWindowBuilder::new(
+        &state.app_handle,
+        label,
+        WebviewUrl::External(url),
+    )
+    .title("抖音 登录")
+    .inner_size(1100.0, 800.0);
+
+    let fallback_ua = std::env::var("DOUYIN_PASSPORT_USER_AGENT")
+        .or_else(|_| std::env::var("DOUYIN_USER_AGENT"))
+        .unwrap_or_default();
+    let ua = user_agent
+        .as_ref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            let trimmed = fallback_ua.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed)
+            }
+        });
+    if let Some(ua) = ua {
+        builder = builder.user_agent(ua);
+    }
+
+    builder
+        .build()
+        .map_err(|e| format!("Failed to open login window: {e}"))?;
+    Ok(())
+}
+
+#[cfg(all(feature = "gui", not(feature = "headless")))]
+#[tauri::command]
+pub async fn get_douyin_webview_cookies(state: state_type!()) -> Result<String, String> {
+    let label = "douyin-login";
+    let window = state
+        .app_handle
+        .get_webview_window(label)
+        .ok_or_else(|| "未找到内置浏览器窗口，请先打开登录窗口".to_string())?;
+    let urls = [
+        "https://douyin.com",
+        "https://www.douyin.com",
+        "https://m.douyin.com",
+        "http://douyin.com",
+        "http://www.douyin.com",
+        "http://m.douyin.com",
+        "https://live.douyin.com",
+        "https://www.iesdouyin.com",
+        "https://sso.douyin.com",
+        "https://www.douyin.com/passport/",
+        "https://www.douyin.com/passport/web/account/info/",
+        "https://www.douyin.com/user/",
+    ];
+    let mut cookie_map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut cookie_map_lower: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+
+    for raw in urls {
+        let url = Url::parse(raw).map_err(|e| format!("Invalid cookie URL: {e}"))?;
+        let cookies = window
+            .cookies_for_url(url)
+            .map_err(|e| format!("读取 Cookie 失败: {e}"))?;
+        for cookie in cookies {
+            let value = cookie.value();
+            if value.is_empty() {
+                continue;
+            }
+            let name = cookie.name().to_string();
+            let lower = name.to_ascii_lowercase();
+            cookie_map.insert(name, value.to_string());
+            cookie_map_lower.insert(lower, value.to_string());
+        }
+    }
+
+    if !cookie_map.contains_key("sessionid") && !cookie_map.contains_key("sessionid_ss") {
+        if let Some(value) = cookie_map_lower
+            .get("sessionid")
+            .or_else(|| cookie_map_lower.get("sessionid_ss"))
+            .cloned()
+        {
+            cookie_map.insert("sessionid".to_string(), value);
+        }
+    }
+
+    let cookie_str = cookie_map
+        .iter()
+        .map(|(name, value)| format!("{name}={value}"))
+        .collect::<Vec<_>>()
+        .join("; ");
+
+    if cookie_str.is_empty() {
+        return Err("未读取到 Cookie，请先在内置浏览器完成登录".to_string());
+    }
+
+    let has_login = cookie_map.contains_key("sessionid")
+        || cookie_map.contains_key("sessionid_ss")
+        || cookie_map.contains_key("sid_guard")
+        || cookie_map.contains_key("sid_tt")
+        || cookie_map.contains_key("uid_tt")
+        || cookie_map.contains_key("uid_tt_ss")
+        || cookie_map.contains_key("login_token")
+        || cookie_map.contains_key("passport_csrf_token")
+        || cookie_map.contains_key("passport_csrf_token_default")
+        || cookie_map_lower.contains_key("sessionid")
+        || cookie_map_lower.contains_key("sessionid_ss")
+        || cookie_map_lower.contains_key("sid_guard")
+        || cookie_map_lower.contains_key("sid_tt")
+        || cookie_map_lower.contains_key("uid_tt")
+        || cookie_map_lower.contains_key("uid_tt_ss")
+        || cookie_map_lower.contains_key("login_token")
+        || cookie_map_lower.contains_key("passport_csrf_token")
+        || cookie_map_lower.contains_key("passport_csrf_token_default");
+    if !has_login {
+        log::warn!(
+            "[Account] Douyin webview cookies missing login tokens (sessionid/sessionid_ss/sid_guard)."
+        );
+        return Err("未检测到登录态或 Cookie 已失效，请在内置浏览器重新登录后再导入".to_string());
+    }
+
+    Ok(cookie_str)
+}
+
+#[cfg(all(feature = "gui", not(feature = "headless")))]
+#[tauri::command]
+pub async fn open_kuaishou_login_window(
+    state: state_type!(),
+    user_agent: Option<String>,
+) -> Result<(), String> {
+    let label = "kuaishou-login";
+    if let Some(window) = state.app_handle.get_webview_window(label) {
+        let _ = window.show();
+        let _ = window.set_focus();
+        return Ok(());
+    }
+
+    let url = Url::parse("https://www.kuaishou.com")
+        .map_err(|e| format!("Invalid login URL: {e}"))?;
+    let mut builder = WebviewWindowBuilder::new(
+        &state.app_handle,
+        label,
+        WebviewUrl::External(url),
+    )
+    .title("快手 登录")
+    .inner_size(1100.0, 800.0);
+
+    let fallback_ua = std::env::var("KUAISHOU_WEBVIEW_USER_AGENT")
+        .or_else(|_| std::env::var("KUAISHOU_USER_AGENT"))
+        .unwrap_or_default();
+    let ua = user_agent
+        .as_ref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            let trimmed = fallback_ua.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed)
+            }
+        });
+    if let Some(ua) = ua {
+        builder = builder.user_agent(ua);
+    }
+
+    builder
+        .build()
+        .map_err(|e| format!("Failed to open login window: {e}"))?;
+    Ok(())
+}
+
+#[cfg(all(feature = "gui", not(feature = "headless")))]
+#[tauri::command]
+pub async fn get_kuaishou_webview_cookies(state: state_type!()) -> Result<String, String> {
+    let label = "kuaishou-login";
+    let window = state
+        .app_handle
+        .get_webview_window(label)
+        .ok_or_else(|| "未找到内置浏览器窗口，请先打开登录窗口".to_string())?;
+    let urls = [
+        "https://www.kuaishou.com",
+        "https://www.kuaishou.com/",
+        "https://www.kuaishou.com/live",
+        "https://live.kuaishou.com",
+        "https://live.kuaishou.com/",
+    ];
+    let mut cookie_map: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    let mut cookie_map_lower: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    for raw in urls {
+        let url = Url::parse(raw).map_err(|e| format!("Invalid cookie URL: {e}"))?;
+        let cookies = window
+            .cookies_for_url(url)
+            .map_err(|e| format!("读取 Cookie 失败: {e}"))?;
+        for cookie in cookies {
+            let value = cookie.value();
+            if value.is_empty() {
+                continue;
+            }
+            let name = cookie.name().to_string();
+            let lower = name.to_ascii_lowercase();
+            cookie_map.insert(name, value.to_string());
+            cookie_map_lower.insert(lower, value.to_string());
+        }
+    }
+    let cookie_str = cookie_map
+        .iter()
+        .map(|(name, value)| format!("{name}={value}"))
+        .collect::<Vec<_>>()
+        .join("; ");
+
+    if cookie_str.is_empty() {
+        return Err("未读取到 Cookie，请先在内置浏览器完成登录".to_string());
+    }
+    let has_login = cookie_map.contains_key("userId")
+        || cookie_map.contains_key("kuaishou.live.web_st")
+        || cookie_map.contains_key("kuaishou.live.web_ph")
+        || cookie_map.contains_key("kwssectoken")
+        || cookie_map_lower.contains_key("userid")
+        || cookie_map_lower.contains_key("kuaishou.live.web_st")
+        || cookie_map_lower.contains_key("kuaishou.live.web_ph")
+        || cookie_map_lower.contains_key("kwssectoken");
+    if !has_login {
+        log::warn!("[Account] Kuaishou webview cookies missing login tokens.");
+    }
+
+    Ok(cookie_str)
+}
+
+#[cfg(all(feature = "gui", not(feature = "headless")))]
+#[tauri::command]
+pub async fn open_huya_login_window(
+    state: state_type!(),
+    user_agent: Option<String>,
+) -> Result<(), String> {
+    let label = "huya-login";
+    if let Some(window) = state.app_handle.get_webview_window(label) {
+        let _ = window.show();
+        let _ = window.set_focus();
+        return Ok(());
+    }
+
+    let url = Url::parse("https://www.huya.com")
+        .map_err(|e| format!("Invalid login URL: {e}"))?;
+    let mut builder = WebviewWindowBuilder::new(
+        &state.app_handle,
+        label,
+        WebviewUrl::External(url),
+    )
+    .title("虎牙 登录")
+    .inner_size(1100.0, 800.0);
+
+    let fallback_ua = std::env::var("HUYA_WEBVIEW_USER_AGENT")
+        .or_else(|_| std::env::var("HUYA_USER_AGENT"))
+        .unwrap_or_default();
+    let ua = user_agent
+        .as_ref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            let trimmed = fallback_ua.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed)
+            }
+        });
+    if let Some(ua) = ua {
+        builder = builder.user_agent(ua);
+    }
+
+    builder
+        .build()
+        .map_err(|e| format!("Failed to open login window: {e}"))?;
+    Ok(())
+}
+
+#[cfg(all(feature = "gui", not(feature = "headless")))]
+#[tauri::command]
+pub async fn get_huya_webview_cookies(state: state_type!()) -> Result<String, String> {
+    let label = "huya-login";
+    let window = state
+        .app_handle
+        .get_webview_window(label)
+        .ok_or_else(|| "未找到内置浏览器窗口，请先打开登录窗口".to_string())?;
+    let urls = [
+        "http://www.huya.com/",
+        "http://i.huya.com/",
+        "https://www.huya.com/",
+        "https://www.huya.com/index.html",
+        "https://www.huya.com/g",
+        "https://www.huya.com/0",
+        "https://www.huya.com/u/",
+        "https://i.huya.com/",
+        "https://i.huya.com/setting",
+        "https://m.huya.com/",
+        "https://m.huya.com/room/1",
+        "https://udblgn.huya.com/",
+        "https://udb.yy.com/",
+        "https://passport.yy.com/",
+        "https://www.yy.com/",
+    ];
+    let mut cookie_map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut cookie_map_lower: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+
+    for raw in urls {
+        let url = Url::parse(raw).map_err(|e| format!("Invalid cookie URL: {e}"))?;
+        let cookies = window
+            .cookies_for_url(url)
+            .map_err(|e| format!("读取 Cookie 失败: {e}"))?;
+        for cookie in cookies {
+            let value = cookie.value();
+            if value.is_empty() {
+                continue;
+            }
+            let name = cookie.name().to_string();
+            let lower = name.to_ascii_lowercase();
+            cookie_map.insert(name, value.to_string());
+            cookie_map_lower.insert(lower, value.to_string());
+        }
+    }
+
+    if !cookie_map.contains_key("yyuid") {
+        if let Some(value) = cookie_map_lower
+            .get("yyuid")
+            .or_else(|| cookie_map_lower.get("yyuid_u"))
+            .or_else(|| cookie_map_lower.get("udb_uid"))
+            .or_else(|| cookie_map_lower.get("uid"))
+            .cloned()
+        {
+            cookie_map.insert("yyuid".to_string(), value);
+        }
+    }
+
+    let cookie_str = cookie_map
+        .iter()
+        .map(|(name, value)| format!("{name}={value}"))
+        .collect::<Vec<_>>()
+        .join("; ");
+
+    if cookie_str.is_empty() {
+        return Err("未读取到完整 Cookie，请在内置浏览器完成登录并访问 www.huya.com / i.huya.com".to_string());
+    }
+    if !cookie_map.contains_key("yyuid") {
+        log::warn!("[Account] Huya webview cookies missing yyuid.");
+    }
+
+    Ok(cookie_str)
+}
+
+#[cfg(all(feature = "gui", not(feature = "headless")))]
+#[tauri::command]
+pub async fn open_bilibili_login_window(
+    state: state_type!(),
+    user_agent: Option<String>,
+) -> Result<(), String> {
+    let label = "bilibili-login";
+    if let Some(window) = state.app_handle.get_webview_window(label) {
+        let _ = window.show();
+        let _ = window.set_focus();
+        return Ok(());
+    }
+
+    let url = Url::parse("https://passport.bilibili.com/login")
+        .map_err(|e| format!("Invalid login URL: {e}"))?;
+    let mut builder = WebviewWindowBuilder::new(
+        &state.app_handle,
+        label,
+        WebviewUrl::External(url),
+    )
+    .title("B站 登录")
+    .inner_size(1100.0, 800.0);
+
+    let fallback_ua = std::env::var("BILIBILI_WEBVIEW_USER_AGENT")
+        .or_else(|_| std::env::var("BILIBILI_USER_AGENT"))
+        .unwrap_or_default();
+    let ua = user_agent
+        .as_ref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            let trimmed = fallback_ua.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed)
+            }
+        });
+    if let Some(ua) = ua {
+        builder = builder.user_agent(ua);
+    }
+
+    builder
+        .build()
+        .map_err(|e| format!("Failed to open login window: {e}"))?;
+    Ok(())
+}
+
+#[cfg(all(feature = "gui", not(feature = "headless")))]
+#[tauri::command]
+pub async fn get_bilibili_webview_cookies(state: state_type!()) -> Result<String, String> {
+    let label = "bilibili-login";
+    let window = state
+        .app_handle
+        .get_webview_window(label)
+        .ok_or_else(|| "未找到内置浏览器窗口，请先打开登录窗口".to_string())?;
+    let urls = [
+        "http://www.bilibili.com",
+        "http://passport.bilibili.com",
+        "https://www.bilibili.com",
+        "https://passport.bilibili.com",
+        "https://passport.bilibili.com/login",
+        "https://passport.bilibili.com/web/",
+        "https://api.bilibili.com",
+        "https://space.bilibili.com",
+        "https://live.bilibili.com",
+        "https://m.bilibili.com",
+        "https://t.bilibili.com",
+        "https://account.bilibili.com",
+    ];
+    let mut cookie_map: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+
+    for raw in urls {
+        let url = Url::parse(raw).map_err(|e| format!("Invalid cookie URL: {e}"))?;
+        let cookies = window
+            .cookies_for_url(url)
+            .map_err(|e| format!("读取 Cookie 失败: {e}"))?;
+        for cookie in cookies {
+            let value = cookie.value();
+            if value.is_empty() {
+                continue;
+            }
+            cookie_map.insert(cookie.name().to_string(), value.to_string());
+        }
+    }
+
+    let cookie_str = cookie_map
+        .iter()
+        .map(|(name, value)| format!("{name}={value}"))
+        .collect::<Vec<_>>()
+        .join("; ");
+
+    if cookie_str.is_empty() {
+        return Err("未读取到 Cookie，请先在内置浏览器完成登录".to_string());
+    }
+
+    let has_uid = cookie_map.contains_key("DedeUserID");
+    let has_csrf = cookie_map.contains_key("bili_jct");
+    if !has_uid || !has_csrf {
+        log::warn!("[Account] BiliBili webview cookies missing DedeUserID/bili_jct.");
+    }
+
+    Ok(cookie_str)
+}
+
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn get_qr_status(
     _state: state_type!(),
@@ -463,7 +1353,7 @@ pub async fn get_qr_status(
     qrcode_key: &str,
 ) -> Result<PlatformQrStatus, String> {
     log::warn!("[Account] get_qr_status platform={}, key_len={}", platform, qrcode_key.len());
-    let client = reqwest::Client::new();
+    let client = crate::utils::http::no_proxy_client();
     match platform.as_str() {
         "bilibili" => match bilibili::api::get_qr_status(&client, qrcode_key).await {
             Ok(qr_status) => {
@@ -540,7 +1430,7 @@ pub async fn get_qr_status(
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn get_qr(_state: state_type!(), platform: String) -> Result<PlatformQrInfo, String> {
     log::warn!("[Account] get_qr platform={}", platform);
-    let client = reqwest::Client::new();
+    let client = crate::utils::http::no_proxy_client();
     match platform.as_str() {
         "bilibili" => match bilibili::api::get_qr(&client).await {
             Ok(qr_info) => {
@@ -669,3 +1559,5 @@ mod tests {
         assert_eq!(uid, "Invalid cookies: missing unknown");
     }
 }
+#[cfg(all(feature = "gui", not(feature = "headless")))]
+use std::collections::HashMap;

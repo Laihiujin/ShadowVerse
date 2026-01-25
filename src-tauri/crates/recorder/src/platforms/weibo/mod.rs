@@ -36,7 +36,7 @@ impl WeiboRecorder {
         update_interval: Arc<atomic::AtomicU64>,
         enabled: bool,
     ) -> Result<Self, RecorderError> {
-        let client = reqwest::Client::new();
+        let client = crate::utils::no_proxy_client();
         let extra = WeiboExtra {
             stream_info: Arc::new(RwLock::new(None)),
             pre_live_id: Arc::new(RwLock::new(None)),
@@ -301,10 +301,9 @@ impl RecorderTrait<WeiboExtra> for WeiboRecorder {
                     continue;
                 }
 
-                tokio::time::sleep(Duration::from_secs(
-                    self_clone.update_interval.load(atomic::Ordering::Relaxed),
-                ))
-                .await;
+                let interval = self_clone.update_interval.load(atomic::Ordering::Relaxed);
+                let sleep_secs = crate::utils::jitter_interval_secs(interval, 10);
+                tokio::time::sleep(Duration::from_secs(sleep_secs)).await;
             }
         }));
     }

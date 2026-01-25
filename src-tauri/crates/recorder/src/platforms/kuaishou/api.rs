@@ -302,6 +302,18 @@ fn normalize_cookie_header(cookies: &str) -> String {
         .join("; ")
 }
 
+fn get_cookie_value_ci(cookies: &str, key: &str) -> Option<String> {
+    let target = key.to_ascii_lowercase();
+    for part in cookies.split(';').map(str::trim) {
+        if let Some((k, v)) = part.split_once('=') {
+            if k.trim().to_ascii_lowercase() == target {
+                return Some(v.trim().to_string());
+            }
+        }
+    }
+    None
+}
+
 fn extract_user_id_from_url(url: &str) -> String {
     let url_no_fragment = url.split('#').next().unwrap_or(url);
     let url_no_query = url_no_fragment.split('?').next().unwrap_or(url_no_fragment);
@@ -829,7 +841,7 @@ fn has_captcha_signal(value: &Value) -> bool {
                     if lower.contains("captcha")
                         || lower.contains("verify")
                         || lower.contains("slider")
-                        || text.contains("\u6ed1\u5757")
+                        || text.contains("\u{6ed1}\u{5757}")
                     {
                         return true;
                     }
@@ -1625,80 +1637,87 @@ pub async fn get_user_info(
     client: &Client,
     account: &Account,
 ) -> Result<crate::UserInfo, RecorderError> {
-    let mut headers = reqwest::header::HeaderMap::new();
-    headers.insert("User-Agent", USER_AGENT.parse().unwrap());
-    headers.insert(
-        "Accept-Language",
-        "zh-CN,zh;q=0.8,zh-TW;q=0.7,zh-HK;q=0.5,en-US;q=0.3,en;q=0.2"
-            .parse()
-            .unwrap(),
-    );
+    let mut candidates = vec![
+        "https://live.kuaishou.com/".to_string(),
+        "https://www.kuaishou.com/".to_string(),
+    ];
 
     if !account.cookies.is_empty() {
-        let cookie = normalize_cookie_header(&account.cookies);
-        if !cookie.is_empty() {
-            headers.insert("Cookie", cookie.parse().unwrap());
+        let uid = get_cookie_value_ci(&account.cookies, "userId")
+            .or_else(|| get_cookie_value_ci(&account.cookies, "user_id"))
+            .or_else(|| get_cookie_value_ci(&account.cookies, "userIdStr"))
+            .or_else(|| get_cookie_value_ci(&account.cookies, "uid"));
+        if let Some(uid) = uid {
+            candidates.push(format!("https://live.kuaishou.com/u/{uid}"));
+            candidates.push(format!("https://www.kuaishou.com/u/{uid}"));
+            candidates.push(format!("https://www.kuaishou.com/profile/{uid}"));
         }
     }
 
-    // Access user's own profile page to get user info
-    let response = client
-        .get("https://live.kuaishou.com/")
-        .headers(headers)
-        .send()
-        .await?;
+    for url in candidates {
+        let (html_str, _) = match fetch_web_html(client, account, &url).await {
+            Ok(result) => result,
+            Err(_) => continue,
+        };
 
-    let html_str = response.text().await?;
+        if let Some(json_str) = extract_initial_state(&html_str) {
+            if let Ok(state) = serde_json::from_str::<Value>(&json_str) {
+                if let Some(user_info) = find_user_info(&state) {
+                    return Ok(user_info);
+                }
+            }
 
-    // Parse JSON from script tag
-    let json_str = extract_initial_state(&html_str).ok_or(RecorderError::ApiError {
-        error: "Failed to extract JSON data from page".to_string(),
-    })?;
+            #[derive(Deserialize)]
+            struct KuaishouUser {
+                #[serde(default, alias = "user_id", alias = "userId", alias = "id")]
+                user_id: String,
+                #[serde(default, alias = "user_name", alias = "userName", alias = "name")]
+                user_name: String,
+                #[serde(
+                    default,
+                    alias = "headurl",
+                    alias = "headUrl",
+                    alias = "avatar",
+                    alias = "avatarUrl"
+                )]
+                head_url: String,
+            }
 
-    if let Ok(state) = serde_json::from_str::<Value>(&json_str) {
-        if let Some(user_info) = find_user_info(&state) {
-            return Ok(user_info);
+            let user_regex =
+                Regex::new(r#"(?s)"profile":\{"ownerCount".*?"user":(.*?),"currentWork"#)
+                    .map_err(|e| RecorderError::ApiError {
+                        error: format!("Failed to create user regex: {}", e),
+                    })?;
+
+            if let Some(user_str) = user_regex
+                .captures(&json_str)
+                .and_then(|cap| cap.get(1))
+                .map(|m| m.as_str())
+            {
+                if let Ok(user) = serde_json::from_str::<KuaishouUser>(user_str) {
+                    if !user.user_id.is_empty() || !user.user_name.is_empty() {
+                        return Ok(crate::UserInfo {
+                            user_id: user.user_id,
+                            user_name: user.user_name,
+                            user_avatar: user.head_url,
+                        });
+                    }
+                }
+            }
+        }
+
+        let (title, _cover, avatar) = extract_metadata_from_html(&html_str);
+        if title.is_some() || avatar.is_some() {
+            return Ok(crate::UserInfo {
+                user_id: "".to_string(),
+                user_name: title.unwrap_or_else(|| "Kuaishou".to_string()),
+                user_avatar: avatar.unwrap_or_default(),
+            });
         }
     }
 
-    #[derive(Deserialize)]
-    struct KuaishouUser {
-        #[serde(default, alias = "user_id", alias = "userId", alias = "id")]
-        user_id: String,
-        #[serde(default, alias = "user_name", alias = "userName", alias = "name")]
-        user_name: String,
-        #[serde(default, alias = "headurl", alias = "headUrl", alias = "avatar", alias = "avatarUrl")]
-        head_url: String,
-    }
-
-    // Extract user data with fallback regex if full JSON scan fails
-    let user_regex = Regex::new(r#"(?s)"profile":\{"ownerCount".*?"user":(.*?),"currentWork"#)
-        .map_err(|e| RecorderError::ApiError {
-            error: format!("Failed to create user regex: {}", e),
-        })?;
-
-    let user_str = user_regex
-        .captures(&json_str)
-        .and_then(|cap| cap.get(1))
-        .ok_or(RecorderError::ApiError {
-            error: "Failed to extract user data - please check if cookies are valid".to_string(),
-        })?
-        .as_str();
-
-    let user: KuaishouUser = serde_json::from_str(user_str).map_err(|e| RecorderError::ApiError {
-        error: format!("Failed to parse user JSON: {}", e),
-    })?;
-
-    if user.user_id.is_empty() || user.user_name.is_empty() {
-        return Err(RecorderError::ApiError {
-            error: "Failed to extract user data - please check if cookies are valid".to_string(),
-        });
-    }
-
-    Ok(crate::UserInfo {
-        user_id: user.user_id,
-        user_name: user.user_name,
-        user_avatar: user.head_url,
+    Err(RecorderError::ApiError {
+        error: "Failed to parse user info from page".to_string(),
     })
 }
 
@@ -1839,7 +1858,7 @@ pub async fn get_qr_status(
             return Ok(QrStatus {
                 code: 2,
                 cookies: String::new(),
-                message: Some("\u9700\u8981\u6ed1\u5757\u9a8c\u8bc1".to_string()),
+                message: Some("\u{9700}\u{8981}\u{6ed1}\u{5757}\u{9a8c}\u{8bc1}".to_string()),
             });
         }
         return Err(RecorderError::ApiError {

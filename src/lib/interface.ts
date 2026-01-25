@@ -153,6 +153,8 @@ export interface Config {
   danmu_ass_options: Danmu2AssOptions;
   powerlive_key: string;
   use_default_accounts: boolean;
+  http_proxy?: string;
+  https_proxy?: string;
 }
 
 export interface Danmu2AssOptions {

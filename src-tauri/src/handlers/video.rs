@@ -292,8 +292,8 @@ async fn copy_file_with_network_optimization(
     Ok(())
 }
 
-#[cfg(feature = "gui")]
-use {tauri::State as TauriState, tauri_plugin_notification::NotificationExt};
+#[cfg(all(feature = "gui", not(feature = "headless")))]
+use {tauri_plugin_notification::NotificationExt};
 
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn clip_range(
@@ -317,7 +317,7 @@ pub async fn clip_range(
         }
     }
 
-    #[cfg(feature = "gui")]
+    #[cfg(all(feature = "gui", not(feature = "headless")))]
     let emitter = EventEmitter::new(state.app_handle.clone());
     #[cfg(feature = "headless")]
     let emitter = EventEmitter::new(state.progress_manager.get_event_sender());
@@ -481,7 +481,7 @@ async fn clip_range_inner(
         )
         .await?;
     if state.config.read().await.clip_notify {
-        #[cfg(feature = "gui")]
+        #[cfg(all(feature = "gui", not(feature = "headless")))]
         state
             .app_handle
             .notification()
@@ -509,7 +509,7 @@ pub async fn upload_procedure(
     video_id: i64,
     profile: Profile,
 ) -> Result<String, String> {
-    #[cfg(feature = "gui")]
+    #[cfg(all(feature = "gui", not(feature = "headless")))]
     let emitter = EventEmitter::new(state.app_handle.clone());
     #[cfg(feature = "headless")]
     let emitter = EventEmitter::new(state.progress_manager.get_event_sender());
@@ -565,7 +565,7 @@ async fn upload_procedure_inner(
     let output = state.config.read().await.output.clone();
     let file = Path::new(&output).join(&video_row.file);
     let path = Path::new(&file);
-    let client = reqwest::Client::new();
+    let client = crate::utils::http::no_proxy_client();
 
     let cover_path = file.with_extension("jpg");
     let cover_bytes = tokio::fs::read(&cover_path).await.map_err(|e| {
@@ -604,7 +604,7 @@ async fn upload_procedure_inner(
                     )
                     .await?;
                 if state.config.read().await.post_notify {
-                    #[cfg(feature = "gui")]
+                    #[cfg(all(feature = "gui", not(feature = "headless")))]
                     state
                         .app_handle
                         .notification()
@@ -714,7 +714,7 @@ pub async fn get_video_typelist(
     state: state_type!(),
 ) -> Result<Vec<bilibili::response::Typelist>, String> {
     let account = state.db.get_account_by_platform("bilibili").await?;
-    let client = reqwest::Client::new();
+    let client = crate::utils::http::no_proxy_client();
     match bilibili::api::get_video_typelist(&client, &account.to_account()).await {
         Ok(typelist) => Ok(typelist),
         Err(e) => Err(e.to_string()),
@@ -763,7 +763,7 @@ pub async fn generate_video_subtitle(
     event_id: String,
     id: i64,
 ) -> Result<String, String> {
-    #[cfg(feature = "gui")]
+    #[cfg(all(feature = "gui", not(feature = "headless")))]
     let emitter = EventEmitter::new(state.app_handle.clone());
     #[cfg(feature = "headless")]
     let emitter = EventEmitter::new(state.progress_manager.get_event_sender());
@@ -881,7 +881,7 @@ pub async fn encode_video_subtitle(
     id: i64,
     srt_style: String,
 ) -> Result<VideoRow, String> {
-    #[cfg(feature = "gui")]
+    #[cfg(all(feature = "gui", not(feature = "headless")))]
     let emitter = EventEmitter::new(state.app_handle.clone());
     #[cfg(feature = "headless")]
     let emitter = EventEmitter::new(state.progress_manager.get_event_sender());
@@ -975,7 +975,7 @@ pub async fn import_external_video(
     title: String,
     room_id: String,
 ) -> Result<VideoRow, String> {
-    #[cfg(feature = "gui")]
+    #[cfg(all(feature = "gui", not(feature = "headless")))]
     let emitter = EventEmitter::new(state.app_handle.clone());
     #[cfg(feature = "headless")]
     let emitter = EventEmitter::new(state.progress_manager.get_event_sender());
@@ -1111,7 +1111,7 @@ pub async fn clip_video(
     // 获取父视频信息
     let parent_video = state.db.get_video(parent_video_id).await?;
 
-    #[cfg(feature = "gui")]
+    #[cfg(all(feature = "gui", not(feature = "headless")))]
     let emitter = EventEmitter::new(state.app_handle.clone());
     #[cfg(feature = "headless")]
     let emitter = EventEmitter::new(state.progress_manager.get_event_sender());
@@ -1334,7 +1334,7 @@ pub async fn batch_import_external_videos(
     let mut errors = Vec::new();
 
     // 设置批量进度事件发射器
-    #[cfg(feature = "gui")]
+    #[cfg(all(feature = "gui", not(feature = "headless")))]
     let emitter = EventEmitter::new(state.app_handle.clone());
     #[cfg(feature = "headless")]
     let emitter = EventEmitter::new(state.progress_manager.get_event_sender());

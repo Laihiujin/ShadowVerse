@@ -1,5 +1,4 @@
 #[cfg(feature = "gui")]
-use tauri::State as TauriState;
 
 use crate::state::State;
 use crate::{database::task::TaskRow, state_type};

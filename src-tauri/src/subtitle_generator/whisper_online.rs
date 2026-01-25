@@ -35,6 +35,7 @@ pub async fn new(
     prompt: Option<&str>,
 ) -> Result<WhisperOnline, String> {
     let client = Client::builder()
+        .no_proxy()
         .timeout(std::time::Duration::from_secs(300)) // 5 minutes timeout
         .build()
         .map_err(|e| format!("Failed to create HTTP client: {e}"))?;

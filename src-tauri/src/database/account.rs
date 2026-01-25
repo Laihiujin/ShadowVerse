@@ -33,7 +33,25 @@ impl Database {
     // CREATE TABLE accounts (uid INTEGER PRIMARY KEY, name TEXT, avatar TEXT, csrf TEXT, cookies TEXT, created_at TEXT);
     pub async fn add_account(&self, account: &AccountRow) -> Result<(), DatabaseError> {
         let lock = self.db.read().await.clone().unwrap();
-        sqlx::query("INSERT INTO accounts (uid, platform, name, avatar, csrf, cookies, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7)").bind(&account.uid).bind(&account.platform).bind(&account.name).bind(&account.avatar).bind(&account.csrf).bind(&account.cookies).bind(&account.created_at).execute(&lock).await?;
+        sqlx::query(
+            "INSERT INTO accounts (uid, platform, name, avatar, csrf, cookies, created_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)
+             ON CONFLICT(uid, platform) DO UPDATE SET
+                name = excluded.name,
+                avatar = excluded.avatar,
+                csrf = excluded.csrf,
+                cookies = excluded.cookies,
+                created_at = excluded.created_at",
+        )
+        .bind(&account.uid)
+        .bind(&account.platform)
+        .bind(&account.name)
+        .bind(&account.avatar)
+        .bind(&account.csrf)
+        .bind(&account.cookies)
+        .bind(&account.created_at)
+        .execute(&lock)
+        .await?;
 
         Ok(())
     }
@@ -45,7 +63,7 @@ impl Database {
             .bind(platform)
             .execute(&lock)
             .await?;
-        if sql.rows_affected() != 1 {
+        if sql.rows_affected() == 0 {
             return Err(DatabaseError::NotFound);
         }
         Ok(())

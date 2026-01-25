@@ -52,6 +52,11 @@
   let qr_image = "";
   let qr_url = "";
   let qr_error = "";
+  let webview_cookie_error = "";
+  let webview_cookie_loading = false;
+  let webview_cookie_polling = false;
+  let webview_cookie_poll_timer = null;
+  let webview_cookie_poll_attempts = 0;
 
   let manualModal = false;
 
@@ -59,6 +64,37 @@
 
   const qrPlatforms = new Set(["bilibili", "douyin", "kuaishou", "tiktok"]);
   const autoQrPlatforms = new Set(["bilibili", "kuaishou"]);
+  const tiktok_interval_ms = () => 60000 + Math.floor(Math.random() * 30001);
+  const webviewLoginPlatforms: Record<
+    string,
+    { open: string; get: string; label: string }
+  > = {
+    tiktok: {
+      open: "open_tiktok_login_window",
+      get: "get_tiktok_webview_cookies",
+      label: "TikTok",
+    },
+    douyin: {
+      open: "open_douyin_login_window",
+      get: "get_douyin_webview_cookies",
+      label: "抖音",
+    },
+    kuaishou: {
+      open: "open_kuaishou_login_window",
+      get: "get_kuaishou_webview_cookies",
+      label: "快手",
+    },
+    huya: {
+      open: "open_huya_login_window",
+      get: "get_huya_webview_cookies",
+      label: "虎牙",
+    },
+    bilibili: {
+      open: "open_bilibili_login_window",
+      get: "get_bilibili_webview_cookies",
+      label: "B站",
+    },
+  };
 
   function default_tab(platform: string) {
     return autoQrPlatforms.has(platform) ? "qr" : "manual";
@@ -67,6 +103,8 @@
   function set_platform(platform: string) {
     selectedPlatform = platform;
     activeTab = default_tab(platform);
+    webview_cookie_error = "";
+    stop_webview_cookie_poll();
     if (activeTab === "qr" && supports_qr(platform)) {
       requestAnimationFrame(handle_qr);
     }
@@ -111,6 +149,7 @@ function toggleDropdown(uid) {
       !event.target.closest("button")
     ) {
       addModal = false;
+      stop_webview_cookie_poll();
       if (check_interval) {
         clearInterval(check_interval);
       }
@@ -132,8 +171,8 @@ function toggleDropdown(uid) {
     tiktok_backoff = 0;
     qr_attempts = 0;
     qr_max_attempts = selectedPlatform === "tiktok" ? 30 : 15;
-    min_qr_interval_ms = selectedPlatform === "tiktok" ? 15000 : selectedPlatform === "bilibili" ? 5000 : 3000;
-    check_interval_ms = selectedPlatform === "tiktok" ? 15000 : 2000;
+    min_qr_interval_ms = selectedPlatform === "tiktok" ? 60000 : selectedPlatform === "bilibili" ? 5000 : 3000;
+    check_interval_ms = selectedPlatform === "tiktok" ? tiktok_interval_ms() : 2000;
     qr_error = "";
     qr_image = "";
     qr_url = "";
@@ -213,7 +252,7 @@ function toggleDropdown(uid) {
         if (check_interval) {
           clearInterval(check_interval);
         }
-        qr_error = "已暂停轮询，请点击刷新扫码状态";
+        qr_error = "已暂停轮询，请点击刷新二维码";
         return;
       }
       let qr_status: { code: number; cookies: string; message?: string } = await invoke(
@@ -242,18 +281,19 @@ function toggleDropdown(uid) {
               clearInterval(check_interval);
             }
             tiktok_backoff += 1;
-            check_interval_ms = Math.min(60000, 10000 + tiktok_backoff * 5000);
+            check_interval_ms = tiktok_interval_ms();
             if (selectedPlatform === "tiktok") {
               if (tiktok_rate_timer) {
                 clearTimeout(tiktok_rate_timer);
               }
+              const cooldown_ms = 300000 + Math.floor(Math.random() * 300001);
               tiktok_rate_timer = setTimeout(() => {
                 tiktok_rate_timer = null;
                 if (addModal && activeTab === "qr" && supports_qr(selectedPlatform) && auto_qr_poll) {
                   check_qr_once();
                   check_interval = setInterval(check_qr, check_interval_ms);
                 }
-              }, 120000);
+              }, cooldown_ms);
             } else {
               if (auto_qr_poll) {
                 check_interval = setInterval(check_qr, check_interval_ms);
@@ -299,6 +339,101 @@ function toggleDropdown(uid) {
     } catch (e) {
       alert("\u6dfb\u52a0\u8d26\u53f7\u5931\u8d25\uff1a" + e);
     }
+  }
+
+  function supports_webview_login(platform: string) {
+    return !!webviewLoginPlatforms[platform];
+  }
+
+  async function open_webview_login() {
+    webview_cookie_error = "";
+    const config = webviewLoginPlatforms[selectedPlatform];
+    if (!config) {
+      return;
+    }
+    try {
+      await invoke(config.open, {
+        userAgent: navigator.userAgent,
+      });
+      if (selectedPlatform === "tiktok") {
+        start_webview_cookie_poll();
+      }
+    } catch (e) {
+      webview_cookie_error = String(e || "打开登录窗口失败");
+    }
+  }
+
+  async function import_webview_cookies() {
+    return import_webview_cookies_internal(false);
+  }
+
+  async function import_webview_cookies_internal(silent: boolean) {
+    webview_cookie_error = "";
+    webview_cookie_loading = true;
+    const config = webviewLoginPlatforms[selectedPlatform];
+    if (!config) {
+      webview_cookie_loading = false;
+      return "";
+    }
+    try {
+      const cookies = (await invoke(config.get)) as string;
+      cookie_str = cookies;
+      return cookies;
+    } catch (e) {
+      if (!silent) {
+        webview_cookie_error = String(e || "导入 Cookie 失败");
+      }
+    } finally {
+      webview_cookie_loading = false;
+    }
+    return "";
+  }
+
+  function has_tiktok_login_cookie(cookies: string) {
+    if (!cookies) {
+      return false;
+    }
+    const lower = cookies.toLowerCase();
+    return (
+      lower.includes("sessionid=") ||
+      lower.includes("sid_tt=") ||
+      lower.includes("sid_guard=") ||
+      lower.includes("uid_tt=") ||
+      lower.includes("passport_csrf_token=")
+    );
+  }
+
+  function stop_webview_cookie_poll() {
+    if (webview_cookie_poll_timer) {
+      clearInterval(webview_cookie_poll_timer);
+      webview_cookie_poll_timer = null;
+    }
+    webview_cookie_polling = false;
+    webview_cookie_poll_attempts = 0;
+  }
+
+  function start_webview_cookie_poll() {
+    if (webview_cookie_polling) {
+      return;
+    }
+    webview_cookie_polling = true;
+    webview_cookie_poll_attempts = 0;
+    const max_attempts = 90;
+    const poll_once = async () => {
+      webview_cookie_poll_attempts += 1;
+      const cookies = await import_webview_cookies_internal(true);
+      if (has_tiktok_login_cookie(cookies)) {
+        stop_webview_cookie_poll();
+        await add_cookie();
+        return;
+      }
+      if (webview_cookie_poll_attempts >= max_attempts) {
+        stop_webview_cookie_poll();
+        webview_cookie_error = "未检测到登录态 Cookie，请确认已登录 TikTok";
+      }
+    };
+    poll_once();
+    webview_cookie_poll_timer = setInterval(poll_once, 2000);
   }
 
   function platform_display(platform: string) {
@@ -596,9 +731,9 @@ function platform_avatar(platform: string) {
               {/if}
               <button
                 class="text-xs text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white transition-colors"
-                on:click={check_qr_once}
+                on:click={handle_qr}
               >
-                刷新扫码状态
+                刷新二维码
               </button>
               <p class="text-sm text-center text-gray-600 dark:text-gray-400">
                 {qr_help_text(selectedPlatform)}
@@ -614,6 +749,31 @@ function platform_avatar(platform: string) {
                   placeholder={`请粘贴 ${selectedPlatform} 账号的 Cookie`}
                 />
               </p>
+              {#if supports_webview_login(selectedPlatform)}
+                <div class="space-y-2">
+                  <div class="flex items-center justify-between gap-2">
+                    <button
+                      class="px-3 py-2 bg-[#2c2c2e] hover:bg-[#3a3a3c] text-white text-xs font-medium rounded-lg transition-colors"
+                      on:click={open_webview_login}
+                    >
+                      打开内置浏览器登录
+                    </button>
+                    <button
+                      class="px-3 py-2 bg-[#1f6feb] hover:bg-[#1f6feb]/90 text-white text-xs font-medium rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                      on:click={import_webview_cookies}
+                      disabled={webview_cookie_loading}
+                    >
+                      {webview_cookie_loading ? "导入中..." : "导入 Cookie"}
+                    </button>
+                  </div>
+                  <p class="text-xs text-gray-500 dark:text-gray-400">
+                    登录完成后点击导入，Cookie 会自动写入输入框
+                  </p>
+                  {#if webview_cookie_error}
+                    <p class="text-xs text-red-500">{webview_cookie_error}</p>
+                  {/if}
+                </div>
+              {/if}
               <div class="flex justify-end items-center space-x-2">
                 
                 <button

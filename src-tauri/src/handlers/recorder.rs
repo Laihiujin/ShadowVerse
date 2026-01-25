@@ -20,8 +20,6 @@ use recorder::platforms::douyin;
 use recorder::platforms::PlatformType;
 use recorder::RecorderInfo;
 #[cfg(feature = "gui")]
-use tauri::State as TauriState;
-
 use serde::Deserialize;
 use serde::Serialize;
 

@@ -5,7 +5,7 @@ use recorder::events::RecorderEvent;
 
 use crate::database::Database;
 
-#[cfg(feature = "gui")]
+#[cfg(all(feature = "gui", not(feature = "headless")))]
 use {
     recorder::danmu::DanmuEntry,
     serde::Serialize,
@@ -30,20 +30,20 @@ pub trait ProgressReporterTrait: Send + Sync + Clone {
 
 #[derive(Clone)]
 pub struct EventEmitter {
-    #[cfg(feature = "gui")]
+    #[cfg(all(feature = "gui", not(feature = "headless")))]
     app_handle: AppHandle,
     #[cfg(feature = "headless")]
     sender: broadcast::Sender<RecorderEvent>,
 }
 
-#[cfg(feature = "gui")]
+#[cfg(all(feature = "gui", not(feature = "headless")))]
 #[derive(Clone, Serialize)]
 struct UpdateEvent<'a> {
     id: &'a str,
     content: &'a str,
 }
 
-#[cfg(feature = "gui")]
+#[cfg(all(feature = "gui", not(feature = "headless")))]
 #[derive(Clone, Serialize)]
 struct FinishEvent<'a> {
     id: &'a str,
@@ -53,11 +53,11 @@ struct FinishEvent<'a> {
 
 impl EventEmitter {
     pub fn new(
-        #[cfg(feature = "gui")] app_handle: AppHandle,
+        #[cfg(all(feature = "gui", not(feature = "headless")))] app_handle: AppHandle,
         #[cfg(feature = "headless")] sender: broadcast::Sender<RecorderEvent>,
     ) -> Self {
         Self {
-            #[cfg(feature = "gui")]
+            #[cfg(all(feature = "gui", not(feature = "headless")))]
             app_handle,
             #[cfg(feature = "headless")]
             sender,
@@ -65,7 +65,7 @@ impl EventEmitter {
     }
 
     pub fn emit(&self, event: &RecorderEvent) {
-        #[cfg(feature = "gui")]
+        #[cfg(all(feature = "gui", not(feature = "headless")))]
         {
             match event {
                 RecorderEvent::ProgressUpdate { id, content } => {

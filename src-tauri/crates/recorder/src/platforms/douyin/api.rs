@@ -2,7 +2,7 @@ use crate::account::Account;
 use crate::errors::RecorderError;
 use crate::utils::user_agent_generator;
 use regex::Regex;
-use reqwest::Client;
+use reqwest::{Client, Proxy};
 
 use super::response::DouyinRoomInfoResponse;
 use super::{abogus, params};
@@ -11,6 +11,9 @@ use std::collections::HashMap;
 use reqwest::header::SET_COOKIE;
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
+use base64::{engine::general_purpose, Engine as _};
+const DOUYIN_PASSPORT_UA_DEFAULT: &str =
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36";
 
 #[derive(Debug, Clone)]
 pub struct DouyinBasicRoomInfo {
@@ -34,10 +37,40 @@ fn generate_ms_token() -> String {
     params::gen_false_ms_token()
 }
 
+
+fn douyin_proxy_url_from_env() -> Option<String> {
+    // Force non-TikTok platforms to bypass proxy.
+    None
+}
+
+fn build_douyin_proxy_client(proxy_url: &str) -> Result<Client, RecorderError> {
+    let proxy = Proxy::all(proxy_url).map_err(|_| RecorderError::ApiError {
+        error: "Invalid proxy URL".to_string(),
+    })?;
+    Client::builder()
+        .proxy(proxy)
+        .build()
+        .map_err(|_| RecorderError::ApiError {
+            error: "Failed to build proxy client".to_string(),
+        })
+}
+
 pub fn generate_user_agent_header() -> reqwest::header::HeaderMap {
     let user_agent = user_agent_generator::UserAgentGenerator::new().generate(false);
     let mut headers = reqwest::header::HeaderMap::new();
     headers.insert("user-agent", user_agent.parse().unwrap());
+    headers
+}
+
+fn passport_user_agent() -> String {
+    read_env("DOUYIN_PASSPORT_USER_AGENT")
+        .or_else(|| read_env("DOUYIN_USER_AGENT"))
+        .unwrap_or_else(|| DOUYIN_PASSPORT_UA_DEFAULT.to_string())
+}
+
+fn generate_passport_headers() -> reqwest::header::HeaderMap {
+    let mut headers = reqwest::header::HeaderMap::new();
+    headers.insert("user-agent", passport_user_agent().parse().unwrap());
     headers
 }
 
@@ -332,6 +365,18 @@ fn parse_set_cookies(headers: &reqwest::header::HeaderMap) -> HashMap<String, St
     cookies
 }
 
+fn parse_cookie_header(cookie_header: &str) -> HashMap<String, String> {
+    let mut cookies = HashMap::new();
+    for part in cookie_header.split(';') {
+        if let Some((name, value)) = part.trim().split_once('=') {
+            if !name.is_empty() {
+                cookies.insert(name.to_string(), value.trim().to_string());
+            }
+        }
+    }
+    cookies
+}
+
 fn format_cookie_header(cookies: &HashMap<String, String>) -> String {
     cookies
         .iter()
@@ -359,6 +404,39 @@ fn env_or(key: &str, default: &str) -> String {
 fn push_param(params: &mut Vec<(String, String)>, key: &str, value: String) {
     if !value.is_empty() {
         params.push((key.to_string(), value));
+    }
+}
+
+fn apply_passport_cookie_overrides(
+    overrides: &mut HashMap<String, String>,
+    cookies: &mut HashMap<String, String>,
+) {
+    if !overrides.contains_key("verifyFp") {
+        if let Some(value) = cookies
+            .get("s_v_web_id")
+            .or_else(|| cookies.get("verifyFp"))
+            .or_else(|| cookies.get("verify_fp"))
+        {
+            overrides.insert("verifyFp".to_string(), value.to_string());
+        } else {
+            let generated = params::gen_verify_fp();
+            overrides.insert("verifyFp".to_string(), generated.clone());
+            cookies.entry("s_v_web_id".to_string()).or_insert(generated);
+        }
+    }
+    if !overrides.contains_key("fp") {
+        if let Some(value) = overrides.get("verifyFp") {
+            overrides.insert("fp".to_string(), value.to_string());
+        }
+    }
+    if !overrides.contains_key("msToken") {
+        if let Some(value) = cookies.get("msToken") {
+            overrides.insert("msToken".to_string(), value.to_string());
+        } else {
+            let generated = generate_ms_token();
+            overrides.insert("msToken".to_string(), generated.clone());
+            cookies.entry("msToken".to_string()).or_insert(generated);
+        }
     }
 }
 
@@ -699,33 +777,65 @@ async fn fetch_douyin_passport_overrides(
     }
 }
 
-async fn fetch_passport_csrf(client: &Client, headers: &reqwest::header::HeaderMap) -> Option<String> {
+async fn fetch_passport_csrf(
+    client: &Client,
+    headers: &reqwest::header::HeaderMap,
+) -> Option<(String, HashMap<String, String>)> {
+    let mut csrf_headers = headers.clone();
+    if !csrf_headers.contains_key("Referer") {
+        csrf_headers.insert("Referer", "https://www.douyin.com/".parse().unwrap());
+    }
     let resp = client
         .get("https://www.douyin.com/")
-        .headers(headers.clone())
+        .headers(csrf_headers)
         .send()
         .await
         .ok()?;
     let cookies = parse_set_cookies(resp.headers());
-    cookies.get("passport_csrf_token").cloned()
+    let csrf = cookies.get("passport_csrf_token").cloned().unwrap_or_default();
+    Some((csrf, cookies))
 }
 
 pub async fn get_qr_login(client: &Client) -> Result<DouyinQrInfo, RecorderError> {
-    let mut headers = generate_user_agent_header();
+    let proxy_url = douyin_proxy_url_from_env();
+    let request_client = if let Some(proxy_url) = proxy_url.as_deref() {
+        build_douyin_proxy_client(proxy_url)?
+    } else {
+        client.clone()
+    };
+    let proxy_display = proxy_url.as_deref().unwrap_or("direct");
+    log::info!(
+        "[Douyin] QR get_qrcode request host=https://login.douyin.com, proxy={}",
+        proxy_display
+    );
+    let mut headers = generate_passport_headers();
 
-    let passport_csrf = fetch_passport_csrf(client, &headers).await.unwrap_or_default();
-    let overrides = fetch_douyin_passport_overrides(client).await;
-    apply_douyin_passport_headers(&mut headers, &passport_csrf, overrides.as_ref());
+    let mut cookies = HashMap::new();
+    let passport_csrf = fetch_passport_csrf(&request_client, &headers)
+        .await
+        .map(|(csrf, fetched)| {
+            cookies = fetched;
+            csrf
+        })
+        .unwrap_or_default();
+    let mut overrides = fetch_douyin_passport_overrides(&request_client).await.unwrap_or_default();
+    apply_passport_cookie_overrides(&mut overrides, &mut cookies);
+    apply_douyin_passport_headers(&mut headers, &passport_csrf, Some(&overrides));
+    let cookie_header = format_cookie_header(&cookies);
+    if !cookie_header.is_empty() {
+        headers.insert("Cookie", cookie_header.parse().unwrap());
+    }
 
     let url = {
-        let query_params = build_douyin_passport_params(true, overrides.as_ref());
+        let query_params = build_douyin_passport_params(true, Some(&overrides));
         let param_str = build_query_string_owned(&query_params);
         format!(
             "https://login.douyin.com/passport/web/get_qrcode/?{param_str}"
         )
     };
 
-    let resp = client.get(url).headers(headers.clone()).send().await?;
+    let resp = request_client.get(url).headers(headers.clone()).send().await?;
+    let resp_headers = resp.headers().clone();
     let json: serde_json::Value = resp.json().await?;
     log::warn!("[Douyin] get_qr_login response: {}", json);
     let data = json
@@ -733,6 +843,16 @@ pub async fn get_qr_login(client: &Client) -> Result<DouyinQrInfo, RecorderError
         .ok_or_else(|| RecorderError::ApiError {
             error: "Douyin QR: missing data".to_string(),
         })?;
+    let resp_cookies = parse_set_cookies(&resp_headers);
+    for (k, v) in resp_cookies {
+        cookies.insert(k, v);
+    }
+    let cookie_header = format_cookie_header(&cookies);
+    let cookie_b64 = if cookie_header.is_empty() {
+        String::new()
+    } else {
+        general_purpose::STANDARD.encode(cookie_header.as_bytes())
+    };
     let token = data
         .get("token")
         .and_then(|v| v.as_str())
@@ -749,7 +869,11 @@ pub async fn get_qr_login(client: &Client) -> Result<DouyinQrInfo, RecorderError
         .map(|v| v.to_string());
 
     Ok(DouyinQrInfo {
-        oauth_key: format!("{token}|{passport_csrf}"),
+        oauth_key: if cookie_b64.is_empty() {
+            format!("{token}|{passport_csrf}")
+        } else {
+            format!("{token}|{passport_csrf}|{cookie_b64}")
+        },
         url: qr_url,
         image: qr_image,
     })
@@ -762,13 +886,34 @@ pub async fn get_qr_login_status(
     let mut parts = token_with_csrf.split('|');
     let token = parts.next().unwrap_or_default();
     let passport_csrf = parts.next().unwrap_or_default();
+    let cookie_header = parts
+        .next()
+        .and_then(|encoded| general_purpose::STANDARD.decode(encoded).ok())
+        .and_then(|bytes| String::from_utf8(bytes).ok())
+        .unwrap_or_default();
 
-    let mut headers = generate_user_agent_header();
-    let overrides = fetch_douyin_passport_overrides(client).await;
-    apply_douyin_passport_headers(&mut headers, passport_csrf, overrides.as_ref());
+    let proxy_url = douyin_proxy_url_from_env();
+    let request_client = if let Some(proxy_url) = proxy_url.as_deref() {
+        build_douyin_proxy_client(proxy_url)?
+    } else {
+        client.clone()
+    };
+    let proxy_display = proxy_url.as_deref().unwrap_or("direct");
+    log::info!(
+        "[Douyin] QR status request host=https://login.douyin.com, proxy={}",
+        proxy_display
+    );
+    let mut headers = generate_passport_headers();
+    let mut cookie_map = parse_cookie_header(&cookie_header);
+    let mut overrides = fetch_douyin_passport_overrides(&request_client).await.unwrap_or_default();
+    apply_passport_cookie_overrides(&mut overrides, &mut cookie_map);
+    apply_douyin_passport_headers(&mut headers, passport_csrf, Some(&overrides));
+    if !cookie_header.is_empty() {
+        headers.insert("Cookie", cookie_header.parse().unwrap());
+    }
 
     let url = {
-        let mut query_params = build_douyin_passport_params(false, overrides.as_ref());
+        let mut query_params = build_douyin_passport_params(false, Some(&overrides));
         push_param(&mut query_params, "token", token.to_string());
         let param_str = build_query_string_owned(&query_params);
         format!(
@@ -776,15 +921,44 @@ pub async fn get_qr_login_status(
         )
     };
 
-    let resp = client
-        .post(url)
+    let resp = request_client
+        .post(&url)
         .headers(headers.clone())
         .form(&[("token", token)])
         .send()
         .await?;
-    let resp_headers = resp.headers().clone();
-    let json: serde_json::Value = resp.json().await?;
+    let mut resp_headers = resp.headers().clone();
+    let mut json: serde_json::Value = resp.json().await?;
     log::warn!("[Douyin] get_qr_login_status response: {}", json);
+    let mut error_code = json
+        .get("data")
+        .and_then(|v| v.get("error_code"))
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+    if error_code == 4031 && proxy_url.is_some() {
+        log::warn!("[Douyin] QR status blocked via proxy, retrying direct");
+        if let Ok(direct_resp) = client
+            .post(&url)
+            .headers(headers.clone())
+            .form(&[("token", token)])
+            .send()
+            .await
+        {
+            resp_headers = direct_resp.headers().clone();
+            if let Ok(direct_json) = direct_resp.json::<serde_json::Value>().await {
+                json = direct_json;
+                log::warn!(
+                    "[Douyin] get_qr_login_status direct response: {}",
+                    json
+                );
+                error_code = json
+                    .get("data")
+                    .and_then(|v| v.get("error_code"))
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0);
+            }
+        }
+    }
     let data = json.get("data");
     let status = data
         .and_then(|v| v.get("status"))
@@ -793,7 +967,7 @@ pub async fn get_qr_login_status(
     let error_code = data
         .and_then(|v| v.get("error_code"))
         .and_then(|v| v.as_i64())
-        .unwrap_or(0);
+        .unwrap_or(error_code);
     let description = data
         .and_then(|v| v.get("description"))
         .and_then(|v| v.as_str())
@@ -834,7 +1008,7 @@ pub async fn get_qr_login_status(
             .and_then(|v| v.as_str())
             .unwrap_or("");
         if !redirect_url.is_empty() {
-            let redirect_resp = client
+            let redirect_resp = request_client
                 .get(redirect_url)
                 .headers(headers.clone())
                 .send()
@@ -975,7 +1149,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_room_owner_sec_uid() {
-        let client = Client::new();
+        let client = crate::utils::no_proxy_client();
         let sec_uid = get_room_owner_sec_uid(&client, "200525029536")
             .await
             .unwrap();

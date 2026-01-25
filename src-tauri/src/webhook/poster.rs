@@ -81,7 +81,10 @@ pub struct WebhookPoster {
 impl WebhookPoster {
     /// Create a new webhook poster with the given configuration
     pub fn new(config: WebhookConfig) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        let client = Client::builder().timeout(config.timeout).build()?;
+        let client = Client::builder()
+            .no_proxy()
+            .timeout(config.timeout)
+            .build()?;
 
         Ok(Self {
             client: Arc::new(RwLock::new(client)),
@@ -196,7 +199,10 @@ impl WebhookPoster {
         &self,
         config: WebhookConfig,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        *self.client.write().await = Client::builder().timeout(config.timeout).build()?;
+        *self.client.write().await = Client::builder()
+            .no_proxy()
+            .timeout(config.timeout)
+            .build()?;
         *self.config.write().await = config;
         Ok(())
     }

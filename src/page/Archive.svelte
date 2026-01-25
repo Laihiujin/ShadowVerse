@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { invoke, get_static_url } from "../lib/invoker";
+  import { invoke, get, get_static_url } from "../lib/invoker";
   import type { RecordItem } from "../lib/db";
   import { onMount } from "svelte";
   import {
@@ -61,6 +61,76 @@
   let allArchives = [];
   let allRooms: RecorderInfo[] = [];
 
+  const room_cover_cache: Map<string, string> = new Map();
+  const room_cover_fallback: Map<string, string> = new Map();
+
+  function default_cover(platform: string) {
+    const coverMap = {
+      bilibili: "/imgs/bilibili.png",
+      douyin: "/imgs/douyin.svg",
+      huya: "/imgs/huya.png",
+      kuaishou: "/imgs/kuaishou.svg",
+      tiktok: "/imgs/Tiktok.svg",
+    };
+    return coverMap[platform] || "/imgs/huya.png";
+  }
+
+  function is_remote_url(url: string) {
+    return /^https?:\/\//i.test(url);
+  }
+
+  function is_default_cover_url(src: string, platform: string) {
+    const fallback = default_cover(platform);
+    return src.includes(fallback);
+  }
+
+  async function get_room_cover(room_id: string, url: string) {
+    const cache_key = `${room_id}:${url}`;
+    if (room_cover_cache.has(cache_key)) {
+      return room_cover_cache.get(cache_key);
+    }
+    const response = await get(url);
+    const blob = await response.blob();
+    const cover_url = URL.createObjectURL(blob);
+    room_cover_cache.set(cache_key, cover_url);
+    return cover_url;
+  }
+
+  async function refresh_room_cover_fallback() {
+    room_cover_fallback.clear();
+    for (const room of allRooms) {
+      let cover =
+        room.room_info.room_cover ||
+        room.user_info.user_avatar ||
+        default_cover(room.room_info.platform);
+      if (cover && is_remote_url(cover)) {
+        cover = await get_room_cover(room.room_info.room_id, cover);
+      }
+      room_cover_fallback.set(room.room_info.room_id, cover);
+    }
+  }
+
+  function handle_archive_cover_load(event: Event, archive: RecordItem) {
+    const target = event.currentTarget;
+    if (!(target instanceof HTMLImageElement)) {
+      return;
+    }
+    const src = target.currentSrc || target.src;
+    if (!is_default_cover_url(src, archive.platform)) {
+      room_cover_fallback.set(archive.room_id, src);
+    }
+  }
+
+  function handle_archive_cover_error(event: Event, archive: RecordItem) {
+    const target = event.currentTarget;
+    if (!(target instanceof HTMLImageElement)) {
+      return;
+    }
+    const fallback =
+      room_cover_fallback.get(archive.room_id) || default_cover(archive.platform);
+    target.src = fallback;
+  }
+
   onMount(async () => {
     // 从本地存储恢复分页大小设置
     const savedPageSize = localStorage.getItem("archive-page-size");
@@ -85,6 +155,7 @@
       // 获取所有直播间列表
       const recorderList: RecorderList = await invoke("get_recorder_list");
       allRooms = recorderList.recorders || [];
+      await refresh_room_cover_fallback();
 
       // 收集所有直播间，用账号名/直播间标题+直播间号展示
       roomOptions = allRooms
@@ -822,6 +893,8 @@
                           src={archive.cover}
                           alt="封面"
                           class="w-12 h-8 rounded object-cover flex-shrink-0"
+                          on:load={(e) => handle_archive_cover_load(e, archive)}
+                          on:error={(e) => handle_archive_cover_error(e, archive)}
                         />
                       {/if}
                       <span

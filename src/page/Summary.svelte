@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { get_static_url, invoke } from "../lib/invoker";
+  import { get, get_static_url, invoke } from "../lib/invoker";
   import type { RecorderList, DiskInfo } from "../lib/interface";
   import type { RecordItem } from "../lib/db";
   const INTERVAL = 5000;
@@ -41,10 +41,86 @@
   let hasNewRecords = false;
   const RECORDS_PER_PAGE = 5;
 
+  const room_cover_cache: Map<string, string> = new Map();
+  const room_cover_fallback: Map<string, string> = new Map();
+
+  function default_cover(platform: string) {
+    const coverMap = {
+      bilibili: "/imgs/bilibili.png",
+      douyin: "/imgs/douyin.svg",
+      huya: "/imgs/huya.png",
+      kuaishou: "/imgs/kuaishou.svg",
+      tiktok: "/imgs/Tiktok.svg",
+    };
+    return coverMap[platform] || "/imgs/huya.png";
+  }
+
+  function is_default_cover_url(src: string, platform: string) {
+    const fallback = default_cover(platform);
+    return src.includes(fallback);
+  }
+
+  function is_blob_or_data_url(url: string) {
+    return /^(blob:|data:)/i.test(url);
+  }
+
+  function is_remote_url(url: string) {
+    return /^https?:\/\//i.test(url);
+  }
+
+  async function get_room_cover(room_id: string, url: string) {
+    const cache_key = `${room_id}:${url}`;
+    if (room_cover_cache.has(cache_key)) {
+      return room_cover_cache.get(cache_key);
+    }
+    const response = await get(url);
+    const blob = await response.blob();
+    const cover_url = URL.createObjectURL(blob);
+    room_cover_cache.set(cache_key, cover_url);
+    return cover_url;
+  }
+
+  async function refresh_room_cover_fallback() {
+    room_cover_fallback.clear();
+    for (const room of summary.recorders) {
+      let cover = room.room_info.room_cover || room.user_info.user_avatar || "";
+      if (cover && is_remote_url(cover)) {
+        cover = await get_room_cover(room.room_info.room_id, cover);
+      } else if (
+        cover &&
+        !is_blob_or_data_url(cover) &&
+        !cover.startsWith("/") &&
+        !cover.startsWith("cache/")
+      ) {
+        cover = await get_static_url("cache", cover);
+      } else if (cover && cover.startsWith("cache/")) {
+        cover = await get_static_url("cache", cover.replace(/^cache\//, ""));
+      }
+      room_cover_fallback.set(room.room_info.room_id, cover);
+    }
+  }
+
+  function handle_record_cover_error(event: Event, record: RecordItem) {
+    const target = event.currentTarget;
+    if (!(target instanceof HTMLImageElement)) {
+      return;
+    }
+    const fallback = room_cover_fallback.get(record.room_id) || "";
+    if (!fallback || is_default_cover_url(fallback, record.platform)) {
+      record.cover = "";
+      recent_records = [...recent_records];
+      return;
+    }
+    record.cover = fallback;
+    target.src = fallback;
+    recent_records = [...recent_records];
+  }
+
   async function update_summary() {
     summary = (await invoke("get_recorder_list")) as RecorderList;
     total = summary.count;
     online = summary.recorders.filter((r) => r.room_info.status).length;
+    await refresh_room_cover_fallback();
 
     disk_usage = await get_archive_disk_usage();
 
@@ -90,10 +166,20 @@
     })) as RecordItem[];
 
     for (const record of newRecords) {
-      record.cover = await get_static_url(
-        "cache",
-        `${record.platform}/${record.room_id}/${record.live_id}/cover.jpg`
-      );
+      const cover_source =
+        record.cover || `${record.platform}/${record.room_id}/${record.live_id}/cover.jpg`;
+      if (is_remote_url(cover_source) || is_blob_or_data_url(cover_source)) {
+        record.cover = cover_source;
+      } else if (cover_source.startsWith("/")) {
+        record.cover = cover_source;
+      } else if (cover_source.startsWith("cache/")) {
+        record.cover = await get_static_url(
+          "cache",
+          cover_source.replace(/^cache\//, "")
+        );
+      } else {
+        record.cover = await get_static_url("cache", cover_source);
+      }
     }
 
     if (hasNewRecords) {
@@ -393,16 +479,19 @@
           >
             <div class="flex items-center space-x-4">
               {#if record.cover}
-                <img
-                  src={record.cover}
-                  class="w-32 h-18 rounded-lg object-cover"
-                  alt="Gaming stream thumbnail"
-                  on:error={(e) =>
-                    console.error("Image error in template:", record.cover, e)}
-                />
+                <div
+                  class="w-32 aspect-video rounded-lg overflow-hidden bg-gray-200 dark:bg-gray-700"
+                >
+                  <img
+                    src={record.cover}
+                    class="w-full h-full object-cover object-center"
+                    alt="Record cover"
+                    on:error={(e) => handle_record_cover_error(e, record)}
+                  />
+                </div>
               {:else}
                 <div
-                  class="w-32 h-20 rounded-lg bg-gray-200 dark:bg-gray-700 flex items-center justify-center"
+                  class="w-32 aspect-video rounded-lg bg-gray-200 dark:bg-gray-700 flex items-center justify-center"
                 >
                   <Video class="w-8 h-8 text-gray-400 dark:text-gray-500" />
                 </div>

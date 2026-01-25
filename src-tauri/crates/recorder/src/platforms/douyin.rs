@@ -53,11 +53,17 @@ impl DouyinRecorder {
         update_interval: Arc<atomic::AtomicU64>,
         enabled: bool,
     ) -> Result<Self, crate::errors::RecorderError> {
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .map_err(|e| RecorderError::ApiError {
+                error: e.to_string(),
+            })?;
         Ok(Self {
             platform: PlatformType::Douyin,
             room_id: room_id.to_string(),
             account: account.clone(),
-            client: reqwest::Client::new(),
+            client,
             event_channel: channel,
             cache_dir,
             quit: Arc::new(atomic::AtomicBool::new(false)),
@@ -93,18 +99,42 @@ impl DouyinRecorder {
             Ok(info) => {
                 let live_status = info.status == 0; // room_status == 0 表示正在直播
 
+                let prev_room = self.room_info.read().await.clone();
+                let prev_user = self.user_info.read().await.clone();
+                let next_cover = info.cover.clone().unwrap_or_default();
+                let room_title = if info.room_title.is_empty() {
+                    prev_room.room_title.clone()
+                } else {
+                    info.room_title.clone()
+                };
+                let room_cover = if next_cover.is_empty() {
+                    prev_room.room_cover.clone()
+                } else {
+                    next_cover
+                };
+                let user_name = if info.user_name.is_empty() {
+                    prev_user.user_name.clone()
+                } else {
+                    info.user_name.clone()
+                };
+                let user_avatar = if info.user_avatar.is_empty() {
+                    prev_user.user_avatar.clone()
+                } else {
+                    info.user_avatar.clone()
+                };
+
                 *self.room_info.write().await = RoomInfo {
                     platform: PlatformType::Douyin.as_str().to_string(),
                     room_id: self.room_id.to_string(),
-                    room_title: info.room_title.clone(),
-                    room_cover: info.cover.clone().unwrap_or_default(),
+                    room_title,
+                    room_cover,
                     status: live_status,
                 };
 
                 *self.user_info.write().await = UserInfo {
                     user_id: info.sec_user_id.clone(),
-                    user_name: info.user_name.clone(),
-                    user_avatar: info.user_avatar.clone(),
+                    user_name,
+                    user_avatar,
                 };
 
                 if pre_live_status != live_status {
@@ -349,10 +379,9 @@ impl crate::traits::RecorderTrait<DouyinExtra> for DouyinRecorder {
                     continue;
                 }
 
-                tokio::time::sleep(Duration::from_secs(
-                    self_clone.update_interval.load(atomic::Ordering::Relaxed),
-                ))
-                .await;
+                let interval = self_clone.update_interval.load(atomic::Ordering::Relaxed);
+                let sleep_secs = crate::utils::jitter_interval_secs(interval, 10);
+                tokio::time::sleep(Duration::from_secs(sleep_secs)).await;
             }
             log::info!("[{}]Recording thread quit.", self_clone.room_id);
         }));

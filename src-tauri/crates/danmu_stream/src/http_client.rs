@@ -14,10 +14,11 @@ impl ApiClient {
         let mut header = HeaderMap::new();
         header.insert("cookie", cookies.parse().unwrap());
 
-        Self {
-            client: reqwest::Client::new(),
-            header,
-        }
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
+        Self { client, header }
     }
 
     pub async fn get(

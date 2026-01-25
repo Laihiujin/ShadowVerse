@@ -9,14 +9,12 @@ use reqwest::redirect::Policy;
 use reqwest::{Client, Proxy, Url};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::env;
 use std::sync::atomic::{AtomicI64, Ordering};
 use url::form_urlencoded::Serializer;
 
 const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36";
-const MOBILE_USER_AGENT: &str = "Mozilla/5.0 (Linux; Android 12; Pixel 6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Mobile Safari/537.36";
-const DEFAULT_COOKIE: &str = "1%7Cz7FKki38aKyy7i-BC9rEDwcrVvjcLcFEL6QIeqldoy4%7C1761302831%7C6c1461e9f1f980cbe0404c51905177d5d53bbd822e1bf66128887d942c9c3e2f";
 const TIKTOK_COOLDOWN_SECS: i64 = 120;
 const TIKTOK_MSSDK_URL: &str = "https://mssdk.tiktokw.us/web/report?msToken=1Ab-7YxR9lUHSem0PraI_XzdKmpHb6j50L8AaXLAd2aWTdoJCYLfX_67rVQFE4UwwHVHmyG_NfIipqrlLT3kCXps-5PYlNAqtdwEg7TrDyTAfCKyBrOLmhMUjB55oW8SPZ4_EkNxNFUdV7MquA==";
 const TIKTOK_MSSDK_MAGIC: i64 = 538969122;
@@ -156,51 +154,14 @@ fn extract_json_after_marker(html_str: &str, marker: &str) -> Option<Value> {
     None
 }
 
-fn detect_blocked_page(html_str: &str) -> Option<&'static str> {
+fn is_waf_wait_page(html_str: &str) -> bool {
     let lower = html_str.to_ascii_lowercase();
-    let candidates = [
-        ("captcha", "TikTok returned a captcha page"),
-        ("verify to continue", "TikTok requires verification"),
-        ("just a moment", "TikTok is protected by a browser check"),
-        ("access denied", "TikTok access denied"),
-        ("safety verification", "TikTok safety verification required"),
-        ("challenge", "TikTok challenge page"),
-        ("slardarwaf", "TikTok WAF page (Slardar)"),
-        ("slardar-config", "TikTok WAF page (Slardar)"),
-    ];
-    for (needle, message) in candidates {
-        if lower.contains(needle) {
-            return Some(message);
-        }
-    }
-    None
+    lower.contains("slardar-config")
+        || lower.contains("slardarwaf")
+        || lower.contains("_wafchallengeid")
+        || lower.contains("please wait")
 }
 
-fn maybe_dump_html(label: &str, html_str: &str) -> Option<String> {
-    let enabled = env::var("BSR_TIKTOK_DUMP_HTML")
-        .map(|v| {
-            let v = v.to_ascii_lowercase();
-            !(v == "0" || v == "false" || v == "no" || v == "off")
-        })
-        .unwrap_or(true);
-    if !enabled {
-        return None;
-    }
-    let dir = env::var("BSR_TIKTOK_DUMP_DIR")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|_| std::env::temp_dir());
-    let _ = std::fs::create_dir_all(&dir);
-    let filename = format!(
-        "tiktok_{}_{}.html",
-        label,
-        chrono::Utc::now().timestamp_millis()
-    );
-    let path = dir.join(filename);
-    if std::fs::write(&path, html_str.as_bytes()).is_ok() {
-        return Some(path.to_string_lossy().to_string());
-    }
-    None
-}
 
 fn extract_state_value(html_str: &str) -> Option<Value> {
     let script_ids = ["SIGI_STATE", "__UNIVERSAL_DATA_FOR_REHYDRATION__", "__NEXT_DATA__"];
@@ -395,18 +356,6 @@ fn parse_cookie_header(header: &str) -> HashMap<String, String> {
 }
 
 
-fn normalize_cookie_header(raw: &str) -> String {
-    let raw = raw.trim();
-    if raw.is_empty() {
-        return String::new();
-    }
-    if raw.contains('=') {
-        raw.to_string()
-    } else {
-        format!("ttwid={raw}")
-    }
-}
-
 fn mssdk_url() -> String {
     env::var("TIKTOK_MSSDK_URL").unwrap_or_else(|_| TIKTOK_MSSDK_URL.to_string())
 }
@@ -462,13 +411,35 @@ fn build_page_headers(url: &str, user_agent: &str, mobile: bool) -> HeaderMap {
     headers
 }
 
-fn to_mobile_url(url: &str) -> Option<String> {
-    let mut parsed = Url::parse(url).ok()?;
-    if parsed.host_str()? == "m.tiktok.com" {
-        return None;
+async fn warm_up_live_pages(client: &Client, account: &Account) {
+    let warmup_urls = ["https://www.tiktok.com/", "https://www.tiktok.com/live"];
+    for url in warmup_urls {
+        let mut headers = build_page_headers(url, USER_AGENT, false);
+        headers.insert("accept-language", "en-US,en;q=0.9".parse().unwrap());
+        if !account.cookies.is_empty() {
+            headers.insert("Cookie", account.cookies.parse().unwrap());
+        }
+
+        for attempt in 0..2 {
+            let response = match client.get(url).headers(headers.clone()).send().await {
+                Ok(response) => response,
+                Err(_) => break,
+            };
+            let status = response.status();
+            let html_str = match response.text().await {
+                Ok(html_str) => html_str,
+                Err(_) => break,
+            };
+            if !status.is_success() {
+                break;
+            }
+            if is_waf_wait_page(&html_str) && attempt == 0 {
+                tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
+                continue;
+            }
+            break;
+        }
     }
-    parsed.set_host(Some("m.tiktok.com")).ok()?;
-    Some(parsed.to_string())
 }
 
 async fn fetch_ms_token(client: &Client) -> String {
@@ -1372,60 +1343,6 @@ async fn select_accessible_stream(
     })
 }
 
-async fn verify_live_stream(
-    client: &Client,
-    headers: &HeaderMap,
-    room_stream: Option<&SigiStreamUrl>,
-    sigi_value: &Value,
-    html_str: &str,
-) -> bool {
-    let mut candidates: Vec<String> = Vec::new();
-
-    if let Some(stream) = room_stream {
-        if let Some(url) = stream.hls_pull_url.as_ref() {
-            candidates.push(url.clone());
-        }
-        if let Some(url) = stream.rtmp_pull_url.as_ref() {
-            candidates.push(url.clone());
-        }
-    }
-
-    if candidates.is_empty() {
-        if let Some(stream) = find_stream_url(sigi_value) {
-            if let Some(url) = stream.hls_pull_url.or(stream.rtmp_pull_url) {
-                candidates.push(url);
-            }
-        }
-    }
-
-    if candidates.is_empty() {
-        if let Some(live_room_info) = extract_live_room_user_info(sigi_value) {
-            if let Some(stream_info) = extract_stream_from_live_room(&live_room_info) {
-                if let Some(url) = stream_info.hls_url.or(stream_info.rtmp_url) {
-                    candidates.push(url);
-                }
-            }
-        }
-    }
-
-    if candidates.is_empty() {
-        if let Some(url) = find_m3u8_in_value(sigi_value)
-            .or_else(|| extract_m3u8_from_html(html_str))
-        {
-            candidates.push(url);
-        }
-    }
-
-    let mut seen = HashSet::new();
-    for url in candidates.into_iter().filter(|u| seen.insert(u.clone())) {
-        if check_url_accessible(client, headers, &url).await {
-            return true;
-        }
-    }
-
-    false
-}
-
 fn extract_live_room_user_info(value: &Value) -> Option<Value> {
     match value {
         Value::Object(map) => {
@@ -1768,174 +1685,43 @@ fn find_stream_url(value: &Value) -> Option<SigiStreamUrl> {
 }
 
 /// Get room information from TikTok page
-/// Note: TikTok requires proxy to access in most regions
 pub async fn get_room_info(
     client: &Client,
     account: &Account,
     url: &str,
 ) -> Result<RoomInfo, RecorderError> {
-    if !tiktok_api_allowed() {
-        return Err(RecorderError::ApiError {
-            error: "TikTok API cooldown".to_string(),
-        });
-    }
-    let proxy_url = proxy_url_from_env();
-    let has_proxy = proxy_url.is_some();
-    let request_client = if let Some(proxy_url) = proxy_url.as_deref() {
-        build_proxy_client(proxy_url)?
-    } else {
-        client.clone()
-    };
     let mut headers = build_page_headers(url, USER_AGENT, false);
-
-    let raw_cookie = if account.cookies.is_empty() {
-        DEFAULT_COOKIE
-    } else {
-        &account.cookies
-    };
-    let normalized_cookie = normalize_cookie_header(raw_cookie);
-    let mut cookie_map = parse_cookie_header(&normalized_cookie);
-    if !cookie_map.contains_key("msToken") || !cookie_map.contains_key("ttwid") {
-        let verify_fp = crate::platforms::douyin::params::gen_verify_fp();
-        let bootstrap = bootstrap_tiktok_cookies(
-            &request_client,
-            &verify_fp,
-            cookie_map.get("msToken").map(|s| s.as_str()),
-        )
-        .await;
-        for (key, value) in bootstrap {
-            cookie_map.entry(key).or_insert(value);
-        }
-    }
-    let cookie_header = build_cookie_string(&cookie_map);
-    if !cookie_header.is_empty() {
-        headers.insert("cookie", cookie_header.parse().unwrap());
+    headers.insert("accept-language", "en-US,en;q=0.9".parse().unwrap());
+    if !account.cookies.is_empty() {
+        headers.insert("Cookie", account.cookies.parse().unwrap());
     }
 
-    let direct_client = client.clone();
+    warm_up_live_pages(client, account).await;
 
-    // Retry up to 3 times
-    for attempt in 0..3 {
-        let mut using_proxy = has_proxy;
-        let response = request_client
-            .get(url)
-            .headers(headers.clone())
-            .send()
-            .await?;
-        let mut status = response.status();
-        let mut html_str = response.text().await?;
-        if has_proxy
-            && (status == reqwest::StatusCode::BAD_GATEWAY
-                || status == reqwest::StatusCode::GATEWAY_TIMEOUT)
-        {
-            log::warn!(
-                "[TikTok] Proxy response status {}, retrying without proxy",
-                status
-            );
-            if let Ok(direct_response) = client.get(url).headers(headers.clone()).send().await {
-                let direct_status = direct_response.status();
-                let direct_html = direct_response.text().await.unwrap_or_default();
-                if direct_status.is_success() {
-                    status = direct_status;
-                    html_str = direct_html;
-                    using_proxy = false;
-                }
-            }
-        }
-        if let Some(_reason) = detect_blocked_page(&html_str) {
-            if using_proxy {
-                if let Ok(direct_response) = client.get(url).headers(headers.clone()).send().await
-                {
-                    let direct_status = direct_response.status();
-                    let direct_html = direct_response.text().await.unwrap_or_default();
-                    if direct_status.is_success()
-                        && detect_blocked_page(&direct_html).is_none()
-                    {
-                        status = direct_status;
-                        html_str = direct_html;
-                        using_proxy = false;
-                    }
-                }
-            }
-        }
-        if let Some(reason) = detect_blocked_page(&html_str) {
-            if let Some(mobile_url) = to_mobile_url(url) {
-                let mobile_headers = build_page_headers(&mobile_url, MOBILE_USER_AGENT, true);
-                if let Ok(mobile_response) = request_client
-                    .get(&mobile_url)
-                    .headers(mobile_headers)
-                    .send()
-                    .await
-                {
-                    let mobile_status = mobile_response.status();
-                    let mobile_html = mobile_response.text().await.unwrap_or_default();
-                    if mobile_status.is_success()
-                        && detect_blocked_page(&mobile_html).is_none()
-                    {
-                        html_str = mobile_html;
-                    }
-                }
-            }
-            let dump_path = maybe_dump_html("blocked_room_info", &html_str);
-            return Err(RecorderError::ApiError {
-                error: if let Some(path) = dump_path {
-                    format!(
-                        "TikTok blocked response: {}. Check proxy quality. Dump: {}",
-                        reason, path
-                    )
-                } else {
-                    format!("TikTok blocked response: {}. Check proxy quality.", reason)
-                },
-            });
-        }
+    for attempt in 0..5 {
+        let response = client.get(url).headers(headers.clone()).send().await?;
+        let status = response.status();
+        let html_str = response.text().await?;
         if !status.is_success() {
-            if status == reqwest::StatusCode::FORBIDDEN {
-                if let Some(mobile_url) = to_mobile_url(url) {
-                    let mobile_headers = build_page_headers(&mobile_url, MOBILE_USER_AGENT, true);
-                    if let Ok(mobile_response) = request_client
-                        .get(&mobile_url)
-                        .headers(mobile_headers)
-                        .send()
-                        .await
-                    {
-                        let mobile_status = mobile_response.status();
-                        let mobile_html = mobile_response.text().await.unwrap_or_default();
-                        if mobile_status.is_success() {
-                            status = mobile_status;
-                            html_str = mobile_html;
-                        }
-                    }
-                }
-            }
-            if status.is_server_error() {
-                if attempt < 2 {
-                    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-                    continue;
-                }
-            }
-            let dump_path = maybe_dump_html("status_room_info", &html_str);
-            if status == reqwest::StatusCode::FORBIDDEN
-                || status == reqwest::StatusCode::TOO_MANY_REQUESTS
-            {
-                set_tiktok_cooldown(&format!("response status {}", status));
-            }
             return Err(RecorderError::ApiError {
-                error: if let Some(path) = dump_path {
-                    format!("TikTok response status: {}. Dump: {}", status, path)
-                } else {
-                    format!("TikTok response status: {}", status)
-                },
+                error: format!("TikTok response status: {}", status),
             });
         }
 
-        // Check for region block
+        if is_waf_wait_page(&html_str) {
+            if attempt < 4 {
+                tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
+                continue;
+            }
+        }
+
         if html_str.contains("We regret to inform you that we have discontinued operating TikTok") {
             return Err(RecorderError::ApiError {
-                error: "TikTok is not available in this region. Please use a different proxy.".to_string(),
+                error: "TikTok is not available in this region. Please use a different proxy."
+                    .to_string(),
             });
         }
 
-        // Check for unexpected EOF
         if html_str.contains("UNEXPECTED_EOF_WHILE_READING") {
             if attempt < 2 {
                 tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
@@ -1947,179 +1733,47 @@ pub async fn get_room_info(
             }
         }
 
-        let mut sigi_value = extract_state_value(&html_str);
-        if sigi_value.is_none() && using_proxy {
-            if let Ok(direct_response) = client.get(url).headers(headers.clone()).send().await {
-                let direct_status = direct_response.status();
-                let direct_html = direct_response.text().await.unwrap_or_default();
-                if direct_status.is_success() {
-                    if let Some(value) = extract_state_value(&direct_html) {
-                        html_str = direct_html;
-                        sigi_value = Some(value);
-                        using_proxy = false;
-                    }
-                }
-            }
-        }
-        let sigi_value = match sigi_value {
+        let sigi_value = match extract_state_value(&html_str) {
             Some(value) => value,
             None => {
                 if attempt < 2 {
                     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
                     continue;
                 }
-                let dump_path = maybe_dump_html("state_room_info", &html_str);
-                if !using_proxy {
-                    set_tiktok_cooldown("state extraction failed");
-                }
                 return Err(RecorderError::ApiError {
-                    error: if let Some(path) = dump_path {
-                        format!(
-                            "Please check if your network can access TikTok normally. Failed to extract page state JSON. Dump: {}",
-                            path
-                        )
-                    } else {
-                        "Please check if your network can access TikTok normally. Failed to extract page state JSON.".to_string()
-                    },
+                    error: "Please check if your network can access TikTok normally. Failed to extract page state JSON.
+
+HTML: ".to_string()
+                        + &html_str,
                 });
             }
         };
-        let active_client: &Client = if using_proxy {
-            &request_client
-        } else {
-            &direct_client
-        };
 
-        let mut extracted_room_info = serde_json::from_value::<SigiStateResponse>(sigi_value.clone())
-            .ok()
-            .and_then(|state| state.room_store)
-            .and_then(|store| store.room_info);
+        let extracted_room_info = extract_live_room_user_info(&sigi_value)
+            .and_then(|info| extract_room_info_from_live_room(&info, account, url));
 
         if extracted_room_info.is_none() {
-            extracted_room_info = find_room_info(&sigi_value);
+            log::warn!("Failed to extract room info from page data");
+            return Ok(RoomInfo {
+                live_status: false,
+                room_title: "TikTok Live Not Started".to_string(),
+                room_cover_url: "".to_string(),
+                user_id: "".to_string(),
+                user_name: "TikTok Live Not Started".to_string(),
+                user_avatar: "".to_string(),
+            });
         }
 
-        if let Some(room_info) = extracted_room_info {
-            let mut live_status = match room_info.status {
-                Some(status) => status == 2,
-                None => room_info
-                    .stream_url
-                    .as_ref()
-                    .map(|stream| stream.hls_pull_url.is_some() || stream.rtmp_pull_url.is_some())
-                    .unwrap_or(false),
-            };
-            if live_status
-                && !verify_live_stream(
-                    active_client,
-                    &headers,
-                    room_info.stream_url.as_ref(),
-                    &sigi_value,
-                    &html_str,
-                )
-                .await
-            {
-                live_status = false;
-            }
-
-            let user_id = room_info
-                .owner
-                .as_ref()
-                .and_then(|o| o.id.clone())
-                .unwrap_or_default();
-
-            let user_name = room_info
-                .owner
-                .as_ref()
-                .and_then(|o| o.nickname.clone())
-                .filter(|n| !n.is_empty())
-                .or_else(|| {
-                    room_info.owner.as_ref().and_then(|o| o.unique_id.clone())
-                })
-                .or_else(|| {
-                    room_info.owner.as_ref().and_then(|o| o.id.clone())
-                })
-                .unwrap_or_default();
-
-            let mut user_avatar = room_info
-                .owner
-                .as_ref()
-                .and_then(|o| o.avatar_thumb.as_ref())
-                .and_then(|v| extract_first_url(v))
-                .map(|url| normalize_image_url(&url))
-                .unwrap_or_default();
-            if user_avatar.is_empty() {
+        if let Some(mut room_info) = extracted_room_info {
+            if room_info.user_avatar.is_empty() {
                 if let Some(found) = find_avatar_url(&sigi_value) {
-                    user_avatar = found;
+                    room_info.user_avatar = found;
                 }
             }
-            let mut room_cover_url =
-                find_cover_url(&sigi_value).unwrap_or_else(|| String::new());
-            if room_cover_url.is_empty() {
-                room_cover_url = user_avatar.clone();
+            if room_info.room_cover_url.is_empty() {
+                room_info.room_cover_url = room_info.user_avatar.clone();
             }
-
-            return Ok(RoomInfo {
-                live_status,
-                room_title: room_info.title.unwrap_or_default(),
-                room_cover_url,
-                user_id,
-                user_name,
-                user_avatar,
-            });
-        }
-
-        if let Some(live_room_info) = extract_live_room_user_info(&sigi_value) {
-            if let Some(mut room_info) =
-                extract_room_info_from_live_room(&live_room_info, account, url)
-            {
-                if room_info.live_status
-                    && !verify_live_stream(
-                        active_client,
-                        &headers,
-                        None,
-                        &sigi_value,
-                        &html_str,
-                    )
-                    .await
-                {
-                    room_info.live_status = false;
-                }
-                return Ok(room_info);
-            }
-        }
-
-        let fallback_stream = find_stream_url(&sigi_value)
-            .and_then(|stream| stream.hls_pull_url.or(stream.rtmp_pull_url))
-            .or_else(|| find_m3u8_in_value(&sigi_value))
-            .or_else(|| extract_m3u8_from_html(&html_str));
-
-        if let Some(fallback_stream) = fallback_stream {
-            let user_avatar = find_avatar_url(&sigi_value).unwrap_or_default();
-            let extracted_name = extract_username_from_url(url);
-            let user_name = if !account.name.is_empty() {
-                account.name.clone()
-            } else if !extracted_name.is_empty() {
-                extracted_name.clone()
-            } else {
-                "TikTok Live".to_string()
-            };
-            let user_id = if !account.id.is_empty() {
-                account.id.clone()
-            } else {
-                extracted_name
-            };
-
-            let live_status =
-                check_url_accessible(active_client, &headers, &fallback_stream).await;
-
-            return Ok(RoomInfo {
-                live_status,
-                room_title: format!("{}'s live", user_name),
-                room_cover_url: user_avatar.clone(),
-                user_id,
-                user_name,
-                user_avatar,
-            });
+            return Ok(room_info);
         }
 
         return Err(RecorderError::ApiError {
@@ -2138,161 +1792,31 @@ pub async fn get_stream_url(
     account: &Account,
     url: &str,
 ) -> Result<StreamInfo, RecorderError> {
-    if !tiktok_api_allowed() {
-        return Err(RecorderError::ApiError {
-            error: "TikTok API cooldown".to_string(),
-        });
-    }
-    let proxy_url = proxy_url_from_env();
-    let has_proxy = proxy_url.is_some();
-    let request_client = if let Some(proxy_url) = proxy_url.as_deref() {
-        build_proxy_client(proxy_url)?
-    } else {
-        client.clone()
-    };
     let mut headers = build_page_headers(url, USER_AGENT, false);
-
-    let raw_cookie = if account.cookies.is_empty() {
-        DEFAULT_COOKIE
-    } else {
-        &account.cookies
-    };
-    let normalized_cookie = normalize_cookie_header(raw_cookie);
-    let mut cookie_map = parse_cookie_header(&normalized_cookie);
-    if !cookie_map.contains_key("msToken") || !cookie_map.contains_key("ttwid") {
-        let verify_fp = crate::platforms::douyin::params::gen_verify_fp();
-        let bootstrap = bootstrap_tiktok_cookies(
-            &request_client,
-            &verify_fp,
-            cookie_map.get("msToken").map(|s| s.as_str()),
-        )
-        .await;
-        for (key, value) in bootstrap {
-            cookie_map.entry(key).or_insert(value);
-        }
-    }
-    let cookie_header = build_cookie_string(&cookie_map);
-    if !cookie_header.is_empty() {
-        headers.insert("cookie", cookie_header.parse().unwrap());
+    headers.insert("accept-language", "en-US,en;q=0.9".parse().unwrap());
+    if !account.cookies.is_empty() {
+        headers.insert("Cookie", account.cookies.parse().unwrap());
     }
 
-    let direct_client = client.clone();
+    warm_up_live_pages(client, account).await;
 
-    // Retry up to 3 times
-    for attempt in 0..3 {
-        let mut using_proxy = has_proxy;
-        let response = request_client
-            .get(url)
-            .headers(headers.clone())
-            .send()
-            .await?;
-        let mut status = response.status();
-        let mut html_str = response.text().await?;
-        if has_proxy
-            && (status == reqwest::StatusCode::BAD_GATEWAY
-                || status == reqwest::StatusCode::GATEWAY_TIMEOUT)
-        {
-            log::warn!(
-                "[TikTok] Proxy response status {}, retrying without proxy",
-                status
-            );
-            if let Ok(direct_response) = client.get(url).headers(headers.clone()).send().await {
-                let direct_status = direct_response.status();
-                let direct_html = direct_response.text().await.unwrap_or_default();
-                if direct_status.is_success() {
-                    status = direct_status;
-                    html_str = direct_html;
-                    using_proxy = false;
-                }
-            }
-        }
-        if let Some(_reason) = detect_blocked_page(&html_str) {
-            if using_proxy {
-                if let Ok(direct_response) = client.get(url).headers(headers.clone()).send().await
-                {
-                    let direct_status = direct_response.status();
-                    let direct_html = direct_response.text().await.unwrap_or_default();
-                    if direct_status.is_success()
-                        && detect_blocked_page(&direct_html).is_none()
-                    {
-                        status = direct_status;
-                        html_str = direct_html;
-                        using_proxy = false;
-                    }
-                }
-            }
-        }
-        if let Some(reason) = detect_blocked_page(&html_str) {
-            if let Some(mobile_url) = to_mobile_url(url) {
-                let mobile_headers = build_page_headers(&mobile_url, MOBILE_USER_AGENT, true);
-                if let Ok(mobile_response) = request_client
-                    .get(&mobile_url)
-                    .headers(mobile_headers)
-                    .send()
-                    .await
-                {
-                    let mobile_status = mobile_response.status();
-                    let mobile_html = mobile_response.text().await.unwrap_or_default();
-                    if mobile_status.is_success()
-                        && detect_blocked_page(&mobile_html).is_none()
-                    {
-                        html_str = mobile_html;
-                    }
-                }
-            }
-            let dump_path = maybe_dump_html("blocked_stream", &html_str);
-            return Err(RecorderError::ApiError {
-                error: if let Some(path) = dump_path {
-                    format!(
-                        "TikTok blocked response: {}. Check proxy quality. Dump: {}",
-                        reason, path
-                    )
-                } else {
-                    format!("TikTok blocked response: {}. Check proxy quality.", reason)
-                },
-            });
-        }
+    for attempt in 0..5 {
+        let response = client.get(url).headers(headers.clone()).send().await?;
+        let status = response.status();
+        let html_str = response.text().await?;
         if !status.is_success() {
-            if status == reqwest::StatusCode::FORBIDDEN {
-                if let Some(mobile_url) = to_mobile_url(url) {
-                    let mobile_headers = build_page_headers(&mobile_url, MOBILE_USER_AGENT, true);
-                    if let Ok(mobile_response) = request_client
-                        .get(&mobile_url)
-                        .headers(mobile_headers)
-                        .send()
-                        .await
-                    {
-                        let mobile_status = mobile_response.status();
-                        let mobile_html = mobile_response.text().await.unwrap_or_default();
-                        if mobile_status.is_success() {
-                            status = mobile_status;
-                            html_str = mobile_html;
-                        }
-                    }
-                }
-            }
-            if status.is_server_error() {
-                if attempt < 2 {
-                    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-                    continue;
-                }
-            }
-            let dump_path = maybe_dump_html("status_stream", &html_str);
-            if status == reqwest::StatusCode::FORBIDDEN
-                || status == reqwest::StatusCode::TOO_MANY_REQUESTS
-            {
-                set_tiktok_cooldown(&format!("response status {}", status));
-            }
             return Err(RecorderError::ApiError {
-                error: if let Some(path) = dump_path {
-                    format!("TikTok response status: {}. Dump: {}", status, path)
-                } else {
-                    format!("TikTok response status: {}", status)
-                },
+                error: format!("TikTok response status: {}", status),
             });
         }
 
-        // Check for unexpected EOF
+        if is_waf_wait_page(&html_str) {
+            if attempt < 4 {
+                tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
+                continue;
+            }
+        }
+
         if html_str.contains("UNEXPECTED_EOF_WHILE_READING") {
             if attempt < 2 {
                 tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
@@ -2304,50 +1828,22 @@ pub async fn get_stream_url(
             }
         }
 
-        let mut sigi_value = extract_state_value(&html_str);
-        if sigi_value.is_none() && using_proxy {
-            if let Ok(direct_response) = client.get(url).headers(headers.clone()).send().await {
-                let direct_status = direct_response.status();
-                let direct_html = direct_response.text().await.unwrap_or_default();
-                if direct_status.is_success() {
-                    if let Some(value) = extract_state_value(&direct_html) {
-                        html_str = direct_html;
-                        sigi_value = Some(value);
-                        using_proxy = false;
-                    }
-                }
-            }
-        }
-        let sigi_value = match sigi_value {
+        let sigi_value = match extract_state_value(&html_str) {
             Some(value) => value,
             None => {
                 if attempt < 2 {
                     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
                     continue;
                 }
-                let dump_path = maybe_dump_html("state_stream", &html_str);
-                if !using_proxy {
-                    set_tiktok_cooldown("state extraction failed");
-                }
                 return Err(RecorderError::ApiError {
-                    error: if let Some(path) = dump_path {
-                        format!("Failed to extract page state JSON. Dump: {}", path)
-                    } else {
-                        "Failed to extract page state JSON".to_string()
-                    },
+                    error: "Failed to extract page state JSON".to_string(),
                 });
             }
-        };
-        let active_client: &Client = if using_proxy {
-            &request_client
-        } else {
-            &direct_client
         };
 
         if let Some(live_room_info) = extract_live_room_user_info(&sigi_value) {
             let candidates = extract_stream_candidates(&live_room_info);
-            if let Some(stream_info) =
-                select_accessible_stream(active_client, &headers, &candidates).await
+            if let Some(stream_info) = select_accessible_stream(client, &headers, &candidates).await
             {
                 return Ok(stream_info);
             }
@@ -2373,7 +1869,7 @@ pub async fn get_stream_url(
                 rtmp_url: stream_url.rtmp_pull_url,
             };
             if let Some(hls_url) = info.hls_url.as_deref() {
-                if !check_hls_stream_accessible(active_client, &headers, hls_url).await {
+                if !check_hls_stream_accessible(client, &headers, hls_url).await {
                     info.hls_url = None;
                 }
             }
@@ -2385,8 +1881,8 @@ pub async fn get_stream_url(
             return Ok(info);
         }
 
-        if let Some(m3u8_url) = find_m3u8_in_value(&sigi_value)
-            .or_else(|| extract_m3u8_from_html(&html_str))
+        if let Some(m3u8_url) =
+            find_m3u8_in_value(&sigi_value).or_else(|| extract_m3u8_from_html(&html_str))
         {
             return Ok(StreamInfo {
                 hls_url: Some(m3u8_url),

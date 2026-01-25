@@ -13,6 +13,7 @@
     DiscAlbum,
     SquareBottomDashedScissors,
     Users,
+    Globe,
   } from "lucide-svelte";
   import { onMount } from "svelte";
 
@@ -37,7 +38,7 @@
       enabled: false,
       encode_danmu: false,
     },
-    status_check_interval: 30, // 默认30秒
+    status_check_interval: 67, // 默认67秒
     whisper_language: "",
     webhook_url: "",
     danmu_ass_options: {
@@ -45,6 +46,8 @@
       opacity: 0.8,
     },
     use_default_accounts: false,
+    http_proxy: "127.0.0.1:7890",
+    https_proxy: "",
   };
 
   let showModal = false;
@@ -52,6 +55,10 @@
   let endpointValue = endpoint;
   let darkMode = localStorage.getItem("theme") === "dark";
   let defaultAccountPlatforms: string[] = [];
+  let proxyEnabled = true;
+  let proxyPort = "7890";
+  let httpProxy = "127.0.0.1:7890";
+  let httpsProxy = "";
 
   function updateTheme() {
     localStorage.setItem("theme", darkMode ? "dark" : "light");
@@ -67,6 +74,14 @@
   async function get_config() {
     let config: Config = await invoke("get_config");
     setting_model = config;
+    httpProxy = config.http_proxy || "";
+    httpsProxy = config.https_proxy || "";
+    const proxyValue = httpProxy || httpsProxy;
+    if (proxyValue.includes("://")) {
+      const parts = proxyValue.split(":");
+      proxyPort = parts[parts.length - 1] || "7890";
+    }
+    proxyEnabled = proxyValue.trim().length > 0;
     console.log(config);
   }
 
@@ -169,6 +184,20 @@
   async function update_use_default_accounts() {
     await invoke("update_use_default_accounts", {
       useDefaultAccounts: setting_model.use_default_accounts,
+    });
+    await get_default_account_platforms();
+  }
+
+  async function update_network_config() {
+    const httpProxyValue = httpProxy.trim();
+    const httpsProxyValue = httpsProxy.trim();
+    const port = proxyEnabled ? proxyPort.trim() : "";
+    const proxyUrl = port ? `http://127.0.0.1:${port}` : "";
+    const finalHttpProxy = httpProxyValue || proxyUrl;
+    const finalHttpsProxy = httpsProxyValue;
+    await invoke("update_network_config", {
+      httpProxy: finalHttpProxy,
+      httpsProxy: finalHttpsProxy,
     });
   }
 
@@ -315,23 +344,8 @@
                 </label>
               </div>
             </div>
-            <div class="p-4">
-              <div class="flex items-center justify-between">
-                <div>
-                  <h3 class="text-sm font-medium text-gray-900 dark:text-white">默认账号平台</h3>
-                  <p class="text-sm text-gray-500 dark:text-gray-400">
-                    {#if defaultAccountPlatforms.length > 0}
-                      {defaultAccountPlatforms.join(" / ")}
-                    {:else}
-                      无
-                    {/if}
-                  </p>
-                </div>
-              </div>
-            </div>
           </div>
         </div>
-
         {#if !TAURI_ENV}
           <div class="space-y-4">
             <h2
@@ -556,6 +570,109 @@
                       class="switch-slider absolute cursor-pointer top-0 left-0 right-0 bottom-0 bg-gray-300 dark:bg-gray-600 rounded-full transition-all duration-300 before:absolute before:h-4 before:w-4 before:left-1 before:bottom-1 before:bg-white before:rounded-full before:transition-all before:duration-300 peer-checked:bg-blue-500 peer-checked:before:translate-x-5"
                     ></span>
                   </label>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="space-y-4">
+            <h2
+              class="text-lg font-medium text-gray-900 dark:text-white flex items-center space-x-2"
+            >
+              <Globe class="w-5 h-5 dark:icon-white" />
+              <span>网络代理</span>
+            </h2>
+            <div
+              class="bg-white dark:bg-[#3c3c3e] rounded-xl border border-gray-200 dark:border-gray-700 divide-y divide-gray-200 dark:divide-gray-700"
+            >
+              <div class="p-4">
+                <div class="flex items-center justify-between">
+                  <div>
+                    <h3
+                      class="text-sm font-medium text-gray-900 dark:text-white"
+                    >
+                      启用代理
+                    </h3>
+                    <p class="text-sm text-gray-500 dark:text-gray-400">
+                      代理地址固定为 127.0.0.1，端口可配置
+                    </p>
+                  </div>
+                  <label class="relative inline-block w-11 h-6">
+                    <input
+                      type="checkbox"
+                      class="peer opacity-0 w-0 h-0"
+                      bind:checked={proxyEnabled}
+                      on:change={update_network_config}
+                    />
+                    <span
+                      class="switch-slider absolute cursor-pointer top-0 left-0 right-0 bottom-0 bg-gray-300 dark:bg-gray-600 rounded-full transition-all duration-300 before:absolute before:h-4 before:w-4 before:left-1 before:bottom-1 before:bg-white before:rounded-full before:transition-all before:duration-300 peer-checked:bg-blue-500 peer-checked:before:translate-x-5"
+                    ></span>
+                  </label>
+                </div>
+              </div>
+              <div class="p-4">
+                <div class="flex items-center justify-between">
+                  <div>
+                    <h3
+                      class="text-sm font-medium text-gray-900 dark:text-white"
+                    >
+                      代理端口
+                    </h3>
+                    <p class="text-sm text-gray-500 dark:text-gray-400">
+                      例：7890
+                    </p>
+                  </div>
+                  <input
+                    class="w-32 px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white text-right"
+                    type="number"
+                    min="1"
+                    max="65535"
+                    bind:value={proxyPort}
+                    on:blur={update_network_config}
+                    on:change={update_network_config}
+                  />
+                </div>
+              </div>
+              <div class="p-4">
+                <div class="flex items-center justify-between">
+                  <div>
+                    <h3
+                      class="text-sm font-medium text-gray-900 dark:text-white"
+                    >
+                      HTTP_PROXY
+                    </h3>
+                    <p class="text-sm text-gray-500 dark:text-gray-400">
+                      例：http://127.0.0.1:7890（为空则使用上面的端口）
+                    </p>
+                  </div>
+                  <input
+                    class="w-64 px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white text-right"
+                    type="text"
+                    bind:value={httpProxy}
+                    on:blur={update_network_config}
+                    on:change={update_network_config}
+                  />
+                </div>
+              </div>
+              <div class="p-4">
+                <div class="flex items-center justify-between">
+                  <div>
+                    <h3
+                      class="text-sm font-medium text-gray-900 dark:text-white"
+                    >
+                      HTTPS_PROXY
+                    </h3>
+                    <p class="text-sm text-gray-500 dark:text-gray-400">
+                      例：https://127.0.0.1:7890（留空则不使用 HTTPS 代理）
+                    </p>
+                  </div>
+                  <input
+                    class="w-64 px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white text-right"
+                    type="text"
+                    bind:value={httpsProxy}
+                    on:blur={update_network_config}
+                    on:change={update_network_config}
+                  />
                 </div>
               </div>
             </div>

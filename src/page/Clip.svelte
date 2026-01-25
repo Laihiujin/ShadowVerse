@@ -404,7 +404,7 @@
 
   function handleImageError(event: Event) {
     // 如果图片加载失败，隐藏图片元素并显示默认图标
-    const target = event.target as HTMLImageElement;
+    const target = event.target;
     target.style.display = "none";
     if (target.parentElement) {
       target.parentElement.innerHTML =

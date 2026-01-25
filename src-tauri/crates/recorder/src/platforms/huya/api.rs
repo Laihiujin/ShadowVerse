@@ -121,11 +121,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_user_info() {
-        let client = Client::new();
+        let client = crate::utils::no_proxy_client();
         let account = Account {
             platform: PlatformType::Huya.as_str().to_string(),
             id: "2246697169".to_string(),
-            name: "X inrea  丶".to_string(),
+            name: "Siuyechu 丶".to_string(),
             avatar: "https://huyaimg.msstatic.com/avatar/1060/3f/0e6c0694867ef98e9f869589608ce3_180_135.jpg".to_string(),
             csrf: "".to_string(),
             cookies: "".to_string(),
@@ -139,7 +139,7 @@ mod tests {
         // set log level to debug
         std::env::set_var("RUST_LOG", "debug");
         let _ = env_logger::try_init();
-        let client = Client::new();
+        let client = crate::utils::no_proxy_client();
         let account = Account::default();
         let (user_info, room_info, stream_info) =
             get_room_info(&client, &account, "599934").await.unwrap();

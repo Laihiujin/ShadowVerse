@@ -22,6 +22,17 @@ use tokio::sync::{broadcast, Mutex, RwLock};
 const TIKTOK_USER_AGENT: &str =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 
+fn build_tiktok_headers(account: &Account) -> reqwest::header::HeaderMap {
+    let mut headers = reqwest::header::HeaderMap::new();
+    headers.insert("Referer", "https://www.tiktok.com/".parse().unwrap());
+    headers.insert("Origin", "https://www.tiktok.com".parse().unwrap());
+    headers.insert("User-Agent", TIKTOK_USER_AGENT.parse().unwrap());
+    if !account.cookies.is_empty() {
+        headers.insert("Cookie", account.cookies.parse().unwrap());
+    }
+    headers
+}
+
 #[derive(Clone)]
 pub struct TikTokExtra {
     stream_info: Arc<RwLock<Option<api::StreamInfo>>>,
@@ -127,17 +138,26 @@ impl TikTokRecorder {
         *self.live_id.write().await = String::new();
     }
 
-    async fn check_status(&self) -> bool {
-        let pre_live_status = self.room_info.read().await.status;
-
-        // TikTok URLs are typically like: https://www.tiktok.com/@username/live
-        let url = if self.room_id.starts_with("http") {
+    fn build_live_url(&self) -> String {
+        let mut url = if self.room_id.starts_with("http") {
             self.room_id.clone()
         } else if self.room_id.starts_with('@') {
             format!("https://www.tiktok.com/{}/live", self.room_id)
         } else {
             format!("https://www.tiktok.com/@{}/live", self.room_id)
         };
+
+        if !url.contains('?') {
+            url.push_str("?enter_from_merge=others_homepage&enter_method=others_photo");
+        }
+
+        url
+    }
+
+    async fn check_status(&self) -> bool {
+        let pre_live_status = self.room_info.read().await.status;
+
+        let url = self.build_live_url();
 
         match api::get_room_info(&self.client, &self.account, &url).await {
             Ok(room_info) => {
@@ -256,16 +276,11 @@ impl TikTokRecorder {
             .clone()
             .filter(|url| url.contains(".flv"));
 
-        if flv_url.is_some() && !Self::prefer_hls() {
+        let prefer_hls = Self::prefer_hls();
+        if Self::prefer_flv() && !prefer_hls {
             if let Some(url) = flv_url.clone() {
-                self.log_info("Using FLV recorder (prefer flv by default)");
-                let mut headers = reqwest::header::HeaderMap::new();
-                headers.insert("Referer", "https://www.tiktok.com/".parse().unwrap());
-                headers.insert("Origin", "https://www.tiktok.com".parse().unwrap());
-                headers.insert("User-Agent", TIKTOK_USER_AGENT.parse().unwrap());
-                if !self.account.cookies.is_empty() {
-                    headers.insert("Cookie", self.account.cookies.parse().unwrap());
-                }
+                self.log_info("Using FLV recorder (prefer_flv)");
+                let headers = build_tiktok_headers(&self.account);
                 let flv_recorder = FlvRecorder::new(
                     url,
                     headers,
@@ -285,13 +300,7 @@ impl TikTokRecorder {
         if hls_url.is_none() {
             if let Some(url) = flv_url.clone() {
                 self.log_info("Using FLV recorder (HLS unavailable)");
-                let mut headers = reqwest::header::HeaderMap::new();
-                headers.insert("Referer", "https://www.tiktok.com/".parse().unwrap());
-                headers.insert("Origin", "https://www.tiktok.com".parse().unwrap());
-                headers.insert("User-Agent", TIKTOK_USER_AGENT.parse().unwrap());
-                if !self.account.cookies.is_empty() {
-                    headers.insert("Cookie", self.account.cookies.parse().unwrap());
-                }
+                let headers = build_tiktok_headers(&self.account);
                 let flv_recorder = FlvRecorder::new(
                     url,
                     headers,
@@ -308,37 +317,8 @@ impl TikTokRecorder {
             }
         }
 
-        if Self::prefer_flv() {
-            if let Some(url) = flv_url.clone() {
-                self.log_info("Using FLV recorder (prefer_flv)");
-                let mut headers = reqwest::header::HeaderMap::new();
-                headers.insert("Referer", "https://www.tiktok.com/".parse().unwrap());
-                headers.insert("Origin", "https://www.tiktok.com".parse().unwrap());
-                headers.insert("User-Agent", TIKTOK_USER_AGENT.parse().unwrap());
-                if !self.account.cookies.is_empty() {
-                    headers.insert("Cookie", self.account.cookies.parse().unwrap());
-                }
-                let flv_recorder = FlvRecorder::new(
-                    url,
-                    headers,
-                    work_dir.full_path(),
-                    self.enabled.clone(),
-                    self.event_channel.clone(),
-                    live_id.to_string(),
-                );
-                if let Err(e) = flv_recorder.start().await {
-                    self.log_error(&format!("Flv recorder quit with error: {}", e));
-                    return Err(e);
-                }
-                return Ok(());
-            }
-        }
-
-        // Prefer HLS stream if available
-        let stream_url = hls_url
-            .clone()
-            .or(rtmp_url.clone())
-            .ok_or(RecorderError::NoStreamAvailable)?;
+        // Prefer HLS stream by default if available
+        let stream_url = hls_url.clone().ok_or(RecorderError::NoStreamAvailable)?;
 
         let hls_stream = construct_stream_from_variant(
             live_id,
@@ -375,13 +355,7 @@ impl TikTokRecorder {
             self.log_error(&format!("Hls recorder quit with error: {}", e));
             if let Some(url) = flv_url {
                 self.log_info("HLS failed, fallback to FLV recorder");
-                let mut headers = reqwest::header::HeaderMap::new();
-                headers.insert("Referer", "https://www.tiktok.com/".parse().unwrap());
-                headers.insert("Origin", "https://www.tiktok.com".parse().unwrap());
-                headers.insert("User-Agent", TIKTOK_USER_AGENT.parse().unwrap());
-                if !self.account.cookies.is_empty() {
-                    headers.insert("Cookie", self.account.cookies.parse().unwrap());
-                }
+                let headers = build_tiktok_headers(&self.account);
                 let flv_recorder = FlvRecorder::new(
                     url,
                     headers,

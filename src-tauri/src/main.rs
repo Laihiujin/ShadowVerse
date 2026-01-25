@@ -34,7 +34,9 @@ use recorder_manager::RecorderManager;
 use simplelog::ConfigBuilder;
 use state::State;
 use std::fs::File;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(any(target_os = "windows", feature = "headless"))]
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -446,6 +448,17 @@ fn get_migrations() -> Vec<Migration> {
             UPDATE records SET length_float = CAST(length AS FLOAT);
             ALTER TABLE records DROP COLUMN length;
             ALTER TABLE records RENAME COLUMN length_float TO length;
+            ",
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 14,
+            description: "add_cached_room_meta_to_recorders",
+            sql: r"
+            ALTER TABLE recorders ADD COLUMN room_title TEXT;
+            ALTER TABLE recorders ADD COLUMN room_cover TEXT;
+            ALTER TABLE recorders ADD COLUMN user_name TEXT;
+            ALTER TABLE recorders ADD COLUMN user_avatar TEXT;
             ",
             kind: MigrationKind::Up,
         },

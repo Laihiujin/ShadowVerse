@@ -74,6 +74,7 @@ impl DanmuProvider for KuaishouDanmu {
         }
 
         let client = reqwest::Client::builder()
+            .no_proxy()
             .default_headers(headers)
             .build()?;
 
