@@ -91,7 +91,7 @@ impl FlvRecorder {
             "-hls_list_size",
             "0",
             "-hls_flags",
-            "append_list+omit_endlist",
+            "append_list+omit_endlist+split_by_time",
             "-hls_segment_filename",
             segment_pattern.to_string_lossy().as_ref(),
             playlist_path.to_string_lossy().as_ref(),

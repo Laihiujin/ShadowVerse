@@ -497,6 +497,10 @@
       },
       {
         platform: "tiktok",
+        re: /webcast\.tiktok\.com\/webcast\/(?:feed|room\/info|im\/fetch)\/.*[?&]room_id=(\d+)/i,
+      },
+      {
+        platform: "tiktok",
         re: /(?:bsr:\/\/)?https?:\/\/(?:www\.)?tiktok\.com\/@?([^\/\?]+)\/live/i,
       },
       {

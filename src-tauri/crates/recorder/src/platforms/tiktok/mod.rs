@@ -1,5 +1,6 @@
 pub mod api;
 pub mod response;
+mod x_gnarly;
 
 use crate::account::Account;
 use crate::core::flv_recorder::FlvRecorder;
@@ -33,11 +34,25 @@ fn build_tiktok_headers(account: &Account) -> reqwest::header::HeaderMap {
     headers
 }
 
+fn parse_feed_override(extra: &str) -> Option<String> {
+    let trimmed = extra.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if trimmed.starts_with("http://")
+        || trimmed.starts_with("https://")
+    {
+        return Some(trimmed.to_string());
+    }
+    None
+}
+
 #[derive(Clone)]
 pub struct TikTokExtra {
     stream_info: Arc<RwLock<Option<api::StreamInfo>>>,
     pre_live_id: Arc<RwLock<Option<String>>>,
     should_continue: Arc<AtomicBool>,
+    feed_url_override: Option<String>,
 }
 
 pub type TikTokRecorder = Recorder<TikTokExtra>;
@@ -45,6 +60,7 @@ pub type TikTokRecorder = Recorder<TikTokExtra>;
 impl TikTokRecorder {
     pub async fn new(
         room_id: &str,
+        extra: &str,
         account: &Account,
         cache_dir: PathBuf,
         event_channel: broadcast::Sender<RecorderEvent>,
@@ -73,6 +89,7 @@ impl TikTokRecorder {
             stream_info: Arc::new(RwLock::new(None)),
             pre_live_id: Arc::new(RwLock::new(None)),
             should_continue: Arc::new(AtomicBool::new(false)),
+            feed_url_override: parse_feed_override(extra),
         };
 
         let recorder = Self {
@@ -129,6 +146,20 @@ impl TikTokRecorder {
             .unwrap_or(false)
     }
 
+    async fn resolve_danmu_room_id(&self) -> Result<String, RecorderError> {
+        if self.is_room_id_numeric() {
+            return Ok(self.room_id.clone());
+        }
+        let live_url = self.build_live_url();
+        api::get_live_room_id_with_feed_override(
+            &self.client,
+            &self.account,
+            &live_url,
+            self.extra.feed_url_override.as_deref(),
+        )
+        .await
+    }
+
     pub async fn reset(&self) {
         *self.extra.stream_info.write().await = None;
         self.last_update
@@ -136,6 +167,11 @@ impl TikTokRecorder {
         *self.danmu_storage.write().await = None;
         *self.platform_live_id.write().await = String::new();
         *self.live_id.write().await = String::new();
+        if let Some(danmu_task) = self.danmu_task.lock().await.take() {
+            danmu_task.abort();
+            let _ = danmu_task.await;
+            self.log_info("Danmu task aborted");
+        }
     }
 
     fn build_live_url(&self) -> String {
@@ -143,6 +179,8 @@ impl TikTokRecorder {
             self.room_id.clone()
         } else if self.room_id.starts_with('@') {
             format!("https://www.tiktok.com/{}/live", self.room_id)
+        } else if self.is_room_id_numeric() {
+            format!("https://live.tiktok.com/{}", self.room_id)
         } else {
             format!("https://www.tiktok.com/@{}/live", self.room_id)
         };
@@ -154,12 +192,19 @@ impl TikTokRecorder {
         url
     }
 
+    fn is_room_id_numeric(&self) -> bool {
+        self.room_id.chars().all(|c| c.is_ascii_digit())
+    }
+
     async fn check_status(&self) -> bool {
         let pre_live_status = self.room_info.read().await.status;
 
         let url = self.build_live_url();
+        let feed_override = self.extra.feed_url_override.as_deref();
 
-        match api::get_room_info(&self.client, &self.account, &url).await {
+        match api::get_room_info_with_feed_override(&self.client, &self.account, &url, feed_override)
+            .await
+        {
             Ok(room_info) => {
                 *self.room_info.write().await = RoomInfo {
                     platform: "tiktok".to_string(),
@@ -212,7 +257,28 @@ impl TikTokRecorder {
                     return true;
                 }
 
-                let new_stream = api::get_stream_url(&self.client, &self.account, &url).await;
+                let new_stream = if self.is_room_id_numeric() {
+                    match api::get_stream_url_by_room_id(&self.client, &self.account, &self.room_id)
+                        .await
+                    {
+                        Ok(info) => Ok(info),
+                        Err(_) => api::get_stream_url_with_feed_override(
+                            &self.client,
+                            &self.account,
+                            &url,
+                            feed_override,
+                        )
+                        .await,
+                    }
+                } else {
+                    api::get_stream_url_with_feed_override(
+                        &self.client,
+                        &self.account,
+                        &url,
+                        feed_override,
+                    )
+                    .await
+                };
 
                 match new_stream {
                     Ok(stream_info) => {
@@ -242,6 +308,49 @@ impl TikTokRecorder {
         }
     }
 
+    async fn danmu(&self, room_id: String) -> Result<(), RecorderError> {
+        let mut cursor: Option<String> = None;
+        loop {
+            if self.quit.load(Ordering::Relaxed) {
+                return Ok(());
+            }
+            match api::fetch_danmu_json(
+                &self.client,
+                &self.account,
+                &room_id,
+                cursor.as_deref(),
+            )
+            .await
+            {
+                Ok(result) => {
+                    if let Some(next) = result.next_cursor {
+                        cursor = Some(next);
+                    }
+                    let ts = Utc::now().timestamp_millis();
+                    for message in result.messages {
+                        if message.trim().is_empty() {
+                            continue;
+                        }
+                        let _ = self.event_channel.send(RecorderEvent::DanmuReceived {
+                            room: self.room_id.clone(),
+                            ts,
+                            content: message.clone(),
+                        });
+                        if let Some(storage) = self.danmu_storage.read().await.as_ref() {
+                            storage.add_line(ts, &message).await;
+                        }
+                    }
+                    let interval_ms = result.fetch_interval_ms.unwrap_or(1000).clamp(250, 5000);
+                    tokio::time::sleep(Duration::from_millis(interval_ms)).await;
+                }
+                Err(err) => {
+                    self.log_error(&format!("Danmu fetch failed: {err}"));
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                }
+            }
+        }
+    }
+
     async fn update_entries(&self, live_id: &str) -> Result<(), RecorderError> {
         let current_stream = self.extra.stream_info.read().await.clone();
         let Some(stream_info) = current_stream else {
@@ -264,6 +373,21 @@ impl TikTokRecorder {
 
         *self.live_id.write().await = live_id.to_string();
 
+        let room_id_for_danmu = match self.resolve_danmu_room_id().await {
+            Ok(room_id) => Some(room_id),
+            Err(err) => {
+                self.log_error(&format!("Resolve danmu room id failed: {err}"));
+                None
+            }
+        };
+        if let Some(room_id) = room_id_for_danmu {
+            let self_clone = self.clone();
+            self.log_info(&format!("Start fetching danmu for live {live_id}"));
+            *self.danmu_task.lock().await = Some(tokio::spawn(async move {
+                let _ = self_clone.danmu(room_id).await;
+            }));
+        }
+
         let _ = self.event_channel.send(RecorderEvent::RecordStart {
             recorder: self.info().await,
         });
@@ -277,44 +401,48 @@ impl TikTokRecorder {
             .clone()
             .filter(|url| url.contains(".flv"));
 
+        let start_flv = |url: String| async {
+            let headers = build_tiktok_headers(&self.account);
+            let flv_recorder = FlvRecorder::new(
+                url,
+                headers,
+                work_dir.full_path(),
+                self.enabled.clone(),
+                self.event_channel.clone(),
+                live_id.to_string(),
+            );
+            flv_recorder.start().await
+        };
+
         let prefer_hls = Self::prefer_hls();
-        if Self::prefer_flv() && !prefer_hls {
-            if let Some(url) = flv_url.clone() {
-                self.log_info("Using FLV recorder (prefer_flv)");
-                let headers = build_tiktok_headers(&self.account);
-                let flv_recorder = FlvRecorder::new(
-                    url,
-                    headers,
-                    work_dir.full_path(),
-                    self.enabled.clone(),
-                    self.event_channel.clone(),
-                    live_id.to_string(),
-                );
-                if let Err(e) = flv_recorder.start().await {
-                    self.log_error(&format!("Flv recorder quit with error: {}", e));
-                    return Err(e);
-                }
+        let prefer_flv = Self::prefer_flv();
+        let mut flv_attempted = false;
+        let mut flv_error: Option<String> = None;
+        if flv_url.is_some() && !prefer_hls {
+            let url = flv_url.clone().unwrap();
+            let mode = if prefer_flv { "prefer_flv" } else { "auto" };
+            self.log_info(&format!("Using FLV recorder ({mode})"));
+            flv_attempted = true;
+            if let Err(e) = start_flv(url).await {
+                self.log_error(&format!("Flv recorder quit with error: {}", e));
+                flv_error = Some(e.to_string());
+            } else {
                 return Ok(());
             }
         }
 
         if hls_url.is_none() {
             if let Some(url) = flv_url.clone() {
-                self.log_info("Using FLV recorder (HLS unavailable)");
-                let headers = build_tiktok_headers(&self.account);
-                let flv_recorder = FlvRecorder::new(
-                    url,
-                    headers,
-                    work_dir.full_path(),
-                    self.enabled.clone(),
-                    self.event_channel.clone(),
-                    live_id.to_string(),
-                );
-                if let Err(e) = flv_recorder.start().await {
-                    self.log_error(&format!("Flv recorder quit with error: {}", e));
-                    return Err(e);
+                if !flv_attempted {
+                    self.log_info("Using FLV recorder (HLS unavailable)");
+                    if let Err(e) = start_flv(url).await {
+                        self.log_error(&format!("Flv recorder quit with error: {}", e));
+                        return Err(e);
+                    }
+                    return Ok(());
                 }
-                return Ok(());
+                let error = flv_error.unwrap_or_else(|| "FLV failed and HLS unavailable".to_string());
+                return Err(RecorderError::ApiError { error });
             }
         }
 
@@ -355,17 +483,13 @@ impl TikTokRecorder {
         if let Err(e) = hls_recorder.start().await {
             self.log_error(&format!("Hls recorder quit with error: {}", e));
             if let Some(url) = flv_url {
-                self.log_info("HLS failed, fallback to FLV recorder");
-                let headers = build_tiktok_headers(&self.account);
-                let flv_recorder = FlvRecorder::new(
-                    url,
-                    headers,
-                    work_dir.full_path(),
-                    self.enabled.clone(),
-                    self.event_channel.clone(),
-                    live_id.to_string(),
-                );
-                if let Err(err) = flv_recorder.start().await {
+                let label = if flv_attempted {
+                    "HLS failed, retry FLV recorder"
+                } else {
+                    "HLS failed, fallback to FLV recorder"
+                };
+                self.log_info(label);
+                if let Err(err) = start_flv(url).await {
                     self.log_error(&format!("Flv recorder quit with error: {}", err));
                     return Err(err);
                 }

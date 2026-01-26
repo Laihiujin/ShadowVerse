@@ -1,4 +1,5 @@
 use std::str::FromStr;
+use url::Url;
 
 use crate::danmu2ass;
 use crate::database::record::RecordRow;
@@ -66,8 +67,23 @@ fn normalize_kuaishou_room_id(room_id: &str) -> String {
 
 fn normalize_tiktok_room_id(room_id: &str) -> String {
     let trimmed = room_id.trim();
+    if let Some(found) = extract_room_id_from_query(trimmed) {
+        return found;
+    }
     let without_query = trimmed.split('?').next().unwrap_or(trimmed);
     let without_trailing = without_query.trim_end_matches('/');
+
+    if without_trailing.chars().all(|c| c.is_ascii_digit()) {
+        return without_trailing.to_string();
+    }
+
+    if without_trailing.contains("live.tiktok.com") {
+        if let Some(last) = without_trailing.rsplit('/').next() {
+            if !last.is_empty() && last.chars().all(|c| c.is_ascii_digit()) {
+                return last.to_string();
+            }
+        }
+    }
 
     if let Some(after_at) = without_trailing.split("/@").nth(1) {
         let name = after_at.split('/').next().unwrap_or("").trim();
@@ -94,6 +110,42 @@ fn normalize_tiktok_room_id(room_id: &str) -> String {
     } else {
         format!("@{}", trimmed.trim_start_matches('@'))
     }
+}
+
+fn extract_tiktok_feed_override(input: &str) -> Option<(String, String)> {
+    if !input.contains("webcast.tiktok.com/webcast/feed")
+        && !input.contains("webcast.tiktok.com/webcast/im/fetch")
+    {
+        return None;
+    }
+    let parsed = Url::parse(input).ok()?;
+    let mut referer = None;
+    for (key, value) in parsed.query_pairs() {
+        if key == "referer" {
+            referer = Some(value.into_owned());
+            break;
+        }
+    }
+    let referer = referer?;
+    let room_id = normalize_tiktok_room_id(&referer);
+    if room_id.is_empty() {
+        return None;
+    }
+    Some((room_id, input.to_string()))
+}
+
+fn extract_room_id_from_query(raw: &str) -> Option<String> {
+    let query = raw.split('?').nth(1)?;
+    for pair in query.split('&') {
+        let (key, value) = pair.split_once('=')?;
+        if key.trim().eq_ignore_ascii_case("room_id") {
+            let value = value.trim().trim_matches('/');
+            if !value.is_empty() && value.chars().all(|c| c.is_ascii_digit()) {
+                return Some(value.to_string());
+            }
+        }
+    }
+    None
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]
@@ -126,6 +178,19 @@ pub async fn add_recorder(
         }
     }
     if platform == PlatformType::TikTok {
+        if let Some((feed_room_id, feed_url)) = extract_tiktok_feed_override(&room_id) {
+            log::info!(
+                "Using tiktok feed override: {} -> {}",
+                room_id,
+                feed_room_id
+            );
+            room_id = feed_room_id;
+            extra = feed_url;
+        } else if room_id.contains("webcast.tiktok.com/webcast/feed")
+            || room_id.contains("webcast.tiktok.com/webcast/im/fetch")
+        {
+            return Err("TikTok feed URL missing referer".to_string());
+        }
         let normalized = normalize_tiktok_room_id(&room_id);
         if normalized != room_id {
             log::info!(

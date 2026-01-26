@@ -669,6 +669,7 @@ impl RecorderManager {
             PlatformType::TikTok => RecorderType::TikTok(
                 TikTokRecorder::new(
                     room_id,
+                    extra,
                     account,
                     cache_dir,
                     event_tx,

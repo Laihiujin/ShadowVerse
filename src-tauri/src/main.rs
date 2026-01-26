@@ -524,6 +524,7 @@ async fn setup_server_state(args: Args) -> Result<State, Box<dyn std::error::Err
     };
     config.apply_network_env();
     config.apply_douyin_passport_env();
+    config.apply_tiktok_feed_env();
     let config = Arc::new(RwLock::new(config));
     let db = Arc::new(Database::new());
     // connect to sqlite database
@@ -620,6 +621,7 @@ async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::
     };
     config.apply_network_env();
     config.apply_douyin_passport_env();
+    config.apply_tiktok_feed_env();
 
     let config = Arc::new(RwLock::new(config));
     let config_clone = config.clone();
@@ -740,6 +742,8 @@ fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
         crate::handlers::account::get_account_count,
         crate::handlers::account::get_qr_status,
         crate::handlers::account::get_qr,
+        crate::handlers::account::check_tiktok_proxy,
+        crate::handlers::account::check_tiktok_cookie,
         crate::handlers::config::get_config,
         crate::handlers::config::get_static_port,
         crate::handlers::config::set_cache_path,
@@ -759,6 +763,7 @@ fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
         crate::handlers::config::update_whisper_language,
         crate::handlers::config::update_webhook_url,
         crate::handlers::config::update_danmu_ass_options,
+        crate::handlers::config::clear_webview_data,
         crate::handlers::config::update_powerlive_key,
         crate::handlers::config::get_default_account_platforms,
         crate::handlers::message::get_messages,

@@ -60,6 +60,8 @@ pub struct Config {
     pub default_accounts: Vec<DefaultAccountConfig>,
     #[serde(default = "default_use_default_accounts")]
     pub use_default_accounts: bool,
+    #[serde(default = "default_tiktok_feed")]
+    pub tiktok_feed: TikTokFeedConfig,
 }
 
 #[derive(Deserialize, Serialize, Clone)]
@@ -112,6 +114,43 @@ pub struct DouyinPassportConfig {
     pub x_tt_session_dtrait: String,
     pub qr_origin: String,
     pub qr_referer: String,
+}
+
+#[derive(Deserialize, Serialize, Clone, Default)]
+pub struct QrLoginConfig {
+    #[serde(default)]
+    pub douyin: DouyinQrLoginOverrides,
+}
+
+#[derive(Deserialize, Serialize, Clone, Default)]
+pub struct DouyinQrLoginOverrides {
+    #[serde(default)]
+    pub verify_fp: String,
+    #[serde(default)]
+    pub fp: String,
+    #[serde(default)]
+    pub ms_token: String,
+    #[serde(default)]
+    pub a_bogus: String,
+    #[serde(default)]
+    pub sign: String,
+    #[serde(default)]
+    pub qs: String,
+    #[serde(default)]
+    pub user_agent: String,
+}
+
+#[derive(Deserialize, Serialize, Clone)]
+pub struct TikTokFeedConfig {
+    pub url: String,
+    pub url_template: String,
+    pub x_gnarly: String,
+    pub x_bogus: String,
+    pub user_agent: String,
+    pub device_id: String,
+    pub verify_fp: String,
+    pub ms_token: String,
+    pub root_referer: String,
 }
 
 #[derive(Deserialize, Serialize, Clone, PartialEq, Eq)]
@@ -230,6 +269,20 @@ fn default_use_default_accounts() -> bool {
     false
 }
 
+fn default_tiktok_feed() -> TikTokFeedConfig {
+    TikTokFeedConfig {
+        url: String::new(),
+        url_template: String::new(),
+        x_gnarly: String::new(),
+        x_bogus: String::new(),
+        user_agent: String::new(),
+        device_id: String::new(),
+        verify_fp: String::new(),
+        ms_token: String::new(),
+        root_referer: String::new(),
+    }
+}
+
 fn default_http_proxy() -> String {
     String::new()
 }
@@ -341,6 +394,93 @@ impl Config {
         changed
     }
 
+    fn apply_qr_login_overrides(&mut self, _config_path: &Path) {
+        let Ok(cwd) = env::current_dir() else {
+            return;
+        };
+        let root = if cwd.file_name().and_then(|s| s.to_str()) == Some("src-tauri") {
+            cwd.parent().unwrap_or(&cwd).to_path_buf()
+        } else {
+            cwd.clone()
+        };
+        let qr_login_path = root
+            .join("src-tauri")
+            .join("crates")
+            .join("recorder")
+            .join("src")
+            .join("platforms")
+            .join("qr_login")
+            .join("qr_login.toml");
+        let Ok(content) = std::fs::read_to_string(&qr_login_path) else {
+            return;
+        };
+        let Ok(mut qr_login) = toml::from_str::<QrLoginConfig>(&content) else {
+            return;
+        };
+        let mut updated = false;
+        let mut generated_verify_fp: Option<String> = None;
+        {
+            let douyin = &mut qr_login.douyin;
+            if douyin.verify_fp.trim().is_empty() {
+                if !douyin.fp.trim().is_empty() {
+                    douyin.verify_fp = douyin.fp.trim().to_string();
+                    updated = true;
+                } else {
+                    let value = recorder::platforms::douyin::params::gen_verify_fp();
+                    douyin.verify_fp = value.clone();
+                    douyin.fp = value.clone();
+                    generated_verify_fp = Some(value);
+                    updated = true;
+                }
+            }
+            if douyin.fp.trim().is_empty() {
+                let value = generated_verify_fp
+                    .clone()
+                    .unwrap_or_else(|| douyin.verify_fp.trim().to_string());
+                if !value.is_empty() {
+                    douyin.fp = value;
+                    updated = true;
+                }
+            }
+        }
+        if updated {
+            if let Ok(serialized) = toml::to_string_pretty(&qr_login) {
+                if let Err(err) = std::fs::write(&qr_login_path, serialized) {
+                    log::warn!(
+                        "Failed to persist QR login overrides to {:?}: {}",
+                        qr_login_path,
+                        err
+                    );
+                }
+            }
+        }
+        let douyin = &qr_login.douyin;
+        if !douyin.verify_fp.trim().is_empty() {
+            self.douyin_passport.verify_fp = douyin.verify_fp.trim().to_string();
+        }
+        if !douyin.fp.trim().is_empty() {
+            self.douyin_passport.fp = douyin.fp.trim().to_string();
+        }
+        if !douyin.ms_token.trim().is_empty() {
+            self.douyin_passport.ms_token = douyin.ms_token.trim().to_string();
+        }
+        if !douyin.a_bogus.trim().is_empty() {
+            self.douyin_passport.a_bogus = douyin.a_bogus.trim().to_string();
+        }
+        if !douyin.sign.trim().is_empty() {
+            self.douyin_passport.sign = douyin.sign.trim().to_string();
+        }
+        if !douyin.qs.trim().is_empty() {
+            self.douyin_passport.qs = douyin.qs.trim().to_string();
+        }
+        if !douyin.user_agent.trim().is_empty() {
+            let ua = douyin.user_agent.trim().to_string();
+            std::env::set_var("DOUYIN_PASSPORT_USER_AGENT", &ua);
+            std::env::set_var("DOUYIN_USER_AGENT", &ua);
+        }
+        log::info!("Loaded QR login overrides from {:?}", qr_login_path);
+    }
+
     pub fn load(
         config_path: &PathBuf,
         default_cache: &Path,
@@ -356,6 +496,7 @@ impl Config {
                 if config.apply_default_account_override() {
                     config.save();
                 }
+                config.apply_qr_login_overrides(config_path);
                 config.ensure_storage_dirs();
                 return Ok(config);
             }
@@ -394,10 +535,13 @@ impl Config {
             douyin_passport: default_douyin_passport(),
             default_accounts: default_default_accounts(),
             use_default_accounts: default_use_default_accounts(),
+            tiktok_feed: default_tiktok_feed(),
         };
 
         config.ensure_storage_dirs();
         config.save();
+        let mut config = config;
+        config.apply_qr_login_overrides(config_path);
 
         Ok(config)
     }
@@ -572,5 +716,25 @@ impl Config {
         std::env::set_var("DOUYIN_X_TT_SESSION_DTRAIT", &cfg.x_tt_session_dtrait);
         std::env::set_var("DOUYIN_QR_ORIGIN", &cfg.qr_origin);
         std::env::set_var("DOUYIN_QR_REFERER", &cfg.qr_referer);
+    }
+
+    pub fn apply_tiktok_feed_env(&self) {
+        let cfg = &self.tiktok_feed;
+        let set_or_clear = |key: &str, value: &str| {
+            if value.trim().is_empty() {
+                std::env::remove_var(key);
+            } else {
+                std::env::set_var(key, value.trim());
+            }
+        };
+        set_or_clear("TIKTOK_FEED_URL", &cfg.url);
+        set_or_clear("TIKTOK_FEED_URL_TEMPLATE", &cfg.url_template);
+        set_or_clear("TIKTOK_FEED_X_GNARLY", &cfg.x_gnarly);
+        set_or_clear("TIKTOK_FEED_X_BOGUS", &cfg.x_bogus);
+        set_or_clear("TIKTOK_FEED_USER_AGENT", &cfg.user_agent);
+        set_or_clear("TIKTOK_FEED_DEVICE_ID", &cfg.device_id);
+        set_or_clear("TIKTOK_FEED_VERIFY_FP", &cfg.verify_fp);
+        set_or_clear("TIKTOK_FEED_MS_TOKEN", &cfg.ms_token);
+        set_or_clear("TIKTOK_FEED_ROOT_REFERER", &cfg.root_referer);
     }
 }

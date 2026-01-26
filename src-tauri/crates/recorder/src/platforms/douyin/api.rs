@@ -385,6 +385,27 @@ fn format_cookie_header(cookies: &HashMap<String, String>) -> String {
         .join("; ")
 }
 
+fn has_login_cookie(cookies: &HashMap<String, String>) -> bool {
+    for key in cookies.keys() {
+        let lower = key.to_ascii_lowercase();
+        if matches!(
+            lower.as_str(),
+            "sessionid"
+                | "sessionid_ss"
+                | "sid_guard"
+                | "sid_tt"
+                | "uid_tt"
+                | "uid_tt_ss"
+                | "login_token"
+                | "passport_csrf_token"
+                | "passport_csrf_token_default"
+        ) {
+            return true;
+        }
+    }
+    false
+}
+
 fn build_query_string_owned(params: &[(String, String)]) -> String {
     let mut serializer = url::form_urlencoded::Serializer::new(String::new());
     for (k, v) in params {
@@ -985,6 +1006,11 @@ pub async fn get_qr_login_status(
         } else {
             "Douyin QR error".to_string()
         };
+        log::warn!(
+            "[Douyin] QR status blocked: error_code={}, message='{}'",
+            error_code,
+            msg
+        );
         return Ok(DouyinQrStatus {
             code: 2,
             cookies: String::new(),
@@ -993,9 +1019,12 @@ pub async fn get_qr_login_status(
     }
 
     if status == "3" || status == "success" {
-        let cookies = parse_set_cookies(&resp_headers);
-        let cookie_str = format_cookie_header(&cookies);
-        if !cookie_str.is_empty() {
+        let resp_cookies = parse_set_cookies(&resp_headers);
+        let mut merged_cookies = cookie_map.clone();
+        merged_cookies.extend(resp_cookies);
+        if has_login_cookie(&merged_cookies) {
+            let cookie_str = format_cookie_header(&merged_cookies);
+            log::info!("[Douyin] QR login cookies recovered from status ({} cookies)", merged_cookies.len());
             return Ok(DouyinQrStatus {
                 code: 0,
                 cookies: cookie_str,
@@ -1008,14 +1037,20 @@ pub async fn get_qr_login_status(
             .and_then(|v| v.as_str())
             .unwrap_or("");
         if !redirect_url.is_empty() {
-            let redirect_resp = request_client
-                .get(redirect_url)
-                .headers(headers.clone())
-                .send()
-                .await?;
-            let cookies = parse_set_cookies(redirect_resp.headers());
-            let cookie_str = format_cookie_header(&cookies);
-            if !cookie_str.is_empty() {
+            let merged_header = format_cookie_header(&merged_cookies);
+            let mut redirect_req = request_client.get(redirect_url).headers(headers.clone());
+            if !merged_header.is_empty() {
+                redirect_req = redirect_req.header("Cookie", merged_header);
+            }
+            let redirect_resp = redirect_req.send().await?;
+            let mut redirect_cookies = merged_cookies;
+            redirect_cookies.extend(parse_set_cookies(redirect_resp.headers()));
+            if has_login_cookie(&redirect_cookies) {
+                let cookie_str = format_cookie_header(&redirect_cookies);
+                log::info!(
+                    "[Douyin] QR login cookies recovered from redirect ({} cookies)",
+                    redirect_cookies.len()
+                );
                 return Ok(DouyinQrStatus {
                     code: 0,
                     cookies: cookie_str,
@@ -1023,6 +1058,7 @@ pub async fn get_qr_login_status(
                 });
             }
         }
+        log::warn!("[Douyin] QR login success but cookies missing");
         return Ok(DouyinQrStatus {
             code: 2,
             cookies: String::new(),

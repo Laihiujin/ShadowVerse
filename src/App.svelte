@@ -76,6 +76,14 @@
           platform = "tiktok";
         }
 
+        const webcastMatch = url.match(
+          /webcast\.tiktok\.com\/webcast\/[^?]+.*[?&]room_id=(\d+)/i
+        );
+        if (webcastMatch) {
+          room_id = webcastMatch[1];
+          platform = "tiktok";
+        }
+
         if (
           url.startsWith("https://www.tiktok.com/") ||
           url.startsWith("http://www.tiktok.com/") ||

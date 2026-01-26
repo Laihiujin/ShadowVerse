@@ -1,4 +1,5 @@
 use super::response::{RoomInfo as SigiRoomInfo, SigiStateResponse, StreamUrl as SigiStreamUrl};
+use super::x_gnarly;
 use crate::account::Account;
 use crate::errors::RecorderError;
 use chrono::Utc;
@@ -7,14 +8,17 @@ use regex::Regex;
 use reqwest::header::{HeaderMap, LOCATION};
 use reqwest::redirect::Policy;
 use reqwest::{Client, Proxy, Url};
+use sha2::{Digest, Sha256};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::HashMap;
 use std::env;
 use std::sync::atomic::{AtomicI64, Ordering};
 use url::form_urlencoded::Serializer;
+use base64::Engine as _;
 
 const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36";
+const FEED_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36";
 const MOBILE_USER_AGENT: &str = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1";
 const TIKTOK_COOLDOWN_SECS: i64 = 120;
 const TIKTOK_MSSDK_URL: &str = "https://mssdk.tiktokw.us/web/report?msToken=1Ab-7YxR9lUHSem0PraI_XzdKmpHb6j50L8AaXLAd2aWTdoJCYLfX_67rVQFE4UwwHVHmyG_NfIipqrlLT3kCXps-5PYlNAqtdwEg7TrDyTAfCKyBrOLmhMUjB55oW8SPZ4_EkNxNFUdV7MquA==";
@@ -24,6 +28,11 @@ const TIKTOK_MSSDK_DATA_TYPE: i64 = 8;
 const TIKTOK_MSSDK_STR_DATA: &str = "3BvqYbNXLLOcZehvxZVbjpAu7vq82RoWmFSJHLFwzDwJIZevE0AeilQfP55LridxmdGGjknoksqIsLqlMHMif0IFK/Br7JWqxOHnYuMwVCnttFc0Y4MFvdVWM5FECiEulJC0Dc+eeVsNSrFnAc9K7fazqdglyJgGLSfXIJmgyCvvQ4pg0u5HBVVugLSWs242X42fjoWymaUCLZJQo6vi6WLyuV7l5IC3Mg+lelr5xBQD6Q7hBIFEw8zzxJ1n2DyA4xLbOHTQdKvEtsK7XzyWwjpRnojPTbBl69Zosnuru+lOBIl+tFu/+hCQ1m0jYZwTP4rVE75L3Du6+KZ5v/9TyFYjq7y3y9bGLP4d7yQueJbF90G1yrZ6htElrZ2vqZKDrIqBVbmOZr/nph12k2JKrITtN0R/pMsp0sJ4gesQnXxcD/pLOFAINHk7umgbe6LzJ7+TLUdGuO4M7xiEg/jCqhjgJX1izZ4NPoBDp35zRxj6Y6OrcstlTN/cv5sz663+Nco/mEwhGq2VwrL4gAIAPycndIsb48dPdtngmLqNDNN0ZyVRjgqVIDXXrxigXCkR9CH89Dlrrb7QQqWVgRXz9/k5ihEM43BR3sd3mMU/XgFLN1Aoxf6GzzdxP2QPBI75/ZoHoAmu54v8gTmA3ntCGlEF0zgaFGTdpkGdb+oZgyQM4pw1aAyxmFINXkpD3IKKoGev9kD9gTFnhiQMGCMemhZS7ZYdbuGu0Cb+lQKaL/QTt80FMyGmW8kzVy9xW/ja9BcdEJYRoaufuFRkBFG5ay8x4WHLR6hEapXqQial/cREbLL4sQytpjtmnndFqvT7xN5DhgsLY2Z7451MJhD6NJXKNrMafGZSbItzQWY=";
 const TIKTOK_TTWID_CHECK_URL: &str = "https://www.tiktok.com/ttwid/check/";
 const TIKTOK_TTWID_CHECK_DATA: &str = "{\"aid\":1988,\"service\":\"www.tiktok.com\",\"union\":false,\"unionHost\":\"\",\"needFid\":false,\"fid\":\"\",\"migrate_priority\":0}";
+const TIKTOK_ROOM_INFO_URL: &str = "https://webcast.tiktok.com/webcast/room/info/";
+const TIKTOK_ROOM_CHECK_ALIVE_URL: &str = "https://webcast.tiktok.com/webcast/room/check_alive/";
+const TIKTOK_ROOM_ENTER_URL: &str = "https://webcast.tiktok.com/webcast/room/enter/";
+const TIKTOK_IM_FETCH_URL: &str = "https://webcast.tiktok.com/webcast/im/fetch/";
+const TIKTOK_FEED_URL_TEMPLATE: &str = "https://webcast.tiktok.com/webcast/feed/?aid=1988&app_language=zh-Hans&app_name=tiktok_web&browser_language=zh-CN&browser_name=Mozilla&browser_online=true&browser_platform=Win32&browser_version=5.0%20(Windows%20NT%2010.0;%20Win64;%20x64)%20AppleWebKit/537.36%20(KHTML,%20like%20Gecko)%20Chrome/138.0.0.0%20Safari/537.36&channel=tiktok_web&channel_id=86&cookie_enabled=true&cpu_number=32&data_collection_enabled=true&device_id={device_id}&device_platform=web_pc&device_type=web_h265&focus_state=true&from_page=&hidden_banner=true&history_len=9&is_fullscreen=false&is_non_personalized=0&is_page_visible=true&max_time=0&os=windows&priority_region=JP&referer={referer}&region=JP&req_from=pc_web_recommend_room&root_referer={root_referer}&screen_height=1440&screen_width=2560&tz_name=Asia/Shanghai&user_is_login=true&verifyFp={verify_fp}&webcast_language=zh-Hans&msToken={ms_token}&X-Bogus={x_bogus}&X-Gnarly={x_gnarly}";
 
 static TIKTOK_COOLDOWN_UNTIL: AtomicI64 = AtomicI64::new(0);
 
@@ -56,6 +65,30 @@ pub struct RoomInfo {
 pub struct StreamInfo {
     pub hls_url: Option<String>,
     pub rtmp_url: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct DanmuFetchResult {
+    pub messages: Vec<String>,
+    pub next_cursor: Option<String>,
+    pub fetch_interval_ms: Option<u64>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TikTokProxyCheck {
+    pub ok: bool,
+    pub status: u16,
+    pub waf: bool,
+    pub proxy: Option<String>,
+    pub message: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TikTokCookieCheck {
+    pub ok: bool,
+    pub user_id: String,
+    pub user_name: String,
+    pub message: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -356,6 +389,209 @@ fn parse_cookie_header(header: &str) -> HashMap<String, String> {
     map
 }
 
+fn to_iso_8859_1_bytes(value: &str) -> Vec<u8> {
+    value
+        .chars()
+        .map(|ch| {
+            let code = ch as u32;
+            if code <= 0xFF {
+                code as u8
+            } else {
+                b'?'
+            }
+        })
+        .collect()
+}
+
+struct XBogus {
+    user_agent: String,
+}
+
+impl XBogus {
+    fn new(user_agent: &str) -> Self {
+        Self {
+            user_agent: user_agent.to_string(),
+        }
+    }
+
+    fn md5_str_to_array(&self, md5_str: &str) -> Vec<u8> {
+        if md5_str.len() > 32 {
+            return md5_str.as_bytes().to_vec();
+        }
+        let mut array = Vec::new();
+        let mut idx = 0;
+        while idx + 1 < md5_str.len() {
+            let high = md5_str.as_bytes()[idx] as char;
+            let low = md5_str.as_bytes()[idx + 1] as char;
+            let hi = high.to_digit(16).unwrap_or(0) as u8;
+            let lo = low.to_digit(16).unwrap_or(0) as u8;
+            array.push((hi << 4) | lo);
+            idx += 2;
+        }
+        array
+    }
+
+    fn md5_bytes(&self, input: &[u8]) -> String {
+        format!("{:x}", md5::compute(input))
+    }
+
+    fn md5(&self, input: &str) -> String {
+        let array = self.md5_str_to_array(input);
+        self.md5_bytes(&array)
+    }
+
+    fn md5_encrypt(&self, url_path: &str) -> Vec<u8> {
+        let first = self.md5(url_path);
+        let second = self.md5_str_to_array(&first);
+        let third = self.md5_str_to_array(&self.md5_bytes(&second));
+        third
+    }
+
+    fn rc4_encrypt(&self, key: &[u8], data: &[u8]) -> Vec<u8> {
+        let mut s: Vec<u8> = (0..=255).collect();
+        let mut j = 0u8;
+        for i in 0..256usize {
+            j = j.wrapping_add(s[i]).wrapping_add(key[i % key.len()]);
+            s.swap(i, j as usize);
+        }
+        let mut i = 0u8;
+        let mut j2 = 0u8;
+        let mut output = Vec::with_capacity(data.len());
+        for byte in data {
+            i = i.wrapping_add(1);
+            j2 = j2.wrapping_add(s[i as usize]);
+            s.swap(i as usize, j2 as usize);
+            let idx = s[i as usize].wrapping_add(s[j2 as usize]);
+            let k = s[idx as usize];
+            output.push(byte ^ k);
+        }
+        output
+    }
+
+    fn calculation(&self, a1: u8, a2: u8, a3: u8) -> String {
+        let x3 = ((a1 as u32) << 16) | ((a2 as u32) << 8) | (a3 as u32);
+        let table = b"Dkdpgh4ZKsQB80/Mfvw36XI1R25-WUAlEi7NLboqYTOPuzmFjJnryx9HVGcaStCe=";
+        let mut out = String::with_capacity(4);
+        out.push(table[((x3 & 16515072) >> 18) as usize] as char);
+        out.push(table[((x3 & 258048) >> 12) as usize] as char);
+        out.push(table[((x3 & 4032) >> 6) as usize] as char);
+        out.push(table[(x3 & 63) as usize] as char);
+        out
+    }
+
+    fn encoding_conversion(values: &[u8]) -> Vec<u8> {
+        let a = values[0];
+        let b = values[1];
+        let c = values[2];
+        let e = values[3];
+        let d = values[4];
+        let t = values[5];
+        let f = values[6];
+        let r = values[7];
+        let n = values[8];
+        let o = values[9];
+        let i = values[10];
+        let underscore = values[11];
+        let x = values[12];
+        let u = values[13];
+        let s = values[14];
+        let l = values[15];
+        let v = values[16];
+        let h = values[17];
+        let p = values[18];
+
+        vec![
+            a,
+            i,
+            b,
+            underscore,
+            c,
+            x,
+            e,
+            u,
+            d,
+            s,
+            t,
+            l,
+            f,
+            v,
+            r,
+            h,
+            n,
+            p,
+            o,
+        ]
+    }
+
+    fn get_x_bogus(&self, url_path: &str) -> String {
+        let ua_bytes = to_iso_8859_1_bytes(&self.user_agent);
+        let ua_key = [0x00u8, 0x01u8, 0x0c];
+        let rc4_ua = self.rc4_encrypt(&ua_key, &ua_bytes);
+        let rc4_b64 = base64::engine::general_purpose::STANDARD.encode(rc4_ua);
+        let array1 = self.md5_str_to_array(&self.md5(&rc4_b64));
+
+        let array2 = self.md5_str_to_array(&self.md5_bytes(&self.md5_str_to_array(
+            "d41d8cd98f00b204e9800998ecf8427e",
+        )));
+        let url_path_array = self.md5_encrypt(url_path);
+
+        let timer = chrono::Utc::now().timestamp() as u32;
+        let ct: u32 = 536919696;
+        let mut new_array = vec![
+            64u32,
+            0,
+            1,
+            12,
+            url_path_array[14] as u32,
+            url_path_array[15] as u32,
+            array2[14] as u32,
+            array2[15] as u32,
+            array1[14] as u32,
+            array1[15] as u32,
+            (timer >> 24) & 255,
+            (timer >> 16) & 255,
+            (timer >> 8) & 255,
+            timer & 255,
+            (ct >> 24) & 255,
+            (ct >> 16) & 255,
+            (ct >> 8) & 255,
+            ct & 255,
+        ];
+        let mut xor_result = new_array[0];
+        for value in &new_array[1..] {
+            xor_result ^= *value;
+        }
+        new_array.push(xor_result);
+
+        let mut array3 = Vec::new();
+        let mut array4 = Vec::new();
+        for (idx, value) in new_array.iter().enumerate() {
+            if idx % 2 == 0 {
+                array3.push(*value as u8);
+            } else {
+                array4.push(*value as u8);
+            }
+        }
+        let mut merge_array = array3;
+        merge_array.extend(array4);
+        let encoding_bytes = Self::encoding_conversion(&merge_array);
+        let key = b"?";
+        let rc4_data = self.rc4_encrypt(key, &encoding_bytes);
+        let mut garbled = Vec::with_capacity(rc4_data.len() + 2);
+        garbled.push(2);
+        garbled.push(255);
+        garbled.extend_from_slice(&rc4_data);
+
+        let mut xb = String::new();
+        let mut idx = 0usize;
+        while idx + 2 < garbled.len() {
+            xb.push_str(&self.calculation(garbled[idx], garbled[idx + 1], garbled[idx + 2]));
+            idx += 3;
+        }
+        xb
+    }
+}
+
 
 fn mssdk_url() -> String {
     env::var("TIKTOK_MSSDK_URL").unwrap_or_else(|_| TIKTOK_MSSDK_URL.to_string())
@@ -410,6 +646,836 @@ fn build_page_headers(url: &str, user_agent: &str, mobile: bool) -> HeaderMap {
     }
     apply_browser_headers(&mut headers, mobile);
     headers
+}
+
+fn build_feed_headers(account: &Account) -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    headers.insert("user-agent", FEED_USER_AGENT.parse().unwrap());
+    headers.insert("accept", "*/*".parse().unwrap());
+    headers.insert("accept-language", "zh-CN,zh;q=0.9,en;q=0.8".parse().unwrap());
+    headers.insert("origin", "https://www.tiktok.com".parse().unwrap());
+    headers.insert(
+        "sec-ch-ua",
+        "\"Not)A;Brand\";v=\"8\", \"Chromium\";v=\"138\", \"Google Chrome\";v=\"138\""
+            .parse()
+            .unwrap(),
+    );
+    headers.insert("sec-ch-ua-mobile", "?0".parse().unwrap());
+    headers.insert("sec-ch-ua-platform", "\"Windows\"".parse().unwrap());
+    headers.insert("sec-fetch-dest", "empty".parse().unwrap());
+    headers.insert("sec-fetch-mode", "cors".parse().unwrap());
+    headers.insert("sec-fetch-site", "same-site".parse().unwrap());
+    headers.insert("priority", "u=1, i".parse().unwrap());
+    headers.insert("referer", "https://www.tiktok.com/".parse().unwrap());
+    if !account.cookies.is_empty() {
+        headers.insert("Cookie", account.cookies.parse().unwrap());
+    }
+    apply_tiktok_extra_headers(&mut headers);
+    headers
+}
+
+fn build_im_headers(account: &Account) -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    let user_agent =
+        env::var("TIKTOK_FEED_USER_AGENT").unwrap_or_else(|_| FEED_USER_AGENT.to_string());
+    headers.insert("user-agent", user_agent.parse().unwrap());
+    headers.insert("accept", "application/json".parse().unwrap());
+    headers.insert("accept-language", "zh-CN,zh;q=0.9,en;q=0.8".parse().unwrap());
+    headers.insert(
+        "sec-ch-ua",
+        "\"Not)A;Brand\";v=\"8\", \"Chromium\";v=\"138\", \"Google Chrome\";v=\"138\""
+            .parse()
+            .unwrap(),
+    );
+    headers.insert("sec-ch-ua-mobile", "?0".parse().unwrap());
+    headers.insert("sec-ch-ua-platform", "\"Windows\"".parse().unwrap());
+    headers.insert("sec-fetch-dest", "empty".parse().unwrap());
+    headers.insert("sec-fetch-mode", "cors".parse().unwrap());
+    headers.insert("sec-fetch-site", "same-site".parse().unwrap());
+    headers.insert("priority", "u=1, i".parse().unwrap());
+    headers.insert("referer", "https://www.tiktok.com/".parse().unwrap());
+    if !account.cookies.is_empty() {
+        headers.insert("Cookie", account.cookies.parse().unwrap());
+    }
+    apply_tiktok_extra_headers(&mut headers);
+    headers
+}
+
+fn build_check_alive_headers(account: &Account, referer: &str) -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    headers.insert("user-agent", FEED_USER_AGENT.parse().unwrap());
+    headers.insert("accept", "*/*".parse().unwrap());
+    headers.insert("accept-language", "zh-CN,zh;q=0.9,en;q=0.8".parse().unwrap());
+    headers.insert("origin", "https://www.tiktok.com".parse().unwrap());
+    headers.insert(
+        "sec-ch-ua",
+        "\"Not)A;Brand\";v=\"8\", \"Chromium\";v=\"138\", \"Google Chrome\";v=\"138\""
+            .parse()
+            .unwrap(),
+    );
+    headers.insert("sec-ch-ua-mobile", "?0".parse().unwrap());
+    headers.insert("sec-ch-ua-platform", "\"Windows\"".parse().unwrap());
+    headers.insert("sec-fetch-dest", "empty".parse().unwrap());
+    headers.insert("sec-fetch-mode", "cors".parse().unwrap());
+    headers.insert("sec-fetch-site", "same-site".parse().unwrap());
+    headers.insert("priority", "u=1, i".parse().unwrap());
+    if let Ok(parsed) = referer.parse() {
+        headers.insert("referer", parsed);
+    }
+    if !account.cookies.is_empty() {
+        headers.insert("Cookie", account.cookies.parse().unwrap());
+    }
+    apply_tiktok_extra_headers(&mut headers);
+    headers
+}
+
+fn value_to_string(value: &Value) -> Option<String> {
+    match value {
+        Value::String(value) => {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        }
+        Value::Number(value) => Some(value.to_string()),
+        _ => None,
+    }
+}
+
+fn extract_chat_text(value: &Value) -> Option<String> {
+    const TEXT_KEYS: [&str; 12] = [
+        "content",
+        "text",
+        "message",
+        "msg",
+        "comment",
+        "display_text",
+        "displayText",
+        "body",
+        "content_text",
+        "text_content",
+        "prompt",
+        "chat",
+    ];
+    const NESTED_KEYS: [&str; 9] = [
+        "message",
+        "payload",
+        "data",
+        "content",
+        "text",
+        "comment",
+        "msg",
+        "body",
+        "extras",
+    ];
+
+    fn inner(value: &Value, depth: usize) -> Option<String> {
+        if depth > 4 {
+            return None;
+        }
+        match value {
+            Value::String(value) => {
+                let trimmed = value.trim();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed.to_string())
+                }
+            }
+            Value::Number(value) => Some(value.to_string()),
+            Value::Array(values) => {
+                for item in values {
+                    if let Some(text) = inner(item, depth + 1) {
+                        return Some(text);
+                    }
+                }
+                None
+            }
+            Value::Object(map) => {
+                for key in TEXT_KEYS {
+                    if let Some(value) = map.get(key) {
+                        if let Some(text) = inner(value, depth + 1) {
+                            return Some(text);
+                        }
+                    }
+                }
+                for key in NESTED_KEYS {
+                    if let Some(value) = map.get(key) {
+                        if let Some(text) = inner(value, depth + 1) {
+                            return Some(text);
+                        }
+                    }
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+
+    inner(value, 0)
+}
+
+fn build_im_fetch_url(room_id: &str, cursor: Option<&str>, account: &Account) -> String {
+    let device_id = env::var("TIKTOK_FEED_DEVICE_ID")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(gen_device_id);
+    let verify_fp = env::var("TIKTOK_FEED_VERIFY_FP")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .or_else(|| cookie_value_from_account(account, "s_v_web_id"))
+        .unwrap_or_default();
+    let ms_token = env::var("TIKTOK_FEED_MS_TOKEN")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .or_else(|| cookie_value_from_account(account, "msToken"))
+        .unwrap_or_default();
+    let mut params = vec![
+        ("version_code".to_string(), "270000".to_string()),
+        ("device_platform".to_string(), "web".to_string()),
+        ("aid".to_string(), "1988".to_string()),
+        ("app_name".to_string(), "tiktok_web".to_string()),
+        ("app_language".to_string(), "zh-Hans".to_string()),
+        ("browser_online".to_string(), "true".to_string()),
+        ("browser_language".to_string(), "zh-CN".to_string()),
+        ("browser_name".to_string(), "Mozilla".to_string()),
+        ("browser_platform".to_string(), "Win32".to_string()),
+        ("browser_version".to_string(), FEED_USER_AGENT.to_string()),
+        ("screen_width".to_string(), "2560".to_string()),
+        ("screen_height".to_string(), "1440".to_string()),
+        ("tz_name".to_string(), "Asia/Shanghai".to_string()),
+        ("ws_direct".to_string(), "1".to_string()),
+        ("channel".to_string(), "tiktok_web".to_string()),
+        ("cookie_enabled".to_string(), "true".to_string()),
+        ("device_id".to_string(), device_id),
+        ("is_page_visible".to_string(), "true".to_string()),
+        ("priority_region".to_string(), "JP".to_string()),
+        ("region".to_string(), "JP".to_string()),
+        ("live_id".to_string(), "12".to_string()),
+        ("client_enter".to_string(), "1".to_string()),
+        ("room_id".to_string(), room_id.to_string()),
+        ("identity".to_string(), "audience".to_string()),
+        ("history_comment_count".to_string(), "6".to_string()),
+        ("fetch_rule".to_string(), "1".to_string()),
+        ("last_rtt".to_string(), "-1".to_string()),
+        ("internal_ext".to_string(), "0".to_string()),
+        ("sup_ws_ds_opt".to_string(), "1".to_string()),
+        ("resp_content_type".to_string(), "json".to_string()),
+        ("resp_type".to_string(), "json".to_string()),
+        ("verifyFp".to_string(), verify_fp),
+        ("msToken".to_string(), ms_token),
+    ];
+    if let Some(cursor) = cursor {
+        params.push(("cursor".to_string(), cursor.to_string()));
+    } else {
+        params.push(("cursor".to_string(), "0".to_string()));
+    }
+    let query = build_query(&params);
+    let mut url = format!("{TIKTOK_IM_FETCH_URL}?{query}");
+    if let Some(x_gnarly) = resolve_x_gnarly(&query, "", FEED_USER_AGENT) {
+        url.push_str("&X-Gnarly=");
+        url.push_str(&x_gnarly);
+    }
+    if !url.contains("X-Bogus=") {
+        let xbogus = XBogus::new(FEED_USER_AGENT).get_x_bogus(&url);
+        url.push_str("&X-Bogus=");
+        url.push_str(&xbogus);
+    }
+    url
+}
+
+pub async fn fetch_danmu_json(
+    client: &Client,
+    account: &Account,
+    room_id: &str,
+    cursor: Option<&str>,
+) -> Result<DanmuFetchResult, RecorderError> {
+    let url = build_im_fetch_url(room_id, cursor, account);
+    let headers = build_im_headers(account);
+    let response = client.get(url).headers(headers).send().await?;
+    if !response.status().is_success() {
+        return Err(RecorderError::ApiError {
+            error: format!("TikTok danmu status: {}", response.status()),
+        });
+    }
+    let json: Value = response.json().await.map_err(|e| RecorderError::ApiError {
+        error: format!("Failed to parse TikTok danmu JSON: {e}"),
+    })?;
+    let status_code = json
+        .get("status_code")
+        .and_then(|value| value.as_i64())
+        .unwrap_or(0);
+    if status_code != 0 {
+        return Err(RecorderError::ApiError {
+            error: format!("TikTok danmu error status: {}", status_code),
+        });
+    }
+    let mut texts = Vec::new();
+    let data = json.get("data");
+    if let Some(messages) = data
+        .and_then(|value| value.get("messages"))
+        .and_then(|value| value.as_array())
+    {
+        for message in messages {
+            if let Some(text) = extract_chat_text(message) {
+                texts.push(text);
+            }
+        }
+    }
+    let next_cursor = data
+        .and_then(|value| value.get("cursor"))
+        .and_then(value_to_string)
+        .or_else(|| json.get("cursor").and_then(value_to_string));
+    let fetch_interval_ms = data
+        .and_then(|value| value.get("fetch_interval"))
+        .and_then(|value| value.as_i64())
+        .map(|value| value.max(0) as u64);
+    Ok(DanmuFetchResult {
+        messages: texts,
+        next_cursor,
+        fetch_interval_ms,
+    })
+}
+
+fn build_account_info_headers(account: &Account, referer: &str) -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    headers.insert("user-agent", FEED_USER_AGENT.parse().unwrap());
+    headers.insert("accept", "*/*".parse().unwrap());
+    headers.insert("accept-language", "zh-CN,zh;q=0.9,en;q=0.8".parse().unwrap());
+    headers.insert("origin", "https://www.tiktok.com".parse().unwrap());
+    headers.insert(
+        "sec-ch-ua",
+        "\"Not)A;Brand\";v=\"8\", \"Chromium\";v=\"138\", \"Google Chrome\";v=\"138\""
+            .parse()
+            .unwrap(),
+    );
+    headers.insert("sec-ch-ua-mobile", "?0".parse().unwrap());
+    headers.insert("sec-ch-ua-platform", "\"Windows\"".parse().unwrap());
+    headers.insert("sec-fetch-dest", "empty".parse().unwrap());
+    headers.insert("sec-fetch-mode", "cors".parse().unwrap());
+    headers.insert("sec-fetch-site", "same-origin".parse().unwrap());
+    headers.insert("priority", "u=1, i".parse().unwrap());
+    if let Ok(parsed) = referer.parse() {
+        headers.insert("referer", parsed);
+    }
+    if !account.cookies.is_empty() {
+        headers.insert("Cookie", account.cookies.parse().unwrap());
+    }
+    apply_tiktok_extra_headers(&mut headers);
+    headers
+}
+
+fn build_room_enter_headers(account: &Account, referer: &str) -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    headers.insert("user-agent", FEED_USER_AGENT.parse().unwrap());
+    headers.insert("accept", "*/*".parse().unwrap());
+    headers.insert("accept-language", "zh-CN,zh;q=0.9,en;q=0.8".parse().unwrap());
+    headers.insert("origin", "https://www.tiktok.com".parse().unwrap());
+    headers.insert(
+        "sec-ch-ua",
+        "\"Not)A;Brand\";v=\"8\", \"Chromium\";v=\"138\", \"Google Chrome\";v=\"138\""
+            .parse()
+            .unwrap(),
+    );
+    headers.insert("sec-ch-ua-mobile", "?0".parse().unwrap());
+    headers.insert("sec-ch-ua-platform", "\"Windows\"".parse().unwrap());
+    headers.insert("sec-fetch-dest", "empty".parse().unwrap());
+    headers.insert("sec-fetch-mode", "cors".parse().unwrap());
+    headers.insert("sec-fetch-site", "same-site".parse().unwrap());
+    headers.insert(
+        "content-type",
+        "application/x-www-form-urlencoded; charset=UTF-8"
+            .parse()
+            .unwrap(),
+    );
+    headers.insert("priority", "u=1, i".parse().unwrap());
+    if let Ok(parsed) = referer.parse() {
+        headers.insert("referer", parsed);
+    }
+    if let Some(token) = build_secsdk_csrf_token(account) {
+        if let Ok(parsed) = token.parse() {
+            headers.insert("x-secsdk-csrf-token", parsed);
+        }
+    }
+    if !account.cookies.is_empty() {
+        headers.insert("Cookie", account.cookies.parse().unwrap());
+    }
+    apply_tiktok_extra_headers(&mut headers);
+    headers
+}
+
+fn encode_url_component(value: &str) -> String {
+    url::form_urlencoded::byte_serialize(value.as_bytes()).collect()
+}
+
+fn cookie_value_from_account(account: &Account, key: &str) -> Option<String> {
+    if account.cookies.is_empty() {
+        return None;
+    }
+    parse_cookie_header(&account.cookies)
+        .get(key)
+        .cloned()
+}
+
+fn apply_feed_template(template: &str, referer: &str, account: &Account) -> String {
+    let mut url = template.to_string();
+    let root_referer = env::var("TIKTOK_FEED_ROOT_REFERER").unwrap_or_else(|_| referer.to_string());
+    let ms_token = env::var("TIKTOK_FEED_MS_TOKEN")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .or_else(|| cookie_value_from_account(account, "msToken"))
+        .unwrap_or_default();
+    let verify_fp = env::var("TIKTOK_FEED_VERIFY_FP")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .or_else(|| cookie_value_from_account(account, "s_v_web_id"))
+        .unwrap_or_default();
+    let device_id = env::var("TIKTOK_FEED_DEVICE_ID")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(gen_device_id);
+    let replacements = [
+        ("{referer}", encode_url_component(referer)),
+        ("{root_referer}", encode_url_component(&root_referer)),
+        ("{ms_token}", ms_token),
+        ("{verify_fp}", verify_fp),
+        ("{device_id}", device_id),
+    ];
+    for (key, value) in replacements {
+        if url.contains(key) {
+            url = url.replace(key, &value);
+        }
+    }
+    url
+}
+
+fn feed_url_from_env(referer: &str, account: &Account) -> Option<String> {
+    if let Ok(value) = env::var("TIKTOK_FEED_URL") {
+        let trimmed = value.trim();
+        if !trimmed.is_empty() {
+            return Some(apply_feed_template(trimmed, referer, account));
+        }
+    }
+    if let Ok(value) = env::var("TIKTOK_FEED_URL_TEMPLATE") {
+        let trimmed = value.trim();
+        if !trimmed.is_empty() {
+            return Some(apply_feed_template(trimmed, referer, account));
+        }
+    }
+    Some(apply_feed_template(
+        TIKTOK_FEED_URL_TEMPLATE,
+        referer,
+        account,
+    ))
+}
+
+fn strip_empty_query_params(url: &str) -> String {
+    let Ok(mut parsed) = Url::parse(url) else {
+        return url.to_string();
+    };
+    let mut serializer = Serializer::new(String::new());
+    for (key, value) in parsed.query_pairs() {
+        let value = value.to_string();
+        if value.is_empty() || value.contains('{') {
+            continue;
+        }
+        serializer.append_pair(&key, &value);
+    }
+    let new_query = serializer.finish();
+    if new_query.is_empty() {
+        parsed.set_query(None);
+    } else {
+        parsed.set_query(Some(&new_query));
+    }
+    parsed.to_string()
+}
+
+fn read_x_gnarly() -> Option<String> {
+    let candidates = ["TIKTOK_X_GNARLY", "TIKTOK_FEED_X_GNARLY"];
+    for key in candidates {
+        if let Ok(value) = env::var(key) {
+            let trimmed = value.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn resolve_x_gnarly(query: &str, body: &str, user_agent: &str) -> Option<String> {
+    if let Some(value) = read_x_gnarly() {
+        return Some(value);
+    }
+    if query.trim().is_empty() {
+        return None;
+    }
+    Some(x_gnarly::sign(query, body, user_agent))
+}
+
+fn build_live_referer(handle: &str) -> String {
+    if handle.is_empty() {
+        "https://www.tiktok.com/".to_string()
+    } else {
+        format!("https://www.tiktok.com/@{handle}/live")
+    }
+}
+
+fn build_profile_referer(handle: &str) -> String {
+    if handle.is_empty() {
+        "https://www.tiktok.com/".to_string()
+    } else {
+        format!("https://www.tiktok.com/@{handle}")
+    }
+}
+
+fn extract_room_id_from_state(value: &Value) -> Option<String> {
+    let room_id = serde_json::from_value::<SigiStateResponse>(value.clone())
+        .ok()
+        .and_then(|state| state.room_store)
+        .and_then(|store| store.room_info)
+        .and_then(|info| info.room_id);
+    if let Some(room_id) = room_id {
+        if room_id.chars().all(|c| c.is_ascii_digit()) {
+            return Some(room_id);
+        }
+    }
+
+    find_room_info(value)
+        .and_then(|info| info.room_id)
+        .filter(|room_id| room_id.chars().all(|c| c.is_ascii_digit()))
+}
+
+fn extract_room_id_from_check_alive(value: &Value) -> Option<String> {
+    let mut fallback = None;
+    let mut saw_status = false;
+    let entries: Vec<Value> = match value.get("data") {
+        Some(Value::Array(values)) => values.clone(),
+        Some(Value::Object(map)) => vec![Value::Object(map.clone())],
+        _ => Vec::new(),
+    };
+    for entry in entries {
+        let map = match entry.as_object() {
+            Some(map) => map,
+            None => continue,
+        };
+        let room_id = get_string_field(map, &["room_id", "roomId", "id", "id_str"]);
+        let Some(room_id) = room_id else {
+            continue;
+        };
+        if fallback.is_none() {
+            fallback = Some(room_id.clone());
+        }
+
+        let status = get_i64_field(map, &["status", "live_status", "liveStatus"]);
+        if let Some(status) = status {
+            saw_status = true;
+            if status == 1 || status == 2 {
+                return Some(room_id);
+            }
+            continue;
+        }
+        let alive = map
+            .get("is_alive")
+            .and_then(Value::as_i64)
+            .map(|v| v == 1)
+            .or_else(|| map.get("alive").and_then(Value::as_bool))
+            .or_else(|| map.get("isLive").and_then(Value::as_bool));
+        if alive.is_some() {
+            saw_status = true;
+        }
+        if alive == Some(true) {
+            return Some(room_id);
+        }
+    }
+
+    if saw_status {
+        return None;
+    }
+    fallback
+}
+
+fn build_check_alive_url(referer: &str, room_ids: &[String]) -> Result<String, RecorderError> {
+    if room_ids.is_empty() {
+        return Err(RecorderError::ApiError {
+            error: "TikTok check_alive missing room ids".to_string(),
+        });
+    }
+    let device_id = env::var("TIKTOK_FEED_DEVICE_ID")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(gen_device_id);
+    let root_referer = env::var("TIKTOK_FEED_ROOT_REFERER").unwrap_or_else(|_| referer.to_string());
+    let params = vec![
+        ("aid".to_string(), "1988".to_string()),
+        ("app_language".to_string(), "zh-Hans".to_string()),
+        ("app_name".to_string(), "tiktok_web".to_string()),
+        ("browser_language".to_string(), "zh-CN".to_string()),
+        ("browser_name".to_string(), "Mozilla".to_string()),
+        ("browser_online".to_string(), "true".to_string()),
+        ("browser_platform".to_string(), "Win32".to_string()),
+        ("browser_version".to_string(), FEED_USER_AGENT.to_string()),
+        ("channel".to_string(), "tiktok_web".to_string()),
+        ("cookie_enabled".to_string(), "true".to_string()),
+        ("data_collection_enabled".to_string(), "true".to_string()),
+        ("device_id".to_string(), device_id),
+        ("device_platform".to_string(), "web_pc".to_string()),
+        ("focus_state".to_string(), "false".to_string()),
+        ("from_page".to_string(), "".to_string()),
+        ("history_len".to_string(), "7".to_string()),
+        ("is_fullscreen".to_string(), "false".to_string()),
+        ("is_page_visible".to_string(), "true".to_string()),
+        ("os".to_string(), "windows".to_string()),
+        ("priority_region".to_string(), "JP".to_string()),
+        ("referer".to_string(), referer.to_string()),
+        ("region".to_string(), "JP".to_string()),
+        ("room_ids".to_string(), room_ids.join(",")),
+        ("root_referer".to_string(), root_referer),
+    ];
+    let query = build_query(&params);
+    let mut url = format!("{TIKTOK_ROOM_CHECK_ALIVE_URL}?{query}");
+    if let Some(x_gnarly) = resolve_x_gnarly(&query, "", FEED_USER_AGENT) {
+        url.push_str("&X-Gnarly=");
+        url.push_str(&x_gnarly);
+    }
+    if !url.contains("X-Bogus=") {
+        let xbogus = XBogus::new(FEED_USER_AGENT).get_x_bogus(&url);
+        url.push_str("&X-Bogus=");
+        url.push_str(&xbogus);
+    }
+    Ok(strip_empty_query_params(&url))
+}
+
+fn build_room_enter_url(referer: &str, account: &Account, body: &str) -> String {
+    let device_id = env::var("TIKTOK_FEED_DEVICE_ID")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(gen_device_id);
+    let root_referer =
+        env::var("TIKTOK_FEED_ROOT_REFERER").unwrap_or_else(|_| "https://www.google.com/".to_string());
+    let verify_fp = env::var("TIKTOK_FEED_VERIFY_FP")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .or_else(|| cookie_value_from_account(account, "s_v_web_id"))
+        .unwrap_or_default();
+    let ms_token = env::var("TIKTOK_FEED_MS_TOKEN")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .or_else(|| cookie_value_from_account(account, "msToken"))
+        .unwrap_or_default();
+    let params = vec![
+        ("aid".to_string(), "1988".to_string()),
+        ("app_language".to_string(), "zh-Hans".to_string()),
+        ("app_name".to_string(), "tiktok_web".to_string()),
+        ("browser_language".to_string(), "zh-CN".to_string()),
+        ("browser_name".to_string(), "Mozilla".to_string()),
+        ("browser_online".to_string(), "true".to_string()),
+        ("browser_platform".to_string(), "Win32".to_string()),
+        ("browser_version".to_string(), FEED_USER_AGENT.to_string()),
+        ("channel".to_string(), "tiktok_web".to_string()),
+        ("cookie_enabled".to_string(), "true".to_string()),
+        ("data_collection_enabled".to_string(), "true".to_string()),
+        ("device_id".to_string(), device_id),
+        ("device_platform".to_string(), "web_pc".to_string()),
+        ("device_type".to_string(), "web_h265".to_string()),
+        ("focus_state".to_string(), "true".to_string()),
+        ("from_page".to_string(), "".to_string()),
+        ("history_len".to_string(), "13".to_string()),
+        ("is_fullscreen".to_string(), "false".to_string()),
+        ("is_page_visible".to_string(), "true".to_string()),
+        ("os".to_string(), "windows".to_string()),
+        ("priority_region".to_string(), "JP".to_string()),
+        ("referer".to_string(), referer.to_string()),
+        ("region".to_string(), "JP".to_string()),
+        ("root_referer".to_string(), root_referer),
+        ("screen_height".to_string(), "1440".to_string()),
+        ("screen_width".to_string(), "2560".to_string()),
+        ("tz_name".to_string(), "Asia/Shanghai".to_string()),
+        ("user_is_login".to_string(), "true".to_string()),
+        ("verifyFp".to_string(), verify_fp),
+        ("webcast_language".to_string(), "zh-Hans".to_string()),
+        ("msToken".to_string(), ms_token),
+    ];
+    let query = build_query(&params);
+    let mut url = format!("{TIKTOK_ROOM_ENTER_URL}?{query}");
+    if let Some(x_gnarly) = resolve_x_gnarly(&query, body, FEED_USER_AGENT) {
+        url.push_str("&X-Gnarly=");
+        url.push_str(&x_gnarly);
+    }
+    let xbogus = XBogus::new(FEED_USER_AGENT).get_x_bogus(&url);
+    url.push_str("&X-Bogus=");
+    url.push_str(&xbogus);
+    strip_empty_query_params(&url)
+}
+
+fn build_secsdk_csrf_token(account: &Account) -> Option<String> {
+    let csrf_token = cookie_value_from_account(account, "csrfToken")?;
+    let session_id = cookie_value_from_account(account, "csrf_session_id")?;
+    if csrf_token.is_empty() || session_id.is_empty() {
+        return None;
+    }
+    let mut hasher = Sha256::new();
+    hasher.update(csrf_token.as_bytes());
+    let digest = format!("{:x}", hasher.finalize());
+    Some(format!("000100000001{digest},{session_id}"))
+}
+
+fn build_account_info_url(account: &Account, referer: &str) -> String {
+    let device_id = env::var("TIKTOK_FEED_DEVICE_ID")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(gen_device_id);
+    let root_referer =
+        env::var("TIKTOK_FEED_ROOT_REFERER").unwrap_or_else(|_| "https://www.google.com/".to_string());
+    let verify_fp = env::var("TIKTOK_FEED_VERIFY_FP")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .or_else(|| cookie_value_from_account(account, "s_v_web_id"))
+        .unwrap_or_default();
+    let ms_token = env::var("TIKTOK_FEED_MS_TOKEN")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .or_else(|| cookie_value_from_account(account, "msToken"))
+        .unwrap_or_default();
+    let params = vec![
+        ("aid".to_string(), "1459".to_string()),
+        ("app_language".to_string(), "zh".to_string()),
+        ("app_name".to_string(), "tiktok_web".to_string()),
+        ("browser_language".to_string(), "zh-CN".to_string()),
+        ("browser_name".to_string(), "Mozilla".to_string()),
+        ("browser_online".to_string(), "true".to_string()),
+        ("browser_platform".to_string(), "Win32".to_string()),
+        ("browser_version".to_string(), FEED_USER_AGENT.to_string()),
+        ("channel".to_string(), "tiktok_web".to_string()),
+        ("cookie_enabled".to_string(), "true".to_string()),
+        ("data_collection_enabled".to_string(), "true".to_string()),
+        ("device_id".to_string(), device_id),
+        ("device_platform".to_string(), "web_pc".to_string()),
+        ("focus_state".to_string(), "false".to_string()),
+        ("from_page".to_string(), "".to_string()),
+        ("history_len".to_string(), "7".to_string()),
+        ("is_fullscreen".to_string(), "false".to_string()),
+        ("is_page_visible".to_string(), "true".to_string()),
+        ("locale".to_string(), "zh-Hans".to_string()),
+        ("os".to_string(), "windows".to_string()),
+        ("priority_region".to_string(), "JP".to_string()),
+        ("referer".to_string(), referer.to_string()),
+        ("region".to_string(), "JP".to_string()),
+        ("root_referer".to_string(), root_referer),
+        ("screen_height".to_string(), "1440".to_string()),
+        ("screen_width".to_string(), "2560".to_string()),
+        ("tz_name".to_string(), "Asia/Shanghai".to_string()),
+        ("user_is_login".to_string(), "true".to_string()),
+        ("verifyFp".to_string(), verify_fp),
+        ("webcast_language".to_string(), "zh-Hans".to_string()),
+        ("msToken".to_string(), ms_token),
+    ];
+    let mut url =
+        format!("https://www.tiktok.com/passport/web/account/info/?{}", build_query(&params));
+    if url.contains("X-Bogus=") {
+        url = strip_empty_query_params(&url);
+        return url;
+    }
+    let xbogus = XBogus::new(FEED_USER_AGENT).get_x_bogus(&url);
+    url.push_str("&X-Bogus=");
+    url.push_str(&xbogus);
+    strip_empty_query_params(&url)
+}
+
+fn prepare_feed_url(mut url: String) -> Result<String, RecorderError> {
+    let user_agent =
+        env::var("TIKTOK_FEED_USER_AGENT").unwrap_or_else(|_| FEED_USER_AGENT.to_string());
+    let query_for_sign = extract_sign_query(&url);
+    let computed_x_gnarly = query_for_sign
+        .as_deref()
+        .and_then(|query| resolve_x_gnarly(query, "", &user_agent));
+    let x_gnarly_value = read_x_gnarly().or(computed_x_gnarly);
+    if url.contains("{x_gnarly}") {
+        if let Some(x_gnarly) = x_gnarly_value.as_deref() {
+            url = url.replace("{x_gnarly}", x_gnarly);
+        } else {
+            url = url.replace("{x_gnarly}", "");
+        }
+    } else if let Some(x_gnarly) = x_gnarly_value.as_deref() {
+        url.push_str("&X-Gnarly=");
+        url.push_str(x_gnarly);
+    }
+    if let Ok(value) = env::var("TIKTOK_FEED_X_BOGUS") {
+        let trimmed = value.trim();
+        if !trimmed.is_empty() {
+            url = url.replace("{x_bogus}", trimmed);
+        }
+    }
+
+    if url.contains("{x_bogus}") {
+        let x_gnarly_fallback = env::var("TIKTOK_FEED_X_GNARLY").unwrap_or_default();
+        let sign_seed = url
+            .replace("{x_bogus}", "0")
+            .replace("{x_gnarly}", if x_gnarly_fallback.is_empty() { "0" } else { x_gnarly_fallback.as_str() });
+        let sign_target = if let Ok(mut parsed) = Url::parse(&sign_seed) {
+            let mut serializer = Serializer::new(String::new());
+            for (key, value) in parsed.query_pairs() {
+                if key != "X-Bogus" {
+                    serializer.append_pair(&key, &value);
+                }
+            }
+            let new_query = serializer.finish();
+            if new_query.is_empty() {
+                parsed.set_query(None);
+            } else {
+                parsed.set_query(Some(&new_query));
+            }
+            parsed.to_string()
+        } else {
+            sign_seed
+                .replace("&X-Bogus=0", "")
+                .replace("?X-Bogus=0", "")
+        };
+        let xbogus = XBogus::new(&user_agent).get_x_bogus(&sign_target);
+        url = url.replace("{x_bogus}", &xbogus);
+    }
+
+    Ok(strip_empty_query_params(&url))
+}
+
+fn extract_sign_query(url: &str) -> Option<String> {
+    let parsed = Url::parse(url).ok()?;
+    let mut serializer = Serializer::new(String::new());
+    for (key, value) in parsed.query_pairs() {
+        if key != "X-Bogus" && key != "X-Gnarly" {
+            serializer.append_pair(&key, &value);
+        }
+    }
+    Some(serializer.finish())
+}
+
+fn build_feed_url(referer: &str, account: &Account) -> Result<String, RecorderError> {
+    let Some(template) = feed_url_from_env(referer, account) else {
+        return Err(RecorderError::ApiError {
+            error: "TikTok feed URL not configured".to_string(),
+        });
+    };
+    prepare_feed_url(template)
+}
+
+fn build_feed_url_override(
+    referer: &str,
+    account: &Account,
+    override_url: Option<&str>,
+) -> Result<String, RecorderError> {
+    if let Some(override_url) = override_url {
+        let trimmed = override_url.trim();
+        if !trimmed.is_empty() {
+            return prepare_feed_url(apply_feed_template(trimmed, referer, account));
+        }
+    }
+    build_feed_url(referer, account)
+}
+
+fn build_room_info_url(room_id: &str) -> String {
+    format!("{TIKTOK_ROOM_INFO_URL}?aid=1988&room_id={room_id}")
 }
 
 fn to_mobile_url(url: &str) -> String {
@@ -641,14 +1707,34 @@ async fn fetch_cookies_with_redirects(
         merge_cookie_maps(&mut collected, parse_cookie_header(cookie_header));
     }
 
-    for _ in 0..6 {
+    for step in 0..6 {
         let mut request_headers = headers.clone();
         let cookie_string = build_cookie_string(&collected);
         if !cookie_string.is_empty() {
             request_headers.insert("cookie", cookie_string.parse().unwrap());
         }
         let resp = client.get(&current).headers(request_headers).send().await?;
-        merge_cookie_maps(&mut collected, collect_cookie_map(resp.headers()));
+        let extra = collect_cookie_map(resp.headers());
+        if !extra.is_empty() {
+            let names = extra
+                .keys()
+                .cloned()
+                .collect::<Vec<String>>()
+                .join(", ");
+            log::info!(
+                "[TikTok] QR redirect step {}: {} set-cookie keys: {}",
+                step,
+                current,
+                names
+            );
+        } else {
+            log::info!(
+                "[TikTok] QR redirect step {}: {} set-cookie empty",
+                step,
+                current
+            );
+        }
+        merge_cookie_maps(&mut collected, extra);
 
         if resp.status().is_redirection() {
             if let Some(location) = resp.headers().get(LOCATION) {
@@ -658,10 +1744,20 @@ async fn fetch_cookies_with_redirects(
                 }
                 if let Ok(next_url) = Url::parse(&current).and_then(|base| base.join(location))
                 {
+                    log::info!(
+                        "[TikTok] QR redirect step {}: location -> {}",
+                        step,
+                        next_url
+                    );
                     current = next_url.to_string();
                     continue;
                 }
                 if let Ok(next_url) = Url::parse(location) {
+                    log::info!(
+                        "[TikTok] QR redirect step {}: location -> {}",
+                        step,
+                        next_url
+                    );
                     current = next_url.to_string();
                     continue;
                 }
@@ -677,8 +1773,10 @@ async fn follow_login_chain(
     headers: &HeaderMap,
     target: &str,
 ) -> Result<String, RecorderError> {
+    log::info!("[TikTok] QR follow login chain: {}", target);
     let mut cookie_map = fetch_cookies_with_redirects(headers, target).await?;
     if let Some(next_url) = extract_next_url(target) {
+        log::info!("[TikTok] QR follow login chain next_url: {}", next_url);
         let next_map = fetch_cookies_with_redirects(headers, &next_url).await?;
         merge_cookie_maps(&mut cookie_map, next_map);
     }
@@ -741,9 +1839,9 @@ pub async fn get_qr_login(client: &Client) -> Result<TikTokQrInfo, RecorderError
         .to_string();
 
     let (url, image) = if !qrcode.is_empty() {
-        (qrcode_index_url, Some(qrcode))
+        (qrcode_index_url.clone(), Some(qrcode))
     } else if !qrcode_index_url.is_empty() {
-        (String::new(), Some(qrcode_index_url))
+        (qrcode_index_url, None)
     } else {
         (String::new(), None)
     };
@@ -800,6 +1898,7 @@ pub async fn get_qr_login_status(
     let hosts = [
         "https://login-no1a.www.tiktok.com",
         "https://web-va.tiktok.com",
+        "https://us.tiktok.com",
     ];
     let mut response_cookies = cookies.clone();
     let mut json: Option<serde_json::Value> = None;
@@ -884,6 +1983,10 @@ pub async fn get_qr_login_status(
         log::info!("[TikTok] QR authnext received");
         match follow_login_chain(&headers, &authnext_url).await {
             Ok(cookies) if !cookies.is_empty() => {
+                log::info!(
+                    "[TikTok] QR login cookies recovered via authnext ({} cookies)",
+                    cookies.split(';').count()
+                );
                 return Ok(TikTokQrStatus {
                     code: 0,
                     cookies,
@@ -907,6 +2010,10 @@ pub async fn get_qr_login_status(
         log::info!("[TikTok] QR redirect_url received");
         match follow_login_chain(&headers, &redirect_url).await {
             Ok(cookies) if !cookies.is_empty() => {
+                log::info!(
+                    "[TikTok] QR login cookies recovered via redirect_url ({} cookies)",
+                    cookies.split(';').count()
+                );
                 return Ok(TikTokQrStatus {
                     code: 0,
                     cookies,
@@ -926,6 +2033,10 @@ pub async fn get_qr_login_status(
         && json.get("sub_status_code").and_then(Value::as_i64) == Some(2001)
     {
         if has_login_cookie(&response_cookies) {
+            log::info!(
+                "[TikTok] QR login cookies recovered from response ({} cookies)",
+                response_cookies.len()
+            );
             return Ok(TikTokQrStatus {
                 code: 0,
                 cookies: build_cookie_string(&response_cookies),
@@ -944,6 +2055,10 @@ pub async fn get_qr_login_status(
         .await
         {
             Ok(cookies) if has_login_cookie(&cookies) => {
+                log::info!(
+                    "[TikTok] QR login cookies recovered via auth_broadcast ({} cookies)",
+                    cookies.len()
+                );
                 return Ok(TikTokQrStatus {
                     code: 0,
                     cookies: build_cookie_string(&cookies),
@@ -1025,15 +2140,6 @@ pub async fn get_qr_login_status(
     })
 }
 
-fn value_to_string(value: &Value) -> Option<String> {
-    match value {
-        Value::String(value) => Some(value.to_string()),
-        Value::Number(value) => Some(value.to_string()),
-        Value::Bool(value) => Some(value.to_string()),
-        _ => None,
-    }
-}
-
 fn find_m3u8_in_value(value: &Value) -> Option<String> {
     match value {
         Value::String(value) => {
@@ -1107,6 +2213,16 @@ fn get_i64_field(map: &Map<String, Value>, keys: &[&str]) -> Option<i64> {
     None
 }
 
+fn extract_room_data_from_room_info_api(value: &Value) -> Option<Value> {
+    let entries = value.get("data").and_then(|v| v.as_array())?;
+    for entry in entries {
+        if let Some(room_data) = entry.get("data") {
+            return Some(room_data.clone());
+        }
+    }
+    None
+}
+
 fn parse_stream_data_value(raw: &str) -> Option<Value> {
     serde_json::from_str::<Value>(raw)
         .ok()
@@ -1130,18 +2246,7 @@ struct StreamCandidate {
     height: i64,
 }
 
-fn extract_stream_candidates(live_room_info: &Value) -> Vec<StreamCandidate> {
-    let stream_data_raw = match live_room_info
-        .get("liveRoom")
-        .and_then(|value| value.get("streamData"))
-        .and_then(|value| value.get("pull_data"))
-        .and_then(|value| value.get("stream_data"))
-        .and_then(|value| value.as_str())
-    {
-        Some(value) => value,
-        None => return Vec::new(),
-    };
-
+fn extract_stream_candidates_from_stream_data(stream_data_raw: &str) -> Vec<StreamCandidate> {
     let stream_data_value = match parse_stream_data_value(stream_data_raw) {
         Some(value) => value,
         None => return Vec::new(),
@@ -1214,6 +2319,37 @@ fn extract_stream_candidates(live_room_info: &Value) -> Vec<StreamCandidate> {
     });
 
     candidates
+}
+
+fn extract_stream_candidates(live_room_info: &Value) -> Vec<StreamCandidate> {
+    let stream_data_raw = match live_room_info
+        .get("liveRoom")
+        .and_then(|value| value.get("streamData"))
+        .and_then(|value| value.get("pull_data"))
+        .and_then(|value| value.get("stream_data"))
+        .and_then(|value| value.as_str())
+    {
+        Some(value) => value,
+        None => return Vec::new(),
+    };
+
+    extract_stream_candidates_from_stream_data(stream_data_raw)
+}
+
+fn extract_stream_candidates_from_room_info(room_data: &Value) -> Vec<StreamCandidate> {
+    let stream_data_raw = match room_data
+        .get("stream_url")
+        .or_else(|| room_data.get("streamUrl"))
+        .and_then(|value| value.get("live_core_sdk_data"))
+        .and_then(|value| value.get("pull_data"))
+        .and_then(|value| value.get("stream_data"))
+        .and_then(|value| value.as_str())
+    {
+        Some(value) => value,
+        None => return Vec::new(),
+    };
+
+    extract_stream_candidates_from_stream_data(stream_data_raw)
 }
 
 fn extract_stream_from_live_room(live_room_info: &Value) -> Option<StreamInfo> {
@@ -1414,6 +2550,18 @@ fn extract_first_url(value: &Value) -> Option<String> {
         }
         Value::Array(list) => list.first().and_then(|v| v.as_str()).map(|s| s.to_string()),
         _ => None
+    }
+}
+
+fn extract_first_string(value: &Value) -> Option<String> {
+    match value {
+        Value::String(s) => Some(s.clone()),
+        Value::Array(list) => list.iter().find_map(|v| v.as_str()).map(|s| s.to_string()),
+        Value::Object(map) => map
+            .values()
+            .find_map(|v| v.as_str())
+            .map(|s| s.to_string()),
+        _ => None,
     }
 }
 
@@ -1701,6 +2849,469 @@ fn find_stream_url(value: &Value) -> Option<SigiStreamUrl> {
     }
 }
 
+fn extract_room_id_from_room_data(room_data: &Value) -> Option<String> {
+    let map = room_data.as_object()?;
+    get_string_field(map, &["id_str", "id", "room_id", "roomId", "live_room_id", "liveRoomId"])
+}
+
+fn owner_matches_handle(owner: &Map<String, Value>, handle: &str) -> bool {
+    if handle.is_empty() {
+        return true;
+    }
+    let target = handle.trim_start_matches('@').to_ascii_lowercase();
+    let candidate = get_string_field(
+        owner,
+        &[
+            "unique_id",
+            "uniqueId",
+            "display_id",
+            "displayId",
+            "user_name",
+            "userName",
+            "nickname",
+            "name",
+        ],
+    )
+    .unwrap_or_default()
+    .to_ascii_lowercase();
+    if candidate.is_empty() {
+        return false;
+    }
+    candidate == target
+}
+
+async fn get_room_id_from_feed(
+    client: &Client,
+    account: &Account,
+    referer: &str,
+    feed_override: Option<&str>,
+) -> Result<String, RecorderError> {
+    let url = build_feed_url_override(referer, account, feed_override)?;
+    let headers = build_feed_headers(account);
+
+    let response = client.get(url).headers(headers).send().await?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(RecorderError::ApiError {
+            error: format!("TikTok feed status: {}", status),
+        });
+    }
+    let body = response.text().await.map_err(|e| RecorderError::ApiError {
+        error: format!("Failed to read TikTok feed body: {e}"),
+    })?;
+    if body.trim().is_empty() {
+        return Err(RecorderError::ApiError {
+            error: "TikTok feed empty response body".to_string(),
+        });
+    }
+    let preview = body.chars().take(200).collect::<String>();
+    let json: Value = serde_json::from_str(&body).map_err(|e| RecorderError::ApiError {
+        error: format!("Failed to parse TikTok feed JSON: {e}. Body: {preview}"),
+    })?;
+    let status_code = json
+        .get("status_code")
+        .and_then(|value| value.as_i64())
+        .unwrap_or(-1);
+    if status_code != 0 {
+        return Err(RecorderError::ApiError {
+            error: format!("TikTok feed error status: {}", status_code),
+        });
+    }
+
+    if let Some(room_id) = json
+        .get("base_info")
+        .and_then(|value| value.get("room_id"))
+        .and_then(|value| value.as_str())
+    {
+        if !room_id.is_empty() {
+            return Ok(room_id.to_string());
+        }
+    }
+
+    let target_handle = extract_username_from_url(referer);
+    let entries = match json.get("data").and_then(|v| v.as_array()) {
+        Some(values) => values.as_slice(),
+        None => &[],
+    };
+    for entry in entries {
+        let room_data = match entry.get("data") {
+            Some(value) => value,
+            None => continue,
+        };
+        let status = room_data
+            .get("status")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
+        if status != 2 {
+            continue;
+        }
+        if let Some(owner) = room_data.get("owner").and_then(|v| v.as_object()) {
+            if !owner_matches_handle(owner, &target_handle) {
+                continue;
+            }
+        } else if !target_handle.is_empty() {
+            continue;
+        }
+        if let Some(room_id) = extract_room_id_from_room_data(room_data) {
+            return Ok(room_id);
+        }
+    }
+
+    for entry in entries {
+        let room_data = match entry.get("data") {
+            Some(value) => value,
+            None => continue,
+        };
+        if let Some(room_id) = extract_room_id_from_room_data(room_data) {
+            return Ok(room_id);
+        }
+    }
+
+    if !target_handle.is_empty() {
+        return Err(RecorderError::ApiError {
+            error: format!("TikTok feed did not include handle: {}", target_handle),
+        });
+    }
+
+    Err(RecorderError::ApiError {
+        error: "TikTok feed missing room id".to_string(),
+    })
+}
+
+async fn get_room_id_from_check_alive(
+    client: &Client,
+    account: &Account,
+    url: &str,
+) -> Result<Option<String>, RecorderError> {
+    let handle = extract_username_from_url(url);
+    if handle.is_empty() {
+        return Ok(None);
+    }
+
+    let mut headers = build_page_headers(url, USER_AGENT, false);
+    headers.insert("accept-language", "en-US,en;q=0.9".parse().unwrap());
+    if !account.cookies.is_empty() {
+        headers.insert("Cookie", account.cookies.parse().unwrap());
+    }
+
+    let mut state = None;
+    let mut last_html = String::new();
+    for attempt in 0..3 {
+        let response = client.get(url).headers(headers.clone()).send().await?;
+        let status = response.status();
+        let html_str = response.text().await?;
+        last_html = html_str.clone();
+        if !status.is_success() {
+            return Err(RecorderError::ApiError {
+                error: format!("TikTok response status: {}", status),
+            });
+        }
+
+        if is_waf_wait_page(&html_str) {
+            if attempt < 2 {
+                tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
+                continue;
+            }
+        }
+
+        if let Some(value) = extract_state_value(&html_str) {
+            state = Some(value);
+            break;
+        }
+        if attempt < 2 {
+            tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+        }
+    }
+
+    let Some(state) = state else {
+        if !last_html.is_empty() {
+            let waf = is_waf_wait_page(&last_html);
+            let preview = last_html.chars().take(200).collect::<String>();
+            log::warn!(
+                "[TikTok] check_alive failed to extract state (waf={}, len={}): {}",
+                waf,
+                last_html.len(),
+                preview
+            );
+        }
+        return Ok(None);
+    };
+
+    let Some(room_id) = extract_room_id_from_state(&state) else {
+        return Ok(None);
+    };
+
+    let referer = build_live_referer(&handle);
+    let check_url = build_check_alive_url(&referer, &[room_id.clone()])?;
+    let headers = build_check_alive_headers(account, &referer);
+    let response = client.get(check_url).headers(headers).send().await?;
+    if !response.status().is_success() {
+        return Err(RecorderError::ApiError {
+            error: format!("TikTok check_alive status: {}", response.status()),
+        });
+    }
+    let json: Value = response.json().await.map_err(|e| RecorderError::ApiError {
+        error: format!("Failed to parse TikTok check_alive JSON: {e}"),
+    })?;
+    let status_code = json
+        .get("status_code")
+        .and_then(|value| value.as_i64())
+        .unwrap_or(-1);
+    if status_code != 0 {
+        return Err(RecorderError::ApiError {
+            error: format!("TikTok check_alive error status: {}", status_code),
+        });
+    }
+
+    let resolved = extract_room_id_from_check_alive(&json);
+    if resolved.is_none() {
+        log::info!(
+            "[TikTok] check_alive returned no live room for handle {}",
+            handle
+        );
+    }
+    Ok(resolved)
+}
+
+async fn get_room_id_from_room_enter(
+    client: &Client,
+    account: &Account,
+    url: &str,
+) -> Result<Option<String>, RecorderError> {
+    let handle = extract_username_from_url(url);
+    if handle.is_empty() {
+        return Ok(None);
+    }
+    let referer = build_live_referer(&handle);
+    let body = "enter_source=live_detail&room_id=0";
+    let enter_url = build_room_enter_url(&referer, account, body);
+    let headers = build_room_enter_headers(account, &referer);
+    let response = client
+        .post(enter_url)
+        .headers(headers)
+        .body(body.to_string())
+        .send()
+        .await?;
+    if !response.status().is_success() {
+        return Err(RecorderError::ApiError {
+            error: format!("TikTok room enter status: {}", response.status()),
+        });
+    }
+    let body = response.text().await.map_err(|e| RecorderError::ApiError {
+        error: format!("Failed to read TikTok room enter body: {e}"),
+    })?;
+    if body.trim().is_empty() {
+        return Err(RecorderError::ApiError {
+            error: "TikTok room enter empty response body".to_string(),
+        });
+    }
+    let preview = body.chars().take(200).collect::<String>();
+    let json: Value = serde_json::from_str(&body).map_err(|e| RecorderError::ApiError {
+        error: format!("Failed to parse TikTok room enter JSON: {e}. Body: {preview}"),
+    })?;
+    let status_code = json
+        .get("status_code")
+        .and_then(|value| value.as_i64())
+        .unwrap_or(-1);
+    if status_code != 0 {
+        return Err(RecorderError::ApiError {
+            error: format!("TikTok room enter error status: {}", status_code),
+        });
+    }
+
+    let room_id = json
+        .get("data")
+        .and_then(|value| value.get("living_room_attrs"))
+        .and_then(|value| value.as_object())
+        .and_then(|map| {
+            get_string_field(map, &["room_id_str", "room_id", "roomId", "roomIdStr"])
+        });
+
+    Ok(room_id)
+}
+
+async fn fetch_room_info_api(
+    client: &Client,
+    account: &Account,
+    room_id: &str,
+) -> Result<Value, RecorderError> {
+    let url = build_room_info_url(room_id);
+    let mut headers = build_page_headers("https://www.tiktok.com/", USER_AGENT, false);
+    headers.insert("accept-language", "en-US,en;q=0.9".parse().unwrap());
+    if !account.cookies.is_empty() {
+        headers.insert("Cookie", account.cookies.parse().unwrap());
+    }
+
+    let response = client.get(url).headers(headers).send().await?;
+    if !response.status().is_success() {
+        return Err(RecorderError::ApiError {
+            error: format!("TikTok room info status: {}", response.status()),
+        });
+    }
+
+    let json: Value = response.json().await.map_err(|e| RecorderError::ApiError {
+        error: format!("Failed to parse TikTok room info JSON: {e}"),
+    })?;
+    let status_code = json
+        .get("status_code")
+        .and_then(|value| value.as_i64())
+        .unwrap_or(-1);
+    if status_code != 0 {
+        return Err(RecorderError::ApiError {
+            error: format!("TikTok room info error status: {}", status_code),
+        });
+    }
+
+    if let Ok(preview) = serde_json::to_string(&json) {
+        log::info!("[TikTok] room info response (room_id={}): {}", room_id, preview);
+    }
+
+    Ok(json)
+}
+
+fn extract_room_info_from_room_data(
+    room_data: &Value,
+    account: &Account,
+    url: &str,
+) -> Option<RoomInfo> {
+    let map = room_data.as_object()?;
+    let owner = map.get("owner").and_then(|value| value.as_object());
+
+    let user_name = owner
+        .and_then(|map| get_string_field(map, &["nickname", "uniqueId", "displayId", "userName"]))
+        .unwrap_or_default();
+    let user_id = owner
+        .and_then(|map| get_string_field(map, &["id", "userId", "owner_user_id"]))
+        .unwrap_or_default();
+    let status = get_i64_field(map, &["status", "liveStatus", "live_status"]);
+    let title = get_string_field(map, &["title", "roomTitle", "room_title"]).unwrap_or_default();
+    let user_avatar = owner
+        .and_then(|map| find_avatar_url(&Value::Object(map.clone())))
+        .unwrap_or_default();
+    let room_cover_url = find_cover_url(room_data).unwrap_or_default();
+
+    let live_status = if let Some(flag) = status {
+        flag == 2
+    } else {
+        room_data
+            .get("stream_url")
+            .or_else(|| room_data.get("streamUrl"))
+            .is_some()
+    };
+
+    let extracted_name = extract_username_from_url(url);
+    let final_user_name = if !user_name.is_empty() {
+        user_name
+    } else if !account.name.is_empty() {
+        account.name.clone()
+    } else if !extracted_name.is_empty() {
+        extracted_name.clone()
+    } else {
+        "TikTok Live".to_string()
+    };
+    let final_user_id = if !user_id.is_empty() {
+        user_id
+    } else if !account.id.is_empty() {
+        account.id.clone()
+    } else {
+        extracted_name
+    };
+
+    Some(RoomInfo {
+        live_status,
+        room_title: if title.is_empty() {
+            format!("{}'s live", final_user_name)
+        } else {
+            title
+        },
+        room_cover_url: if room_cover_url.is_empty() {
+            user_avatar.clone()
+        } else {
+            room_cover_url
+        },
+        user_id: final_user_id,
+        user_name: final_user_name,
+        user_avatar,
+    })
+}
+
+async fn get_room_info_by_room_id(
+    client: &Client,
+    account: &Account,
+    room_id: &str,
+    referer: &str,
+) -> Result<RoomInfo, RecorderError> {
+    let json = fetch_room_info_api(client, account, room_id).await?;
+    let Some(room_data) = extract_room_data_from_room_info_api(&json) else {
+        return Err(RecorderError::ApiError {
+            error: "TikTok room info missing data".to_string(),
+        });
+    };
+    extract_room_info_from_room_data(&room_data, account, referer).ok_or_else(|| {
+        RecorderError::ApiError {
+            error: "Failed to parse TikTok room info".to_string(),
+        }
+    })
+}
+
+async fn get_stream_url_from_room_info_api(
+    client: &Client,
+    account: &Account,
+    room_id: &str,
+) -> Result<StreamInfo, RecorderError> {
+    let json = fetch_room_info_api(client, account, room_id).await?;
+    let Some(room_data) = extract_room_data_from_room_info_api(&json) else {
+        return Err(RecorderError::ApiError {
+            error: "TikTok room info missing data".to_string(),
+        });
+    };
+
+    let mut headers = build_page_headers("https://www.tiktok.com/", USER_AGENT, false);
+    headers.insert("accept-language", "en-US,en;q=0.9".parse().unwrap());
+    if !account.cookies.is_empty() {
+        headers.insert("Cookie", account.cookies.parse().unwrap());
+    }
+
+    let candidates = extract_stream_candidates_from_room_info(&room_data);
+    if !candidates.is_empty() {
+        if let Some(info) = select_accessible_stream(client, &headers, &candidates).await {
+            return Ok(info);
+        }
+    }
+
+    let stream_url = room_data
+        .get("stream_url")
+        .or_else(|| room_data.get("streamUrl"));
+    let mut info = StreamInfo {
+        hls_url: stream_url.and_then(|v| v.get("hls_pull_url")).and_then(extract_first_string),
+        rtmp_url: stream_url.and_then(|v| v.get("rtmp_pull_url")).and_then(extract_first_string),
+    };
+    if info.rtmp_url.is_none() {
+        info.rtmp_url = stream_url
+            .and_then(|v| v.get("flv_pull_url"))
+            .and_then(extract_first_string);
+    }
+
+    if let Some(hls_url) = info.hls_url.as_deref() {
+        if !check_hls_stream_accessible(client, &headers, hls_url).await {
+            info.hls_url = None;
+        }
+    }
+    if let Some(rtmp_url) = info.rtmp_url.as_deref() {
+        if !check_url_accessible(client, &headers, rtmp_url).await {
+            info.rtmp_url = None;
+        }
+    }
+
+    if info.hls_url.is_none() && info.rtmp_url.is_none() {
+        return Err(RecorderError::ApiError {
+            error: "No available stream provided (room info)".to_string(),
+        });
+    }
+
+    Ok(info)
+}
+
 async fn get_room_info_with_profile(
     client: &Client,
     account: &Account,
@@ -1810,6 +3421,95 @@ pub async fn get_room_info(
     account: &Account,
     url: &str,
 ) -> Result<RoomInfo, RecorderError> {
+    get_room_info_with_feed_override(client, account, url, None).await
+}
+
+pub async fn get_live_room_id_with_feed_override(
+    client: &Client,
+    account: &Account,
+    url: &str,
+    feed_override: Option<&str>,
+) -> Result<String, RecorderError> {
+    if !extract_username_from_url(url).is_empty() {
+        match get_room_id_from_check_alive(client, account, url).await {
+            Ok(Some(room_id)) => {
+                return Ok(room_id);
+            }
+            Ok(None) => {}
+            Err(err) => {
+                log::warn!("TikTok check_alive room id failed: {err}");
+            }
+        }
+    }
+    if !extract_username_from_url(url).is_empty()
+        && (feed_override.is_some() || feed_url_from_env(url, account).is_some())
+    {
+        match get_room_id_from_feed(client, account, url, feed_override).await {
+            Ok(room_id) => {
+                return Ok(room_id);
+            }
+            Err(err) => {
+                log::warn!("TikTok feed room id failed: {err}");
+            }
+        }
+    }
+    Err(RecorderError::ApiError {
+        error: "TikTok live room id unavailable".to_string(),
+    })
+}
+
+/// Get room information from TikTok page (web first, mobile fallback), with optional feed override
+pub async fn get_room_info_with_feed_override(
+    client: &Client,
+    account: &Account,
+    url: &str,
+    feed_override: Option<&str>,
+) -> Result<RoomInfo, RecorderError> {
+    if !extract_username_from_url(url).is_empty() {
+        match get_room_id_from_room_enter(client, account, url).await {
+            Ok(Some(room_id)) => {
+                if let Ok(room_info) =
+                    get_room_info_by_room_id(client, account, &room_id, url).await
+                {
+                    return Ok(room_info);
+                }
+            }
+            Ok(None) => {}
+            Err(err) => {
+                log::warn!("TikTok room enter room info failed: {err}");
+            }
+        }
+    }
+    if !extract_username_from_url(url).is_empty() {
+        match get_room_id_from_check_alive(client, account, url).await {
+            Ok(Some(room_id)) => {
+                if let Ok(room_info) =
+                    get_room_info_by_room_id(client, account, &room_id, url).await
+                {
+                    return Ok(room_info);
+                }
+            }
+            Ok(None) => {}
+            Err(err) => {
+                log::warn!("TikTok check_alive room info failed: {err}");
+            }
+        }
+    }
+    if !extract_username_from_url(url).is_empty()
+        && (feed_override.is_some() || feed_url_from_env(url, account).is_some())
+    {
+        match get_room_id_from_feed(client, account, url, feed_override).await {
+            Ok(room_id) => {
+                if let Ok(room_info) = get_room_info_by_room_id(client, account, &room_id, url).await
+                {
+                    return Ok(room_info);
+                }
+            }
+            Err(err) => {
+                log::warn!("TikTok feed room info failed: {err}");
+            }
+        }
+    }
     if force_mobile_fallback() {
         let mobile_url = to_mobile_url(url);
         log::warn!(
@@ -1964,6 +3664,62 @@ pub async fn get_stream_url(
     account: &Account,
     url: &str,
 ) -> Result<StreamInfo, RecorderError> {
+    get_stream_url_with_feed_override(client, account, url, None).await
+}
+
+/// Get stream URL from TikTok page (web first, mobile fallback), with optional feed override
+pub async fn get_stream_url_with_feed_override(
+    client: &Client,
+    account: &Account,
+    url: &str,
+    feed_override: Option<&str>,
+) -> Result<StreamInfo, RecorderError> {
+    if !extract_username_from_url(url).is_empty() {
+        match get_room_id_from_room_enter(client, account, url).await {
+            Ok(Some(room_id)) => {
+                if let Ok(stream_info) =
+                    get_stream_url_from_room_info_api(client, account, &room_id).await
+                {
+                    return Ok(stream_info);
+                }
+            }
+            Ok(None) => {}
+            Err(err) => {
+                log::warn!("TikTok room enter stream failed: {err}");
+            }
+        }
+    }
+    if !extract_username_from_url(url).is_empty() {
+        match get_room_id_from_check_alive(client, account, url).await {
+            Ok(Some(room_id)) => {
+                if let Ok(stream_info) =
+                    get_stream_url_from_room_info_api(client, account, &room_id).await
+                {
+                    return Ok(stream_info);
+                }
+            }
+            Ok(None) => {}
+            Err(err) => {
+                log::warn!("TikTok check_alive stream failed: {err}");
+            }
+        }
+    }
+    if !extract_username_from_url(url).is_empty()
+        && (feed_override.is_some() || feed_url_from_env(url, account).is_some())
+    {
+        match get_room_id_from_feed(client, account, url, feed_override).await {
+            Ok(room_id) => {
+                if let Ok(stream_info) =
+                    get_stream_url_from_room_info_api(client, account, &room_id).await
+                {
+                    return Ok(stream_info);
+                }
+            }
+            Err(err) => {
+                log::warn!("TikTok feed stream failed: {err}");
+            }
+        }
+    }
     if force_mobile_fallback() {
         let mobile_url = to_mobile_url(url);
         log::warn!(
@@ -1995,6 +3751,14 @@ pub async fn get_stream_url(
                 })
         }
     }
+}
+
+pub async fn get_stream_url_by_room_id(
+    client: &Client,
+    account: &Account,
+    room_id: &str,
+) -> Result<StreamInfo, RecorderError> {
+    get_stream_url_from_room_info_api(client, account, room_id).await
 }
 
 #[cfg(test)]
@@ -2078,6 +3842,9 @@ pub async fn get_user_info(
     if let Ok(info) = get_user_info_from_passport(&request_client, &headers).await {
         return Ok(info);
     }
+    if let Ok(info) = get_user_info_from_passport_account(&request_client, account).await {
+        return Ok(info);
+    }
 
     let state = extract_state_value(&html_str).ok_or(RecorderError::ApiError {
         error: "Failed to extract TikTok state - please check if your network can access TikTok normally (proxy might be needed).".to_string(),
@@ -2111,6 +3878,72 @@ pub async fn get_user_info(
     Err(RecorderError::ApiError {
         error: "Could not find user info in TikTok page".to_string(),
     })
+}
+
+pub async fn check_proxy_available(client: &Client) -> Result<TikTokProxyCheck, RecorderError> {
+    let proxy_url = proxy_url_from_env();
+    let request_client = if let Some(proxy_url) = proxy_url.as_deref() {
+        build_proxy_client(proxy_url)?
+    } else {
+        client.clone()
+    };
+    let url = "https://www.tiktok.com/";
+    let headers = build_page_headers(url, USER_AGENT, false);
+    let response = request_client.get(url).headers(headers).send().await?;
+    let status = response.status();
+    let html_str = response.text().await.unwrap_or_default();
+    let waf = is_waf_wait_page(&html_str);
+    let ok = status.is_success() && !waf;
+    let message = if ok {
+        "ok".to_string()
+    } else if !status.is_success() {
+        format!("status {}", status)
+    } else if waf {
+        "waf".to_string()
+    } else {
+        "unexpected".to_string()
+    };
+    Ok(TikTokProxyCheck {
+        ok,
+        status: status.as_u16(),
+        waf,
+        proxy: proxy_url,
+        message,
+    })
+}
+
+pub async fn check_cookie_available(
+    client: &Client,
+    account: &Account,
+) -> Result<TikTokCookieCheck, RecorderError> {
+    if account.cookies.trim().is_empty() {
+        return Ok(TikTokCookieCheck {
+            ok: false,
+            user_id: String::new(),
+            user_name: String::new(),
+            message: "cookies empty".to_string(),
+        });
+    }
+    let proxy_url = proxy_url_from_env();
+    let request_client = if let Some(proxy_url) = proxy_url.as_deref() {
+        build_proxy_client(proxy_url)?
+    } else {
+        client.clone()
+    };
+    match get_user_info_from_passport_account(&request_client, account).await {
+        Ok(info) => Ok(TikTokCookieCheck {
+            ok: true,
+            user_id: info.user_id,
+            user_name: info.user_name,
+            message: "ok".to_string(),
+        }),
+        Err(err) => Ok(TikTokCookieCheck {
+            ok: false,
+            user_id: String::new(),
+            user_name: String::new(),
+            message: err.to_string(),
+        }),
+    }
 }
 
 fn find_current_user_info(value: &Value) -> Option<crate::UserInfo> {
@@ -2193,6 +4026,72 @@ async fn get_user_info_from_passport(
 
     Err(RecorderError::ApiError {
         error: "User info not found in passport response".to_string(),
+    })
+}
+
+/// Get user info from TikTok passport account/info API
+async fn get_user_info_from_passport_account(
+    client: &reqwest::Client,
+    account: &Account,
+) -> Result<crate::UserInfo, RecorderError> {
+    let handle = account
+        .name
+        .trim()
+        .trim_start_matches('@')
+        .to_string();
+    let handle = if handle.is_empty() {
+        account.id.trim().trim_start_matches('@').to_string()
+    } else {
+        handle
+    };
+    let referer = build_profile_referer(&handle);
+    let url = build_account_info_url(account, &referer);
+    let headers = build_account_info_headers(account, &referer);
+    let response = client.get(url).headers(headers).send().await?;
+
+    if !response.status().is_success() {
+        return Err(RecorderError::ApiError {
+            error: format!(
+                "Failed to fetch TikTok account info, status: {}",
+                response.status()
+            ),
+        });
+    }
+
+    let json: Value = response.json().await?;
+    let data = json.get("data").and_then(|d| d.as_object()).ok_or_else(|| {
+        RecorderError::ApiError {
+            error: "User info not found in account info response".to_string(),
+        }
+    })?;
+
+    let user_id = get_string_field(data, &["user_id_str", "user_id", "uid", "id"])
+        .unwrap_or_default();
+    let user_name =
+        get_string_field(data, &["screen_name", "username", "unique_id", "nickname"])
+            .unwrap_or_default();
+    let user_avatar = data
+        .get("avatar_url")
+        .and_then(Value::as_str)
+        .map(|value| value.to_string())
+        .unwrap_or_default();
+
+    if user_id.is_empty() {
+        return Err(RecorderError::ApiError {
+            error: "User id not found in account info response".to_string(),
+        });
+    }
+
+    let final_name = if user_name.is_empty() {
+        user_id.clone()
+    } else {
+        user_name
+    };
+
+    Ok(crate::UserInfo {
+        user_id,
+        user_name: final_name,
+        user_avatar,
     })
 }
 

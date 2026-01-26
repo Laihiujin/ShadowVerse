@@ -152,6 +152,7 @@ fn fallback_uid_from_cookies(cookies: &str) -> String {
     format!("cookie_{:x}", md5::compute(cookies))
 }
 
+
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn add_account(
     state: state_type!(),
@@ -763,6 +764,8 @@ pub async fn get_tiktok_webview_cookies(state: state_type!()) -> Result<String, 
         "https://web-va.tiktok.com",
         "https://login-no1a.www.tiktok.com",
         "https://us.tiktok.com",
+        "https://mon.tiktokv.com",
+        "https://mcs-sg.tiktokv.com",
     ]
     .into_iter()
     .map(|url| url.to_string())
@@ -1425,6 +1428,27 @@ pub async fn get_qr_status(
         },
         _ => Err("Invalid platform".to_string()),
     }
+}
+
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn check_tiktok_proxy(_state: state_type!()) -> Result<tiktok::api::TikTokProxyCheck, String> {
+    let client = crate::utils::http::no_proxy_client();
+    tiktok::api::check_proxy_available(&client)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn check_tiktok_cookie(state: state_type!()) -> Result<tiktok::api::TikTokCookieCheck, String> {
+    let account = state
+        .db
+        .get_account_by_platform("tiktok")
+        .await
+        .map_err(|_| "TikTok account not found".to_string())?;
+    let client = crate::utils::http::no_proxy_client();
+    tiktok::api::check_cookie_available(&client, &account.to_account())
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]

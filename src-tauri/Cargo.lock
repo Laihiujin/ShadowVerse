@@ -5389,6 +5389,7 @@ dependencies = [
  "serde",
  "serde_derive",
  "serde_json",
+ "sha2",
  "sm3",
  "thiserror 2.0.17",
  "tokio",
@@ -6350,7 +6351,7 @@ dependencies = [
 
 [[package]]
 name = "shadowverse"
-version = "2.17.3"
+version = "2.17.7"
 dependencies = [
  "aead",
  "aes-gcm",

@@ -1,4 +1,3 @@
-
 <script lang="ts">
   import { invoke } from "../lib/invoker";
   import { open } from "@tauri-apps/plugin-dialog";
@@ -39,7 +38,7 @@
       enabled: false,
       encode_danmu: false,
     },
-    status_check_interval: 67, // 默认67秒
+    status_check_interval: 67, // 默认67�?
     whisper_language: "",
     webhook_url: "",
     danmu_ass_options: {
@@ -59,8 +58,7 @@
   let proxyEnabled = true;
   let proxyHost = "127.0.0.1";
   let proxyPort = "7890";
-  let httpProxy = "127.0.0.1:7890";
-  let httpsProxy = "";
+  let clearingWebviewData = false;
 
   function updateTheme() {
     localStorage.setItem("theme", darkMode ? "dark" : "light");
@@ -76,9 +74,7 @@
   async function get_config() {
     let config: Config = await invoke("get_config");
     setting_model = config;
-    httpProxy = config.http_proxy || "";
-    httpsProxy = config.https_proxy || "";
-    const proxyValue = httpProxy || httpsProxy;
+    const proxyValue = config.http_proxy || "";
     if (proxyValue.includes("://")) {
       try {
         const parsed = new URL(proxyValue);
@@ -180,7 +176,7 @@
 
   async function update_status_check_interval() {
     if (setting_model.status_check_interval < 10) {
-      setting_model.status_check_interval = 10; // 最小值为10秒
+      setting_model.status_check_interval = 10; // 最小值为10�?
     }
     await invoke("update_status_check_interval", {
       interval: setting_model.status_check_interval,
@@ -201,17 +197,32 @@
   }
 
   async function update_network_config() {
-    const httpProxyValue = httpProxy.trim();
-    const httpsProxyValue = httpsProxy.trim();
     const port = proxyEnabled ? proxyPort.trim() : "";
     const host = proxyHost.trim() || "127.0.0.1";
     const proxyUrl = port ? `http://${host}:${port}` : "";
-    const finalHttpProxy = httpProxyValue || proxyUrl;
-    const finalHttpsProxy = httpsProxyValue;
     await invoke("update_network_config", {
-      httpProxy: finalHttpProxy,
-      httpsProxy: finalHttpsProxy,
+      httpProxy: proxyUrl,
+      httpsProxy: "",
     });
+  }
+
+  async function clear_webview_data() {
+    if (!TAURI_ENV || clearingWebviewData) {
+      return;
+    }
+    const ok = confirm("将清空内置浏览器的缓存与 Cookie，可能会导致账号需要重新登录。是否继续？");
+    if (!ok) {
+      return;
+    }
+    clearingWebviewData = true;
+    try {
+      await invoke("clear_webview_data");
+      alert("��������������� Cookie ����ա�");
+    } catch (e) {
+      alert("���ʧ�ܣ�" + e);
+    } finally {
+      clearingWebviewData = false;
+    }
   }
 
 
@@ -271,6 +282,27 @@
                 </label>
               </div>
             </div>
+            {#if TAURI_ENV}
+              <div class="p-4">
+                <div class="flex items-center justify-between">
+                  <div>
+                    <h3 class="text-sm font-medium text-gray-900 dark:text-white">
+                      清空内置浏览器缓存与 Cookie
+                    </h3>
+                    <p class="text-sm text-gray-500 dark:text-gray-400">
+                      将清除登录态和缓存数据，可能需要重新登录账�?
+                    </p>
+                  </div>
+                  <button
+                    class="px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    on:click={clear_webview_data}
+                    disabled={clearingWebviewData}
+                  >
+                    {clearingWebviewData ? "清理�?.." : "一键清�?}
+                  </button>
+                </div>
+              </div>
+            {/if}
           </div>
         </div>
         <div class="space-y-4">
@@ -287,10 +319,10 @@
               <div class="flex items-center justify-between">
                 <div>
                   <h3 class="text-sm font-medium text-gray-900 dark:text-white">
-                    直播间状态检查间隔
+                    直播间状态检查间�?
                   </h3>
                   <p class="text-sm text-gray-500 dark:text-gray-400">
-                    设置直播间状态检查的时间间隔，单位为秒，过于频繁可能会触发风控
+                    设置直播间状态检查的时间间隔，单位为秒，过于频繁可能会触发风�?
                   </p>
                 </div>
                 <div class="flex items-center space-x-2">
@@ -310,7 +342,7 @@
                     Webhook URL
                   </h3>
                   <p class="text-sm text-gray-500 dark:text-gray-400">
-                    设置 Webhook URL，用于接收事件通知；
+                    设置 Webhook URL，用于接收事件通知�?
                   </p>
                 </div>
                 <div class="flex items-center space-x-2">
@@ -341,7 +373,7 @@
                 <div>
                   <h3 class="text-sm font-medium text-gray-900 dark:text-white">使用默认账号</h3>
                   <p class="text-sm text-gray-500 dark:text-gray-400">
-                    启用后优先使用配置文件中的默认账号
+                    启用后优先使用配置文件中的默认账�?
                   </p>
                 </div>
                 <label class="relative inline-block w-11 h-6">
@@ -455,7 +487,7 @@
                       <h3
                         class="text-sm font-medium text-gray-900 dark:text-white"
                       >
-                        日志文件夹
+                        日志文件�?
                       </h3>
                       <p class="text-sm text-gray-500 dark:text-gray-400">
                         查看应用程序日志文件
@@ -607,7 +639,7 @@
                       启用代理
                     </h3>
                     <p class="text-sm text-gray-500 dark:text-gray-400">
-                      代理地址固定为 127.0.0.1，端口可配置
+                      代理地址固定�?127.0.0.1，端口可配置
                     </p>
                   </div>
                   <label class="relative inline-block w-11 h-6">
@@ -655,7 +687,7 @@
                       代理地址
                     </h3>
                     <p class="text-sm text-gray-500 dark:text-gray-400">
-                      例：127.0.0.1（留空则使用本机）
+                      例：127.0.0.1（留空则使用本机�?
                     </p>
                   </div>
                   <input
@@ -667,49 +699,7 @@
                   />
                 </div>
               </div>
-              <div class="p-4">
-                <div class="flex items-center justify-between">
-                  <div>
-                    <h3
-                      class="text-sm font-medium text-gray-900 dark:text-white"
-                    >
-                      HTTP_PROXY
-                    </h3>
-                    <p class="text-sm text-gray-500 dark:text-gray-400">
-                      例：http://127.0.0.1:7890（为空则使用上面的端口）
-                    </p>
-                  </div>
-                  <input
-                    class="w-64 px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white text-right"
-                    type="text"
-                    bind:value={httpProxy}
-                    on:blur={update_network_config}
-                    on:change={update_network_config}
-                  />
-                </div>
-              </div>
-              <div class="p-4">
-                <div class="flex items-center justify-between">
-                  <div>
-                    <h3
-                      class="text-sm font-medium text-gray-900 dark:text-white"
-                    >
-                      HTTPS_PROXY
-                    </h3>
-                    <p class="text-sm text-gray-500 dark:text-gray-400">
-                      例：https://127.0.0.1:7890（留空则不使用 HTTPS 代理）
-                    </p>
-                  </div>
-                  <input
-                    class="w-64 px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white text-right"
-                    type="text"
-                    bind:value={httpsProxy}
-                    on:blur={update_network_config}
-                    on:change={update_network_config}
-                  />
-                </div>
-              </div>
-            </div>
+
           </div>
 
           <!-- Subtitle Generation Settings -->
@@ -756,10 +746,10 @@
                     <h3
                       class="text-sm font-medium text-gray-900 dark:text-white"
                     >
-                      字幕生成器类型
+                      字幕生成器类�?
                     </h3>
                     <p class="text-sm text-gray-500 dark:text-gray-400">
-                      选择字幕生成的方式：本地模型，OpenAI 服务或 <a
+                      选择字幕生成的方式：本地模型，OpenAI 服务�?<a
                         href="https://www.powerlive.io/"
                         class="text-blue-500 hover:underline"
                         target="_blank"
@@ -800,7 +790,7 @@
                         PowerLive API 密钥
                       </h3>
                       <p class="text-sm text-gray-500 dark:text-gray-400">
-                        设置 PowerLive API 的访问密钥
+                        设置 PowerLive API 的访问密�?
                       </p>
                     </div>
                     <div class="flex items-center space-x-2">
@@ -828,7 +818,7 @@
                           Whisper 模型路径
                         </h3>
                         <p class="text-sm text-gray-500 dark:text-gray-400">
-                          {setting_model.whisper_model || "未设置"}
+                          {setting_model.whisper_model || "未设�?}
                           <span class="block mt-1 text-xs"
                             >可前往 <a
                               href="https://huggingface.co/ggerganov/whisper.cpp/tree/main"
@@ -887,7 +877,7 @@
                           OpenAI API 密钥
                         </h3>
                         <p class="text-sm text-gray-500 dark:text-gray-400">
-                          设置 OpenAI API 的访问密钥
+                          设置 OpenAI API 的访问密�?
                         </p>
                       </div>
                       <div class="flex items-center space-x-2">
@@ -916,7 +906,7 @@
                         Whisper 语言
                       </h3>
                       <p class="text-sm text-gray-500 dark:text-gray-400">
-                        （测试）生成字幕时使用的语言，默认自动识别
+                        （测试）生成字幕时使用的语言，默认自动识�?
                       </p>
                     </div>
                     <div class="flex items-center space-x-2">
@@ -939,7 +929,7 @@
                       <h3
                         class="text-sm font-medium text-gray-900 dark:text-white"
                       >
-                        Whisper 提示词
+                        Whisper 提示�?
                       </h3>
                       <p class="text-sm text-gray-500 dark:text-gray-400">
                         生成字幕时使用的提示词，尽量简洁明了，提示音频内容偏向的领域以及字幕的风格
@@ -968,7 +958,7 @@
               class="text-lg font-medium text-gray-900 dark:text-white flex items-center space-x-2"
             >
               <DiscAlbum class="w-5 h-5 dark:icon-white" />
-              <span>切片文件名格式</span>
+              <span>切片文件名格�?</span>
             </h2>
             <div
               class="bg-white dark:bg-[#3c3c3e] rounded-xl border border-gray-200 dark:border-gray-700 divide-y divide-gray-200 dark:divide-gray-700"
@@ -979,7 +969,7 @@
                     <h3
                       class="text-sm font-medium text-gray-900 dark:text-white"
                     >
-                      文件名格式
+                      文件名格�?
                     </h3>
                     <p class="text-sm text-gray-500 dark:text-gray-400">
                       可用标签：{"{title}"}
@@ -1054,11 +1044,11 @@
                     <h3
                       class="text-sm font-medium text-gray-900 dark:text-white"
                     >
-                      不透明度
+                      不透明�?
                     </h3>
                     <p class="text-sm text-gray-500 dark:text-gray-400">
                       设置弹幕不透明度，范围
-                      0.0-1.0，0.0为完全透明，1.0为完全不透明
+                      0.0-1.0�?.0为完全透明�?.0为完全不透明
                     </p>
                   </div>
                   <div class="flex items-center space-x-2">
@@ -1123,9 +1113,7 @@
               <div class="p-4">
                 <div class="flex items-center justify-between">
                   <div>
-                    <h3
-                      class="text-sm font-medium text-gray-900 dark:text-white"
-                    >
+                    <h3 class="text-sm font-medium text-gray-900 dark:text-white">
                       自动切片压制弹幕
                     </h3>
                     <p class="text-sm text-gray-500 dark:text-gray-400">
@@ -1153,7 +1141,6 @@
               </div>
             </div>
           </div>
-        {/if}
       </div>
     </div>
   </div>
@@ -1172,13 +1159,13 @@
             确认变更
           </h3>
           <p class="text-gray-600 dark:text-gray-400 mt-2">
-            根据文件大小，可能需要耗时较长时间，迁移期间直播间会暂时移除，迁移完成后直播间会自动恢复。
+            根据文件大小，可能需要耗时较长时间，迁移期间直播间会暂时移除，迁移完成后直播间会自动恢复�?
           </p>
           <p class="text-gray-600 dark:text-gray-400 mt-2 font-bold">
-            迁移期间请不要关闭程序，且不要在迁移期间再次更改目录！
+            迁移期间请不要关闭程序，且不要在迁移期间再次更改目录�?
           </p>
           <p class="text-gray-600 dark:text-gray-400 mt-2">
-            确认要进行变更吗？
+            确认要进行变更吗�?
           </p>
         </div>
       </div>
@@ -1199,3 +1186,6 @@
     </div>
   </div>
 {/if}
+
+
+

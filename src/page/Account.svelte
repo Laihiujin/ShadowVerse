@@ -310,7 +310,13 @@ function toggleDropdown(uid) {
         qr_error = qr_status.message || "\u4e8c\u7ef4\u7801\u767b\u5f55\u5df2\u7ec8\u6b62";
         return;
       }
-      qr_error = qr_status.message || "\u626b\u7801\u672a\u786e\u8ba4";
+      if (selectedPlatform !== "bilibili") {
+        qr_error = qr_status.message || "\u626b\u7801\u672a\u786e\u8ba4";
+      } else if (qr_status.message && qr_status.message !== "new") {
+        qr_error = qr_status.message;
+      } else {
+        qr_error = "";
+      }
     } catch (e) {
       qr_error = String(e || "二维码状态获取失败");
     }

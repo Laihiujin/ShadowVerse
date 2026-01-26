@@ -2,6 +2,8 @@ use crate::config::Config;
 use crate::danmu2ass::Danmu2AssOptions;
 use crate::state::State;
 use crate::state_type;
+#[cfg(feature = "gui")]
+use tauri::Manager;
 
 #[cfg(feature = "gui")]
 
@@ -359,6 +361,28 @@ pub async fn update_danmu_ass_options(
         .await
         .set_danmu_ass_options(Danmu2AssOptions { font_size, opacity });
     Ok(())
+}
+
+#[cfg(feature = "gui")]
+#[tauri::command]
+pub async fn clear_webview_data(state: state_type!()) -> Result<(), String> {
+    let windows = state.app_handle.webview_windows();
+    if windows.is_empty() {
+        return Err("No webview windows available".to_string());
+    }
+
+    let mut errors = Vec::new();
+    for (label, window) in windows {
+        if let Err(e) = window.clear_all_browsing_data() {
+            errors.push(format!("{label}: {e}"));
+        }
+    }
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(format!("Failed to clear browsing data: {}", errors.join("; ")))
+    }
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]
