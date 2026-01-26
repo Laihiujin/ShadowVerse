@@ -527,6 +527,7 @@ impl RecorderTrait<KuaishouExtra> for KuaishouRecorder {
 
                 let interval = self_clone.update_interval.load(atomic::Ordering::Relaxed);
                 let mut sleep_secs = crate::utils::jitter_interval_secs(interval, 10);
+                sleep_secs = sleep_secs.max(interval);
                 let error_backoff = std::env::var("BSR_KUAISHOU_ERROR_BACKOFF_SECS")
                     .ok()
                     .and_then(|v| v.trim().parse::<u64>().ok())

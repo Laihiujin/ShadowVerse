@@ -76,6 +76,19 @@
           platform = "tiktok";
         }
 
+        if (
+          url.startsWith("https://www.tiktok.com/") ||
+          url.startsWith("http://www.tiktok.com/") ||
+          url.startsWith("https://tiktok.com/") ||
+          url.startsWith("http://tiktok.com/")
+        ) {
+          const match = url.match(/tiktok\.com\/@?([^\/\?]+)(?:\/live)?/i);
+          if (match) {
+            room_id = match[1];
+            platform = "tiktok";
+          }
+        }
+
         if (platform && room_id) {
           // switch to room page
           active = "直播间";

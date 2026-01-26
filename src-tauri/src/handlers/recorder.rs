@@ -272,9 +272,48 @@ pub async fn get_room_info(
         .get_recorder_info(platform, &room_id)
         .await
     {
+        if let Err(err) = state
+            .db
+            .update_recorder_cached_info(
+                platform,
+                &room_id,
+                &info.room_info.room_title,
+                &info.room_info.room_cover,
+                &info.user_info.user_name,
+                &info.user_info.user_avatar,
+            )
+            .await
+        {
+            log::warn!(
+                "Failed to update recorder cached info for {} {}: {}",
+                platform.as_str(),
+                room_id,
+                err
+            );
+        }
         Ok(info)
     } else {
-        Err("Not found".to_string())
+        match state.db.get_recorder(platform, &room_id).await {
+            Ok(recorder) => Ok(RecorderInfo {
+                room_info: recorder::RoomInfo {
+                    platform: recorder.platform.clone(),
+                    room_id: recorder.room_id.clone(),
+                    room_title: recorder.room_title.unwrap_or_default(),
+                    room_cover: recorder.room_cover.unwrap_or_default(),
+                    status: false,
+                },
+                user_info: recorder::UserInfo {
+                    user_id: recorder.room_id.clone(),
+                    user_name: recorder.user_name.unwrap_or_default(),
+                    user_avatar: recorder.user_avatar.unwrap_or_default(),
+                },
+                platform_live_id: String::new(),
+                live_id: String::new(),
+                recording: false,
+                enabled: recorder.auto_start,
+            }),
+            Err(_) => Err("Not found".to_string()),
+        }
     }
 }
 

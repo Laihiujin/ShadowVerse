@@ -230,7 +230,8 @@ impl TikTokRecorder {
                     }
                     Err(e) => {
                         self.log_error(&format!("Fetch stream failed: {}", e));
-                        true
+                        // Only allow recording if we already have a cached stream URL.
+                        self.extra.stream_info.read().await.is_some()
                     }
                 }
             }

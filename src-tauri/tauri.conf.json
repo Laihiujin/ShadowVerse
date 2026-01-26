@@ -15,7 +15,10 @@
       "icons/icon.ico"
     ],
     "targets": "all",
-    "resources": []
+    "resources": [],
+    "macOS": {
+      "minimumSystemVersion": "10.15"
+    }
   },
   "productName": "ShadowVerse",
   "version": "../package.json",

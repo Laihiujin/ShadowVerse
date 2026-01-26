@@ -35,7 +35,18 @@ pub async fn try_rebuild_archives(
             continue;
         }
         let room_cache_path = cache_path.join(format!("{}/{}", room.platform, room_id));
-        let mut files = tokio::fs::read_dir(room_cache_path).await?;
+        match tokio::fs::metadata(&room_cache_path).await {
+            Ok(meta) => {
+                if !meta.is_dir() {
+                    continue;
+                }
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                continue;
+            }
+            Err(err) => return Err(err.into()),
+        }
+        let mut files = tokio::fs::read_dir(&room_cache_path).await?;
         while let Some(file) = files.next_entry().await? {
             if file.file_type().await?.is_dir() {
                 // use folder name as live_id

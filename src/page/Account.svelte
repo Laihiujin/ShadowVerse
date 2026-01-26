@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { get, invoke } from "../lib/invoker";
+  import { get, invoke, TAURI_ENV } from "../lib/invoker";
   import { scale, fade } from "svelte/transition";
   import { Textarea } from "flowbite-svelte";
   import QRCode from "qrcode";
@@ -342,7 +342,7 @@ function toggleDropdown(uid) {
   }
 
   function supports_webview_login(platform: string) {
-    return !!webviewLoginPlatforms[platform];
+    return TAURI_ENV && !!webviewLoginPlatforms[platform];
   }
 
   async function open_webview_login() {

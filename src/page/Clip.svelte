@@ -319,7 +319,10 @@
       case "kuaishou":
         return `https://live.kuaishou.com/u/${roomId}`;
       case "tiktok":
-        return `https://www.tiktok.com/${roomId}/live`;
+        {
+          const handle = roomId.startsWith("@") ? roomId : `@${roomId}`;
+          return `https://www.tiktok.com/${handle}/live`;
+        }
       case "youtube":
         return `https://www.youtube.com/channel/${roomId}`;
       default:

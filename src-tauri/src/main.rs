@@ -522,7 +522,7 @@ async fn setup_server_state(args: Args) -> Result<State, Box<dyn std::error::Err
             return Err(e.into());
         }
     };
-    config.apply_proxy_env();
+    config.apply_network_env();
     config.apply_douyin_passport_env();
     let config = Arc::new(RwLock::new(config));
     let db = Arc::new(Database::new());
@@ -618,7 +618,7 @@ async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::
             return Err(e.into());
         }
     };
-    config.apply_proxy_env();
+    config.apply_network_env();
     config.apply_douyin_passport_env();
 
     let config = Arc::new(RwLock::new(config));
@@ -727,6 +727,16 @@ fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
         crate::handlers::account::update_default_account,
         crate::handlers::account::remove_account,
         crate::handlers::account::get_browser_cookies,
+        crate::handlers::account::open_tiktok_login_window,
+        crate::handlers::account::get_tiktok_webview_cookies,
+        crate::handlers::account::open_douyin_login_window,
+        crate::handlers::account::get_douyin_webview_cookies,
+        crate::handlers::account::open_kuaishou_login_window,
+        crate::handlers::account::get_kuaishou_webview_cookies,
+        crate::handlers::account::open_huya_login_window,
+        crate::handlers::account::get_huya_webview_cookies,
+        crate::handlers::account::open_bilibili_login_window,
+        crate::handlers::account::get_bilibili_webview_cookies,
         crate::handlers::account::get_account_count,
         crate::handlers::account::get_qr_status,
         crate::handlers::account::get_qr,
@@ -742,6 +752,7 @@ fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
         crate::handlers::config::update_subtitle_generator_type,
         crate::handlers::config::update_openai_api_key,
         crate::handlers::config::update_openai_api_endpoint,
+        crate::handlers::config::update_network_config,
         crate::handlers::config::update_auto_generate,
         crate::handlers::config::update_use_default_accounts,
         crate::handlers::config::update_status_check_interval,

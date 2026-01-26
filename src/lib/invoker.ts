@@ -14,7 +14,10 @@ declare global {
 }
 
 const ENDPOINT = localStorage.getItem("endpoint") || "";
-const TAURI_ENV = typeof window.__TAURI_INTERNALS__ !== "undefined";
+const TAURI_ENV =
+  typeof window !== "undefined" &&
+  (typeof window.__TAURI_INTERNALS__ !== "undefined" ||
+    typeof (window as any).__TAURI__ !== "undefined");
 
 const log = {
   error: (...args: any[]) => {

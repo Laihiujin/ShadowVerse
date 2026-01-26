@@ -56,6 +56,7 @@
   let darkMode = localStorage.getItem("theme") === "dark";
   let defaultAccountPlatforms: string[] = [];
   let proxyEnabled = true;
+  let proxyHost = "127.0.0.1";
   let proxyPort = "7890";
   let httpProxy = "127.0.0.1:7890";
   let httpsProxy = "";
@@ -78,7 +79,17 @@
     httpsProxy = config.https_proxy || "";
     const proxyValue = httpProxy || httpsProxy;
     if (proxyValue.includes("://")) {
+      try {
+        const parsed = new URL(proxyValue);
+        proxyHost = parsed.hostname || "127.0.0.1";
+        proxyPort = parsed.port || "7890";
+      } catch {
+        const parts = proxyValue.split(":");
+        proxyPort = parts[parts.length - 1] || "7890";
+      }
+    } else if (proxyValue.includes(":")) {
       const parts = proxyValue.split(":");
+      proxyHost = parts.slice(0, -1).join(":") || "127.0.0.1";
       proxyPort = parts[parts.length - 1] || "7890";
     }
     proxyEnabled = proxyValue.trim().length > 0;
@@ -192,7 +203,8 @@
     const httpProxyValue = httpProxy.trim();
     const httpsProxyValue = httpsProxy.trim();
     const port = proxyEnabled ? proxyPort.trim() : "";
-    const proxyUrl = port ? `http://127.0.0.1:${port}` : "";
+    const host = proxyHost.trim() || "127.0.0.1";
+    const proxyUrl = port ? `http://${host}:${port}` : "";
     const finalHttpProxy = httpProxyValue || proxyUrl;
     const finalHttpsProxy = httpsProxyValue;
     await invoke("update_network_config", {
@@ -628,6 +640,27 @@
                     min="1"
                     max="65535"
                     bind:value={proxyPort}
+                    on:blur={update_network_config}
+                    on:change={update_network_config}
+                  />
+                </div>
+              </div>
+              <div class="p-4">
+                <div class="flex items-center justify-between">
+                  <div>
+                    <h3
+                      class="text-sm font-medium text-gray-900 dark:text-white"
+                    >
+                      代理地址
+                    </h3>
+                    <p class="text-sm text-gray-500 dark:text-gray-400">
+                      例：127.0.0.1（留空则使用本机）
+                    </p>
+                  </div>
+                  <input
+                    class="w-64 px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white text-right"
+                    type="text"
+                    bind:value={proxyHost}
                     on:blur={update_network_config}
                     on:change={update_network_config}
                   />

@@ -15,6 +15,7 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use url::form_urlencoded::Serializer;
 
 const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36";
+const MOBILE_USER_AGENT: &str = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1";
 const TIKTOK_COOLDOWN_SECS: i64 = 120;
 const TIKTOK_MSSDK_URL: &str = "https://mssdk.tiktokw.us/web/report?msToken=1Ab-7YxR9lUHSem0PraI_XzdKmpHb6j50L8AaXLAd2aWTdoJCYLfX_67rVQFE4UwwHVHmyG_NfIipqrlLT3kCXps-5PYlNAqtdwEg7TrDyTAfCKyBrOLmhMUjB55oW8SPZ4_EkNxNFUdV7MquA==";
 const TIKTOK_MSSDK_MAGIC: i64 = 538969122;
@@ -409,6 +410,22 @@ fn build_page_headers(url: &str, user_agent: &str, mobile: bool) -> HeaderMap {
     }
     apply_browser_headers(&mut headers, mobile);
     headers
+}
+
+fn to_mobile_url(url: &str) -> String {
+    if url.contains("m.tiktok.com") {
+        return url.to_string();
+    }
+    url.replace("www.tiktok.com", "m.tiktok.com")
+}
+
+fn force_mobile_fallback() -> bool {
+    std::env::var("BSR_TIKTOK_FORCE_MOBILE")
+        .map(|v| {
+            let v = v.to_ascii_lowercase();
+            v == "1" || v == "true" || v == "yes" || v == "on"
+        })
+        .unwrap_or(false)
 }
 
 async fn warm_up_live_pages(client: &Client, account: &Account) {
@@ -1684,13 +1701,14 @@ fn find_stream_url(value: &Value) -> Option<SigiStreamUrl> {
     }
 }
 
-/// Get room information from TikTok page
-pub async fn get_room_info(
+async fn get_room_info_with_profile(
     client: &Client,
     account: &Account,
     url: &str,
+    user_agent: &str,
+    mobile: bool,
 ) -> Result<RoomInfo, RecorderError> {
-    let mut headers = build_page_headers(url, USER_AGENT, false);
+    let mut headers = build_page_headers(url, user_agent, mobile);
     headers.insert("accept-language", "en-US,en;q=0.9".parse().unwrap());
     if !account.cookies.is_empty() {
         headers.insert("Cookie", account.cookies.parse().unwrap());
@@ -1786,13 +1804,53 @@ HTML: ".to_string()
     })
 }
 
-/// Get stream URL from TikTok page
-pub async fn get_stream_url(
+/// Get room information from TikTok page (web first, mobile fallback)
+pub async fn get_room_info(
     client: &Client,
     account: &Account,
     url: &str,
+) -> Result<RoomInfo, RecorderError> {
+    if force_mobile_fallback() {
+        let mobile_url = to_mobile_url(url);
+        log::warn!(
+            "TikTok forced mobile room info: {}",
+            mobile_url
+        );
+        return get_room_info_with_profile(
+            client,
+            account,
+            &mobile_url,
+            MOBILE_USER_AGENT,
+            true,
+        )
+        .await;
+    }
+    match get_room_info_with_profile(client, account, url, USER_AGENT, false).await {
+        Ok(info) => Ok(info),
+        Err(err) => {
+            let mobile_url = to_mobile_url(url);
+            log::warn!(
+                "TikTok web room info failed, retry with mobile page: {}",
+                mobile_url
+            );
+            get_room_info_with_profile(client, account, &mobile_url, MOBILE_USER_AGENT, true)
+                .await
+                .map_err(|fallback_err| {
+                    log::warn!("TikTok mobile room info failed: {fallback_err}");
+                    err
+                })
+        }
+    }
+}
+
+async fn get_stream_url_with_profile(
+    client: &Client,
+    account: &Account,
+    url: &str,
+    user_agent: &str,
+    mobile: bool,
 ) -> Result<StreamInfo, RecorderError> {
-    let mut headers = build_page_headers(url, USER_AGENT, false);
+    let mut headers = build_page_headers(url, user_agent, mobile);
     headers.insert("accept-language", "en-US,en;q=0.9".parse().unwrap());
     if !account.cookies.is_empty() {
         headers.insert("Cookie", account.cookies.parse().unwrap());
@@ -1898,6 +1956,75 @@ pub async fn get_stream_url(
     Err(RecorderError::ApiError {
         error: "Failed to fetch TikTok page after retries".to_string(),
     })
+}
+
+/// Get stream URL from TikTok page (web first, mobile fallback)
+pub async fn get_stream_url(
+    client: &Client,
+    account: &Account,
+    url: &str,
+) -> Result<StreamInfo, RecorderError> {
+    if force_mobile_fallback() {
+        let mobile_url = to_mobile_url(url);
+        log::warn!(
+            "TikTok forced mobile stream: {}",
+            mobile_url
+        );
+        return get_stream_url_with_profile(
+            client,
+            account,
+            &mobile_url,
+            MOBILE_USER_AGENT,
+            true,
+        )
+        .await;
+    }
+    match get_stream_url_with_profile(client, account, url, USER_AGENT, false).await {
+        Ok(info) => Ok(info),
+        Err(err) => {
+            let mobile_url = to_mobile_url(url);
+            log::warn!(
+                "TikTok web stream failed, retry with mobile page: {}",
+                mobile_url
+            );
+            get_stream_url_with_profile(client, account, &mobile_url, MOBILE_USER_AGENT, true)
+                .await
+                .map_err(|fallback_err| {
+                    log::warn!("TikTok mobile stream failed: {fallback_err}");
+                    err
+                })
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{force_mobile_fallback, to_mobile_url};
+
+    #[test]
+    fn mobile_url_rewrite() {
+        let web = "https://www.tiktok.com/@abc/live?x=1";
+        assert_eq!(
+            to_mobile_url(web),
+            "https://m.tiktok.com/@abc/live?x=1"
+        );
+        let mobile = "https://m.tiktok.com/@abc/live?x=1";
+        assert_eq!(to_mobile_url(mobile), mobile);
+    }
+
+    #[test]
+    fn force_mobile_env_flag() {
+        std::env::remove_var("BSR_TIKTOK_FORCE_MOBILE");
+        assert!(!force_mobile_fallback());
+
+        std::env::set_var("BSR_TIKTOK_FORCE_MOBILE", "true");
+        assert!(force_mobile_fallback());
+
+        std::env::set_var("BSR_TIKTOK_FORCE_MOBILE", "0");
+        assert!(!force_mobile_fallback());
+
+        std::env::remove_var("BSR_TIKTOK_FORCE_MOBILE");
+    }
 }
 
 /// Get user information from TikTok

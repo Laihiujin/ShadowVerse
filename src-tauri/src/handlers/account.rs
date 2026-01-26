@@ -16,9 +16,9 @@ use serde::{Deserialize, Serialize};
 
 use hyper::header::HeaderValue;
 use reqwest::header::{HeaderMap, USER_AGENT};
-#[cfg(all(feature = "gui", not(feature = "headless")))]
+#[cfg(feature = "gui")]
 use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
-#[cfg(all(feature = "gui", not(feature = "headless")))]
+#[cfg(feature = "gui")]
 use url::Url;
 
 #[cfg_attr(feature = "gui", tauri::command)]
@@ -694,7 +694,7 @@ pub async fn get_browser_cookies(
     }
 }
 
-#[cfg(all(feature = "gui", not(feature = "headless")))]
+#[cfg(feature = "gui")]
 #[tauri::command]
 pub async fn open_tiktok_login_window(
     state: state_type!(),
@@ -742,7 +742,7 @@ pub async fn open_tiktok_login_window(
     Ok(())
 }
 
-#[cfg(all(feature = "gui", not(feature = "headless")))]
+#[cfg(feature = "gui")]
 #[tauri::command]
 pub async fn get_tiktok_webview_cookies(state: state_type!()) -> Result<String, String> {
     let label = "tiktok-login";
@@ -872,7 +872,7 @@ pub async fn get_tiktok_webview_cookies(state: state_type!()) -> Result<String, 
     Ok(cookie_str)
 }
 
-#[cfg(all(feature = "gui", not(feature = "headless")))]
+#[cfg(feature = "gui")]
 #[tauri::command]
 pub async fn open_douyin_login_window(
     state: state_type!(),
@@ -920,7 +920,7 @@ pub async fn open_douyin_login_window(
     Ok(())
 }
 
-#[cfg(all(feature = "gui", not(feature = "headless")))]
+#[cfg(feature = "gui")]
 #[tauri::command]
 pub async fn get_douyin_webview_cookies(state: state_type!()) -> Result<String, String> {
     let label = "douyin-login";
@@ -1011,7 +1011,7 @@ pub async fn get_douyin_webview_cookies(state: state_type!()) -> Result<String, 
     Ok(cookie_str)
 }
 
-#[cfg(all(feature = "gui", not(feature = "headless")))]
+#[cfg(feature = "gui")]
 #[tauri::command]
 pub async fn open_kuaishou_login_window(
     state: state_type!(),
@@ -1059,7 +1059,7 @@ pub async fn open_kuaishou_login_window(
     Ok(())
 }
 
-#[cfg(all(feature = "gui", not(feature = "headless")))]
+#[cfg(feature = "gui")]
 #[tauri::command]
 pub async fn get_kuaishou_webview_cookies(state: state_type!()) -> Result<String, String> {
     let label = "kuaishou-login";
@@ -1118,7 +1118,7 @@ pub async fn get_kuaishou_webview_cookies(state: state_type!()) -> Result<String
     Ok(cookie_str)
 }
 
-#[cfg(all(feature = "gui", not(feature = "headless")))]
+#[cfg(feature = "gui")]
 #[tauri::command]
 pub async fn open_huya_login_window(
     state: state_type!(),
@@ -1166,7 +1166,7 @@ pub async fn open_huya_login_window(
     Ok(())
 }
 
-#[cfg(all(feature = "gui", not(feature = "headless")))]
+#[cfg(feature = "gui")]
 #[tauri::command]
 pub async fn get_huya_webview_cookies(state: state_type!()) -> Result<String, String> {
     let label = "huya-login";
@@ -1240,7 +1240,7 @@ pub async fn get_huya_webview_cookies(state: state_type!()) -> Result<String, St
     Ok(cookie_str)
 }
 
-#[cfg(all(feature = "gui", not(feature = "headless")))]
+#[cfg(feature = "gui")]
 #[tauri::command]
 pub async fn open_bilibili_login_window(
     state: state_type!(),
@@ -1288,7 +1288,7 @@ pub async fn open_bilibili_login_window(
     Ok(())
 }
 
-#[cfg(all(feature = "gui", not(feature = "headless")))]
+#[cfg(feature = "gui")]
 #[tauri::command]
 pub async fn get_bilibili_webview_cookies(state: state_type!()) -> Result<String, String> {
     let label = "bilibili-login";

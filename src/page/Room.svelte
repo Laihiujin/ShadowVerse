@@ -429,11 +429,14 @@
     if (room.room_info.platform === "bilibili") {
       open("https://space.bilibili.com/" + room.user_info.user_id);
     } else if (room.room_info.platform === "douyin") {
-      console.log(room.user_info);
-      open("https://www.douyin.com/user/" + room.user_info.user_id);
+      if (room.user_info.user_id) {
+        open("https://www.douyin.com/user/" + room.user_info.user_id);
+      } else {
+        openLiveUrl(room);
+      }
     } else if (room.room_info.platform === "kuaishou") {
       if (room.user_info.user_id) {
-        open("https://www.kuaishou.com/profile/" + room.user_info.user_id);
+        open("https://live.kuaishou.com/profile/" + room.user_info.user_id);
       } else {
         openLiveUrl(room);
       }
@@ -462,7 +465,10 @@
     } else if (room.room_info.platform === "kuaishou") {
       open("https://live.kuaishou.com/u/" + room.room_info.room_id);
     } else if (room.room_info.platform === "tiktok") {
-      open(`https://www.tiktok.com/${room.room_info.room_id}/live`);
+      const handle = room.room_info.room_id.startsWith("@")
+        ? room.room_info.room_id
+        : `@${room.room_info.room_id}`;
+      open(`https://www.tiktok.com/${handle}/live`);
     }
   }
 
@@ -492,6 +498,10 @@
       {
         platform: "tiktok",
         re: /(?:bsr:\/\/)?https?:\/\/(?:www\.)?tiktok\.com\/@?([^\/\?]+)\/live/i,
+      },
+      {
+        platform: "tiktok",
+        re: /(?:bsr:\/\/)?https?:\/\/(?:www\.)?tiktok\.com\/@?([^\/\?]+)\/?$/i,
       },
     ];
 
@@ -859,7 +869,16 @@
                     <Globe class="w-4 h-4 text-gray-400" />
                   {/if}
                   <h3 class="font-medium text-gray-900 dark:text-white">
-                    {room.room_info.room_title}
+                    <button
+                      type="button"
+                      class="text-left hover:underline decoration-gray-400/70 underline-offset-2"
+                      title="打开直播间"
+                      on:click={() => {
+                        openLiveUrl(room);
+                      }}
+                    >
+                      {room.room_info.room_title}
+                    </button>
                   </h3>
                 </div>
               </div>

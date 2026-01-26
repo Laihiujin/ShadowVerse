@@ -1231,14 +1231,6 @@ impl RecorderManager {
             recorders: Vec::new(),
         };
 
-        // initialized recorder set
-        let mut recorder_set = HashSet::new();
-        for recorder_ref in self.recorders.read().await.iter() {
-            let recorder_info = recorder_ref.1.info().await;
-            summary.recorders.push(recorder_info.clone());
-            recorder_set.insert(recorder_info.room_info.room_id);
-        }
-
         // get recorders from db
         let recorders = self.db.get_recorders().await;
         if recorders.is_err() {
@@ -1249,10 +1241,37 @@ impl RecorderManager {
             return summary;
         }
         let recorders = recorders.unwrap();
+
+        let mut db_map: HashMap<String, RecorderRow> = HashMap::new();
+        for recorder in &recorders {
+            let key = format!("{}:{}", recorder.platform, recorder.room_id);
+            db_map.insert(key, recorder.clone());
+        }
+
+        // initialized recorder set
+        let mut recorder_set = HashSet::new();
+        for recorder_ref in self.recorders.read().await.iter() {
+            let recorder_info = recorder_ref.1.info().await;
+            let key = format!(
+                "{}:{}",
+                recorder_info.room_info.platform,
+                recorder_info.room_info.room_id
+            );
+            summary.recorders.push(recorder_info.clone());
+            recorder_set.insert(key);
+        }
         summary.count = recorders.len();
         for recorder in recorders {
             // check if recorder is in recorder_set
-            if !recorder_set.contains(&recorder.room_id.to_string()) {
+            let key = format!("{}:{}", recorder.platform, recorder.room_id);
+            if !recorder_set.contains(&key) {
+                let room_title = recorder
+                    .room_title
+                    .clone()
+                    .unwrap_or_else(|| recorder.room_id.to_string());
+                let room_cover = recorder.room_cover.clone().unwrap_or_default();
+                let user_name = recorder.user_name.clone().unwrap_or_default();
+                let user_avatar = recorder.user_avatar.clone().unwrap_or_default();
                 summary.recorders.push(RecorderInfo {
                     platform_live_id: "".to_string(),
                     live_id: "".to_string(),
@@ -1262,15 +1281,132 @@ impl RecorderManager {
                         platform: recorder.platform.as_str().to_string(),
                         status: false,
                         room_id: recorder.room_id.to_string(),
-                        room_title: recorder.room_id.to_string(),
-                        room_cover: "".to_string(),
+                        room_title,
+                        room_cover,
                     },
                     user_info: UserInfo {
                         user_id: "".to_string(),
-                        user_name: "".to_string(),
-                        user_avatar: "".to_string(),
+                        user_name,
+                        user_avatar,
                     },
                 });
+            }
+        }
+
+        for recorder in summary.recorders.iter_mut() {
+            let key = format!(
+                "{}:{}",
+                recorder.room_info.platform,
+                recorder.room_info.room_id
+            );
+            if let Some(db_row) = db_map.get(&key) {
+                if recorder.room_info.room_title.is_empty() {
+                    if let Some(title) = &db_row.room_title {
+                        recorder.room_info.room_title = title.clone();
+                    }
+                }
+                if recorder.room_info.room_cover.is_empty() {
+                    if let Some(cover) = &db_row.room_cover {
+                        recorder.room_info.room_cover = cover.clone();
+                    }
+                }
+                if recorder.user_info.user_name.is_empty() {
+                    if let Some(name) = &db_row.user_name {
+                        recorder.user_info.user_name = name.clone();
+                    }
+                }
+                if recorder.user_info.user_avatar.is_empty() {
+                    if let Some(avatar) = &db_row.user_avatar {
+                        recorder.user_info.user_avatar = avatar.clone();
+                    }
+                }
+                if recorder.user_info.user_id.is_empty() {
+                    match recorder.room_info.platform.as_str() {
+                        "douyin" => {
+                            if !db_row.extra.is_empty() {
+                                recorder.user_info.user_id = db_row.extra.clone();
+                            }
+                        }
+                        "kuaishou" | "tiktok" => {
+                            if !recorder.room_info.room_id.is_empty() {
+                                recorder.user_info.user_id =
+                                    recorder.room_info.room_id.clone();
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            } else if recorder.user_info.user_id.is_empty() {
+                match recorder.room_info.platform.as_str() {
+                    "kuaishou" | "tiktok" => {
+                        if !recorder.room_info.room_id.is_empty() {
+                            recorder.user_info.user_id = recorder.room_info.room_id.clone();
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        for recorder in summary.recorders.iter() {
+            if recorder.room_info.room_title.is_empty()
+                && recorder.room_info.room_cover.is_empty()
+                && recorder.user_info.user_name.is_empty()
+                && recorder.user_info.user_avatar.is_empty()
+            {
+                continue;
+            }
+
+            let key = format!(
+                "{}:{}",
+                recorder.room_info.platform,
+                recorder.room_info.room_id
+            );
+            if let Some(db_row) = db_map.get(&key) {
+                let mut changed = false;
+                if !recorder.room_info.room_title.is_empty()
+                    && db_row.room_title.as_deref().unwrap_or("") != recorder.room_info.room_title
+                {
+                    changed = true;
+                }
+                if !recorder.room_info.room_cover.is_empty()
+                    && db_row.room_cover.as_deref().unwrap_or("") != recorder.room_info.room_cover
+                {
+                    changed = true;
+                }
+                if !recorder.user_info.user_name.is_empty()
+                    && db_row.user_name.as_deref().unwrap_or("") != recorder.user_info.user_name
+                {
+                    changed = true;
+                }
+                if !recorder.user_info.user_avatar.is_empty()
+                    && db_row.user_avatar.as_deref().unwrap_or("") != recorder.user_info.user_avatar
+                {
+                    changed = true;
+                }
+
+                if changed {
+                    if let Ok(platform) = PlatformType::from_str(&recorder.room_info.platform) {
+                        if let Err(e) = self
+                            .db
+                            .update_recorder_cached_info(
+                                platform,
+                                &recorder.room_info.room_id,
+                                &recorder.room_info.room_title,
+                                &recorder.room_info.room_cover,
+                                &recorder.user_info.user_name,
+                                &recorder.user_info.user_avatar,
+                            )
+                            .await
+                        {
+                            log::warn!(
+                                "Failed to update cached recorder info ({} {}): {e}",
+                                recorder.room_info.platform,
+                                recorder.room_info.room_id
+                            );
+                        }
+                    }
+                }
             }
         }
 
