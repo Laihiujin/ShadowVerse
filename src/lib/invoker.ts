@@ -149,14 +149,24 @@ async function set_title(title: string) {
 }
 
 let STATIC_PORT = 0;
+let staticPortFetchedAt = 0;
+const STATIC_PORT_TTL_MS = 5000;
 let config: Config | null = null;
 
 async function get_static_url(base: string, path: string) {
   if (config === null) {
     config = (await invoke("get_config")) as any;
   }
-  if (STATIC_PORT === 0) {
-    STATIC_PORT = await invoke("get_static_port");
+  const now = Date.now();
+  if (STATIC_PORT === 0 || now - staticPortFetchedAt > STATIC_PORT_TTL_MS) {
+    const latest = await invoke("get_static_port");
+    if (typeof latest === "number" && latest > 0) {
+      if (latest !== STATIC_PORT) {
+        log.info("Static port updated:", latest);
+      }
+      STATIC_PORT = latest;
+      staticPortFetchedAt = now;
+    }
   }
   let staticUrl = `http://localhost:${STATIC_PORT}`;
   if (!TAURI_ENV) {

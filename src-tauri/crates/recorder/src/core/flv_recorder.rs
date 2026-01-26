@@ -57,6 +57,31 @@ impl FlvRecorder {
         format!("{}\r\n", parts.join("\r\n"))
     }
 
+    fn resolve_proxy_url() -> Option<String> {
+        if let Ok(value) = std::env::var("TIKTOK_PROXY_URL") {
+            let trimmed = value.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+        for key in [
+            "HTTPS_PROXY",
+            "https_proxy",
+            "HTTP_PROXY",
+            "http_proxy",
+            "ALL_PROXY",
+            "all_proxy",
+        ] {
+            if let Ok(value) = std::env::var(key) {
+                let trimmed = value.trim();
+                if !trimmed.is_empty() {
+                    return Some(trimmed.to_string());
+                }
+            }
+        }
+        None
+    }
+
     pub async fn start(&self) -> Result<(), RecorderError> {
         if !self.work_dir.exists() {
             std::fs::create_dir_all(&self.work_dir)?;
@@ -73,6 +98,11 @@ impl FlvRecorder {
         let mut cmd = Command::new("ffmpeg");
         #[cfg(target_os = "windows")]
         cmd.creation_flags(CREATE_NO_WINDOW);
+
+        if let Some(proxy_url) = Self::resolve_proxy_url() {
+            log::info!("ffmpeg using proxy: {}", proxy_url);
+            cmd.args(["-http_proxy", &proxy_url]);
+        }
 
         cmd.args([
             "-hide_banner",
@@ -112,6 +142,7 @@ impl FlvRecorder {
 
             if let Ok(bytes) = tokio::fs::read(&playlist_path).await {
                 if let Ok((_, playlist)) = m3u8_rs::parse_media_playlist(&bytes) {
+                    let prev_processed = processed_segments;
                     let duration_delta = Self::update_from_playlist(
                         &self.work_dir,
                         &playlist,
@@ -119,6 +150,13 @@ impl FlvRecorder {
                     )
                     .await;
                     if let Some((duration_secs, cached_size_bytes)) = duration_delta {
+                        let new_segments = processed_segments.saturating_sub(prev_processed);
+                        log::info!(
+                            "[FLV][{}] playlist segments: total={}, new={}",
+                            self.live_id,
+                            processed_segments,
+                            new_segments
+                        );
                         let _ = self.event_channel.send(RecorderEvent::RecordUpdate {
                             live_id: self.live_id.clone(),
                             duration_secs,

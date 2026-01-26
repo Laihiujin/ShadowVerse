@@ -1197,6 +1197,25 @@ fn extract_room_id_from_check_alive(value: &Value) -> Option<String> {
     fallback
 }
 
+fn collect_check_alive_room_ids(value: &Value) -> Vec<String> {
+    let mut ids = Vec::new();
+    let entries: Vec<Value> = match value.get("data") {
+        Some(Value::Array(values)) => values.clone(),
+        Some(Value::Object(map)) => vec![Value::Object(map.clone())],
+        _ => Vec::new(),
+    };
+    for entry in entries {
+        let map = match entry.as_object() {
+            Some(map) => map,
+            None => continue,
+        };
+        if let Some(room_id) = get_string_field(map, &["room_id", "roomId", "id", "id_str"]) {
+            ids.push(room_id);
+        }
+    }
+    ids
+}
+
 fn build_check_alive_url(referer: &str, room_ids: &[String]) -> Result<String, RecorderError> {
     if room_ids.is_empty() {
         return Err(RecorderError::ApiError {
@@ -3063,6 +3082,15 @@ async fn get_room_id_from_check_alive(
         });
     }
 
+    let room_ids = collect_check_alive_room_ids(&json);
+    if !room_ids.is_empty() {
+        log::info!(
+            "[TikTok] check_alive room ids for {}: {}",
+            handle,
+            room_ids.join(",")
+        );
+    }
+
     let resolved = extract_room_id_from_check_alive(&json);
     if resolved.is_none() {
         log::info!(
@@ -3431,6 +3459,15 @@ pub async fn get_live_room_id_with_feed_override(
     feed_override: Option<&str>,
 ) -> Result<String, RecorderError> {
     if !extract_username_from_url(url).is_empty() {
+        match get_room_id_from_room_enter(client, account, url).await {
+            Ok(Some(room_id)) => {
+                return Ok(room_id);
+            }
+            Ok(None) => {}
+            Err(err) => {
+                log::warn!("TikTok room enter room id failed: {err}");
+            }
+        }
         match get_room_id_from_check_alive(client, account, url).await {
             Ok(Some(room_id)) => {
                 return Ok(room_id);
