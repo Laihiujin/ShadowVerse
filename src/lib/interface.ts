@@ -148,10 +148,12 @@ export interface Config {
   clip_name_format: string;
   auto_generate: AutoGenerateConfig;
   status_check_interval: number;
+  record_protocol_preference: string;
   whisper_language: string;
   webhook_url: string;
   danmu_ass_options: Danmu2AssOptions;
   powerlive_key: string;
+  use_guest_accounts: boolean;
   use_default_accounts: boolean;
   http_proxy?: string;
   https_proxy?: string;

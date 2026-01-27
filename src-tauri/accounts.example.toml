@@ -1,0 +1,51 @@
+﻿# Guest accounts are auto-filled from the built-in browser.
+[[guest_accounts]]
+platform = "douyin"
+cookies = ""
+extra = ""
+
+[[guest_accounts]]
+platform = "kuaishou"
+cookies = ""
+extra = ""
+
+[[guest_accounts]]
+platform = "tiktok"
+cookies = ""
+extra = ""
+
+[[guest_accounts]]
+platform = "bilibili"
+cookies = ""
+extra = ""
+
+[[guest_accounts]]
+platform = "huya"
+cookies = ""
+extra = ""
+
+# Default accounts are manually configured.
+[[default_accounts]]
+platform = "douyin"
+cookies = ""
+extra = ""
+
+[[default_accounts]]
+platform = "kuaishou"
+cookies = ""
+extra = ""
+
+[[default_accounts]]
+platform = "tiktok"
+cookies = ""
+extra = ""
+
+[[default_accounts]]
+platform = "bilibili"
+cookies = ""
+extra = ""
+
+[[default_accounts]]
+platform = "huya"
+cookies = ""
+extra = ""

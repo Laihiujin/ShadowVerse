@@ -1,6 +1,7 @@
 use std::fmt;
 pub mod hls_recorder;
 pub mod flv_recorder;
+pub mod rtmp_recorder;
 pub mod playlist;
 
 #[derive(Clone, Debug, PartialEq)]

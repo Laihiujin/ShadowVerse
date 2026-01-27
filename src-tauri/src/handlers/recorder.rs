@@ -326,6 +326,139 @@ pub async fn remove_recorder(
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]
+pub async fn reload_recorder(
+    state: state_type!(),
+    platform: String,
+    room_id: String,
+) -> Result<(), String> {
+    log::info!("Reload recorder: {platform} {room_id}");
+    let platform = PlatformType::from_str(&platform).map_err(|_| "Invalid platform".to_string())?;
+    let removed = state
+        .recorder_manager
+        .remove_recorder(platform, &room_id)
+        .await
+        .map_err(|e| e.to_string())?;
+    let extra = removed.extra.clone();
+    let auto_start = removed.auto_start;
+
+    let account = match platform {
+        PlatformType::BiliBili => {
+            if let Ok(account) = state.db.get_account_by_platform("bilibili").await {
+                Ok(account.to_account())
+            } else {
+                Err("没有可用账号，请先添加账号".to_string())
+            }
+        }
+        PlatformType::Douyin => {
+            if let Ok(account) = state.db.get_account_by_platform("douyin").await {
+                Ok(account.to_account())
+            } else {
+                Err("没有可用账号，请先添加账号".to_string())
+            }
+        }
+        PlatformType::Huya => {
+            if let Ok(account) = state.db.get_account_by_platform("huya").await {
+                Ok(account.to_account())
+            } else {
+                Ok(Account::default())
+            }
+        }
+        PlatformType::Kuaishou => {
+            if let Ok(account) = state.db.get_account_by_platform("kuaishou").await {
+                Ok(account.to_account())
+            } else {
+                Ok(Account::default())
+            }
+        }
+        PlatformType::TikTok => {
+            if let Ok(account) = state.db.get_account_by_platform("tiktok").await {
+                Ok(account.to_account())
+            } else {
+                Ok(Account::default())
+            }
+        }
+        PlatformType::Weibo => Err("微博暂未支持".to_string()),
+        PlatformType::Xiaohongshu => Err("小红书暂未支持".to_string()),
+        _ => Err("不支持的平台".to_string()),
+    };
+    let account = match account {
+        Ok(account) => account,
+        Err(e) => {
+            let _ = state.db.add_recorder(platform, &room_id, &extra).await;
+            let _ = state
+                .db
+                .update_recorder(platform, &room_id, auto_start)
+                .await;
+            let _ = state
+                .db
+                .update_recorder_cached_info(
+                    platform,
+                    &room_id,
+                    removed.room_title.as_deref().unwrap_or(""),
+                    removed.room_cover.as_deref().unwrap_or(""),
+                    removed.user_name.as_deref().unwrap_or(""),
+                    removed.user_avatar.as_deref().unwrap_or(""),
+                )
+                .await;
+            return Err(e);
+        }
+    };
+
+    let add_res = state
+        .recorder_manager
+        .add_recorder(&account, platform, &room_id, &extra, auto_start)
+        .await;
+
+    match add_res {
+        Ok(()) => {
+            let _ = state.db.add_recorder(platform, &room_id, &extra).await?;
+            if !auto_start {
+                let _ = state
+                    .db
+                    .update_recorder(platform, &room_id, auto_start)
+                    .await;
+            }
+            let _ = state
+                .db
+                .update_recorder_cached_info(
+                    platform,
+                    &room_id,
+                    removed.room_title.as_deref().unwrap_or(""),
+                    removed.room_cover.as_deref().unwrap_or(""),
+                    removed.user_name.as_deref().unwrap_or(""),
+                    removed.user_avatar.as_deref().unwrap_or(""),
+                )
+                .await;
+            state
+                .db
+                .new_message("重载直播间", &format!("重载了直播间 {room_id}"))
+                .await
+                .ok();
+            Ok(())
+        }
+        Err(e) => {
+            let _ = state.db.add_recorder(platform, &room_id, &extra).await;
+            let _ = state
+                .db
+                .update_recorder(platform, &room_id, auto_start)
+                .await;
+            let _ = state
+                .db
+                .update_recorder_cached_info(
+                    platform,
+                    &room_id,
+                    removed.room_title.as_deref().unwrap_or(""),
+                    removed.room_cover.as_deref().unwrap_or(""),
+                    removed.user_name.as_deref().unwrap_or(""),
+                    removed.user_avatar.as_deref().unwrap_or(""),
+                )
+                .await;
+            Err(format!("重载失败: {e}"))
+        }
+    }
+}
+
+#[cfg_attr(feature = "gui", tauri::command)]
 pub async fn get_room_info(
     state: state_type!(),
     platform: String,

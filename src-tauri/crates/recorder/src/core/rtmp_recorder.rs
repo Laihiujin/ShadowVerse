@@ -4,7 +4,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use m3u8_rs::MediaPlaylist;
-use reqwest::header::HeaderMap;
 use tokio::process::Command;
 use tokio::sync::broadcast;
 
@@ -18,19 +17,17 @@ const CREATE_NO_WINDOW: u32 = 0x08000000;
 #[allow(unused_imports)]
 use std::os::windows::process::CommandExt;
 
-pub struct FlvRecorder {
+pub struct RtmpRecorder {
     url: String,
-    headers: HeaderMap,
     work_dir: PathBuf,
     enabled: Arc<AtomicBool>,
     event_channel: broadcast::Sender<RecorderEvent>,
     live_id: String,
 }
 
-impl FlvRecorder {
+impl RtmpRecorder {
     pub fn new(
         url: String,
-        headers: HeaderMap,
         work_dir: PathBuf,
         enabled: Arc<AtomicBool>,
         event_channel: broadcast::Sender<RecorderEvent>,
@@ -38,48 +35,11 @@ impl FlvRecorder {
     ) -> Self {
         Self {
             url,
-            headers,
             work_dir,
             enabled,
             event_channel,
             live_id,
         }
-    }
-
-    fn build_header_string(&self) -> String {
-        let mut parts = Vec::new();
-        for (key, value) in self.headers.iter() {
-            if let Ok(val) = value.to_str() {
-                parts.push(format!("{}: {}", key.as_str(), val));
-            }
-        }
-        // ffmpeg expects CRLF between headers
-        format!("{}\r\n", parts.join("\r\n"))
-    }
-
-    fn resolve_proxy_url() -> Option<String> {
-        if let Ok(value) = std::env::var("TIKTOK_PROXY_URL") {
-            let trimmed = value.trim();
-            if !trimmed.is_empty() {
-                return Some(trimmed.to_string());
-            }
-        }
-        for key in [
-            "HTTPS_PROXY",
-            "https_proxy",
-            "HTTP_PROXY",
-            "http_proxy",
-            "ALL_PROXY",
-            "all_proxy",
-        ] {
-            if let Ok(value) = std::env::var(key) {
-                let trimmed = value.trim();
-                if !trimmed.is_empty() {
-                    return Some(trimmed.to_string());
-                }
-            }
-        }
-        None
     }
 
     pub async fn start(&self) -> Result<(), RecorderError> {
@@ -99,17 +59,10 @@ impl FlvRecorder {
         #[cfg(target_os = "windows")]
         cmd.creation_flags(CREATE_NO_WINDOW);
 
-        if let Some(proxy_url) = Self::resolve_proxy_url() {
-            log::info!("ffmpeg using proxy: {}", proxy_url);
-            cmd.args(["-http_proxy", &proxy_url]);
-        }
-
         cmd.args([
             "-hide_banner",
             "-loglevel",
             "error",
-            "-headers",
-            &self.build_header_string(),
             "-i",
             &self.url,
             "-c",
@@ -131,7 +84,9 @@ impl FlvRecorder {
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
 
-        let mut child = cmd.spawn().map_err(|e| RecorderError::FfmpegError(e.to_string()))?;
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| RecorderError::FfmpegError(e.to_string()))?;
         let mut processed_segments = 0usize;
 
         loop {
@@ -152,7 +107,7 @@ impl FlvRecorder {
                     if let Some((duration_secs, cached_size_bytes)) = duration_delta {
                         let new_segments = processed_segments.saturating_sub(prev_processed);
                         log::info!(
-                            "[FLV][{}] playlist segments: total={}, new={}",
+                            "[RTMP][{}] playlist segments: total={}, new={}",
                             self.live_id,
                             processed_segments,
                             new_segments

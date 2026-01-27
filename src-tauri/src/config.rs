@@ -42,6 +42,8 @@ pub struct Config {
     pub auto_generate: AutoGenerateConfig,
     #[serde(default = "default_status_check_interval")]
     pub status_check_interval: u64,
+    #[serde(default = "default_record_protocol_preference")]
+    pub record_protocol_preference: String,
     #[serde(skip)]
     pub config_path: String,
     #[serde(default = "default_whisper_language")]
@@ -54,13 +56,19 @@ pub struct Config {
     pub update_interval: Arc<AtomicU64>,
     #[serde(default = "default_powerlive_key")]
     pub powerlive_key: String,
-    #[serde(default = "default_douyin_passport")]
+    #[serde(default = "default_reverse_generate_path")]
+    pub reverse_generate_path: String,
+    #[serde(skip_serializing, skip_deserializing, default = "default_douyin_passport")]
     pub douyin_passport: DouyinPassportConfig,
-    #[serde(default = "default_default_accounts")]
+    #[serde(skip_serializing, skip_deserializing, default = "default_guest_accounts")]
+    pub guest_accounts: Vec<DefaultAccountConfig>,
+    #[serde(default = "default_use_guest_accounts")]
+    pub use_guest_accounts: bool,
+    #[serde(skip_serializing, skip_deserializing, default = "default_default_accounts")]
     pub default_accounts: Vec<DefaultAccountConfig>,
     #[serde(default = "default_use_default_accounts")]
     pub use_default_accounts: bool,
-    #[serde(default = "default_tiktok_feed")]
+    #[serde(skip_serializing, skip_deserializing, default = "default_tiktok_feed")]
     pub tiktok_feed: TikTokFeedConfig,
 }
 
@@ -138,6 +146,32 @@ pub struct DouyinQrLoginOverrides {
     pub qs: String,
     #[serde(default)]
     pub user_agent: String,
+    #[serde(default)]
+    pub device_platform: String,
+    #[serde(default)]
+    pub qr_origin: String,
+    #[serde(default)]
+    pub qr_referer: String,
+    #[serde(default)]
+    pub params_raw: String,
+    #[serde(default)]
+    pub params_raw_status: String,
+    #[serde(default)]
+    pub challenge_params_raw: String,
+    #[serde(default)]
+    pub challenge_body: String,
+    #[serde(default)]
+    pub challenge_content_type: String,
+    #[serde(default)]
+    pub x_tt_passport_csrf_token: String,
+    #[serde(default)]
+    pub x_tt_passport_aid_sign: String,
+    #[serde(default)]
+    pub x_tt_passport_trace_id: String,
+    #[serde(default)]
+    pub x_tt_passport_verify_portrait: String,
+    #[serde(default)]
+    pub x_tt_session_dtrait: String,
 }
 
 #[derive(Deserialize, Serialize, Clone)]
@@ -157,6 +191,16 @@ pub struct TikTokFeedConfig {
 pub struct DefaultAccountConfig {
     pub platform: String,
     pub cookies: String,
+    #[serde(default)]
+    pub extra: String,
+}
+
+#[derive(Deserialize, Serialize, Clone, Default)]
+pub struct AccountsFile {
+    #[serde(default)]
+    pub guest_accounts: Vec<DefaultAccountConfig>,
+    #[serde(default)]
+    pub default_accounts: Vec<DefaultAccountConfig>,
 }
 
 fn default_danmu_ass_options() -> Danmu2AssOptions {
@@ -202,6 +246,10 @@ fn default_status_check_interval() -> u64 {
     30
 }
 
+fn default_record_protocol_preference() -> String {
+    "hls".to_string()
+}
+
 fn default_whisper_language() -> String {
     "auto".to_string()
 }
@@ -212,6 +260,18 @@ fn default_webhook_url() -> String {
 
 fn default_powerlive_key() -> String {
     String::new()
+}
+
+fn default_reverse_generate_path() -> String {
+    String::new()
+}
+
+fn default_guest_accounts() -> Vec<DefaultAccountConfig> {
+    Vec::new()
+}
+
+fn default_use_guest_accounts() -> bool {
+    false
 }
 
 fn default_douyin_passport() -> DouyinPassportConfig {
@@ -267,6 +327,67 @@ fn default_default_accounts() -> Vec<DefaultAccountConfig> {
 
 fn default_use_default_accounts() -> bool {
     false
+}
+
+fn locate_accounts_file(name: &str) -> Option<PathBuf> {
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Ok(cwd) = env::current_dir() {
+        candidates.push(cwd.join("src-tauri").join(name));
+        candidates.push(cwd.join(name));
+    }
+    if let Ok(exe) = env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            candidates.push(dir.join(name));
+            candidates.push(dir.join("resources").join(name));
+        }
+    }
+    candidates.into_iter().find(|path| path.exists())
+}
+
+pub(crate) fn resolve_accounts_file_write_path() -> PathBuf {
+    if let Some(path) = locate_accounts_file("accounts.toml") {
+        return path;
+    }
+    if let Some(example_path) = locate_accounts_file("accounts.example.toml") {
+        if let Some(parent) = example_path.parent() {
+            return parent.join("accounts.toml");
+        }
+    }
+    if let Ok(cwd) = env::current_dir() {
+        let src_tauri = cwd.join("src-tauri");
+        if src_tauri.is_dir() {
+            return src_tauri.join("accounts.toml");
+        }
+    }
+    PathBuf::from("accounts.toml")
+}
+
+pub(crate) fn load_accounts_file() -> Option<(AccountsFile, PathBuf)> {
+    let path = locate_accounts_file("accounts.toml")?;
+    let raw = std::fs::read_to_string(&path).ok()?;
+    let parsed = toml::from_str::<AccountsFile>(&raw).ok()?;
+    Some((parsed, path))
+}
+
+fn load_accounts_example_file() -> Option<(AccountsFile, PathBuf)> {
+    let path = locate_accounts_file("accounts.example.toml")?;
+    let raw = std::fs::read_to_string(&path).ok()?;
+    let parsed = toml::from_str::<AccountsFile>(&raw).ok()?;
+    Some((parsed, path))
+}
+
+pub(crate) fn load_accounts_file_or_example() -> Option<(AccountsFile, PathBuf)> {
+    load_accounts_file().or_else(load_accounts_example_file)
+}
+
+pub(crate) fn write_accounts_file(path: &Path, accounts: &AccountsFile) -> Result<(), std::io::Error> {
+    if let Some(parent) = path.parent() {
+        if !parent.exists() {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
+    let serialized = toml::to_string_pretty(accounts).unwrap_or_default();
+    std::fs::write(path, serialized)
 }
 
 fn default_tiktok_feed() -> TikTokFeedConfig {
@@ -355,6 +476,68 @@ fn detect_windows_proxy() -> Option<String> {
 }
 
 impl Config {
+    fn infer_project_root() -> Option<PathBuf> {
+        let Ok(cwd) = env::current_dir() else {
+            return None;
+        };
+        if cwd.file_name().and_then(|s| s.to_str()) == Some("src-tauri") {
+            return cwd.parent().map(|path| path.to_path_buf()).or(Some(cwd));
+        }
+        Some(cwd)
+    }
+
+    fn resolve_reverse_generate_paths(&self) -> Option<(PathBuf, PathBuf)> {
+        let raw = self.reverse_generate_path.trim();
+        if raw.is_empty() {
+            return None;
+        }
+
+        let mut path = PathBuf::from(raw);
+        if path.is_relative() {
+            if let Some(root) = Self::infer_project_root() {
+                path = root.join(path);
+            }
+        }
+
+        let base_dir = if path.is_dir() {
+            path.clone()
+        } else {
+            path.parent().unwrap_or(&path).to_path_buf()
+        };
+        let qr_login_path = if path.is_file()
+            && path
+                .file_name()
+                .and_then(|name| name.to_str())
+                == Some("qr_login.toml")
+        {
+            path
+        } else {
+            base_dir.join("qr_login.toml")
+        };
+        let tiktok_web_path = base_dir.join("tiktok_web.toml");
+
+        Some((qr_login_path, tiktok_web_path))
+    }
+
+    fn infer_reverse_generate_dir() -> Option<PathBuf> {
+        Self::infer_project_root().map(|root| {
+            root.join("src-tauri")
+                .join("crates")
+                .join("recorder")
+                .join("src")
+                .join("ReverseGenerate")
+        })
+    }
+
+    fn normalize_account_switches(&mut self) -> bool {
+        let mut changed = false;
+        if self.use_guest_accounts && self.use_default_accounts {
+            self.use_default_accounts = false;
+            changed = true;
+        }
+        changed
+    }
+
     fn normalize_storage_paths(&mut self, default_cache: &Path, default_output: &Path) -> bool {
         let mut changed = false;
         if self.cache.trim().is_empty() || Path::new(&self.cache).is_relative() {
@@ -378,39 +561,31 @@ impl Config {
     }
 
     fn apply_default_account_override(&mut self) -> bool {
-        let example = toml::from_str::<Config>(include_str!("../config.example.toml")).ok();
-        let Some(example) = example else {
+        let Some((accounts, _path)) = load_accounts_file_or_example() else {
             return false;
         };
         let mut changed = false;
-        if self.default_accounts != example.default_accounts {
-            self.default_accounts = example.default_accounts;
+        if self.guest_accounts != accounts.guest_accounts {
+            self.guest_accounts = accounts.guest_accounts;
             changed = true;
         }
-        if self.use_default_accounts != example.use_default_accounts {
-            self.use_default_accounts = example.use_default_accounts;
+        if self.default_accounts != accounts.default_accounts {
+            self.default_accounts = accounts.default_accounts;
             changed = true;
         }
         changed
     }
 
     fn apply_qr_login_overrides(&mut self, _config_path: &Path) {
-        let Ok(cwd) = env::current_dir() else {
+        let Some((qr_login_path, tiktok_web_path)) = self.resolve_reverse_generate_paths() else {
+            log::warn!("ReverseGenerate path is empty or invalid; skip QR login overrides");
             return;
         };
-        let root = if cwd.file_name().and_then(|s| s.to_str()) == Some("src-tauri") {
-            cwd.parent().unwrap_or(&cwd).to_path_buf()
-        } else {
-            cwd.clone()
-        };
-        let qr_login_path = root
-            .join("src-tauri")
-            .join("crates")
-            .join("recorder")
-            .join("src")
-            .join("platforms")
-            .join("qr_login")
-            .join("qr_login.toml");
+
+        let _ = recorder::reverse_generate::qr_login::ensure_qr_login_defaults(&qr_login_path);
+        let _ = recorder::reverse_generate::tiktok_web::ensure_tiktok_web_defaults(
+            &tiktok_web_path,
+        );
         let Ok(content) = std::fs::read_to_string(&qr_login_path) else {
             return;
         };
@@ -478,6 +653,72 @@ impl Config {
             std::env::set_var("DOUYIN_PASSPORT_USER_AGENT", &ua);
             std::env::set_var("DOUYIN_USER_AGENT", &ua);
         }
+        if !douyin.device_platform.trim().is_empty() {
+            std::env::set_var("DOUYIN_DEVICE_PLATFORM", douyin.device_platform.trim());
+        }
+        if !douyin.qr_origin.trim().is_empty() {
+            std::env::set_var("DOUYIN_QR_ORIGIN", douyin.qr_origin.trim());
+        }
+        if !douyin.qr_referer.trim().is_empty() {
+            std::env::set_var("DOUYIN_QR_REFERER", douyin.qr_referer.trim());
+        }
+        if !douyin.params_raw.trim().is_empty() {
+            std::env::set_var("DOUYIN_PASSPORT_PARAMS_RAW", douyin.params_raw.trim());
+        }
+        if !douyin.params_raw_status.trim().is_empty() {
+            std::env::set_var("DOUYIN_PASSPORT_PARAMS_RAW_STATUS", douyin.params_raw_status.trim());
+        }
+        if !douyin.challenge_params_raw.trim().is_empty() {
+            std::env::set_var(
+                "DOUYIN_PASSPORT_CHALLENGE_PARAMS_RAW",
+                douyin.challenge_params_raw.trim(),
+            );
+        }
+        if !douyin.challenge_body.trim().is_empty() {
+            std::env::set_var("DOUYIN_PASSPORT_CHALLENGE_BODY", douyin.challenge_body.trim());
+        }
+        if !douyin.challenge_content_type.trim().is_empty() {
+            std::env::set_var(
+                "DOUYIN_PASSPORT_CHALLENGE_CONTENT_TYPE",
+                douyin.challenge_content_type.trim(),
+            );
+        }
+        if !douyin.x_tt_passport_csrf_token.trim().is_empty() {
+            std::env::set_var(
+                "DOUYIN_X_TT_PASSPORT_CSRF_TOKEN",
+                douyin.x_tt_passport_csrf_token.trim(),
+            );
+        }
+        if !douyin.x_tt_passport_aid_sign.trim().is_empty() {
+            std::env::set_var(
+                "DOUYIN_X_TT_PASSPORT_AID_SIGN",
+                douyin.x_tt_passport_aid_sign.trim(),
+            );
+        }
+        if !douyin.x_tt_passport_trace_id.trim().is_empty() {
+            std::env::set_var(
+                "DOUYIN_X_TT_PASSPORT_TRACE_ID",
+                douyin.x_tt_passport_trace_id.trim(),
+            );
+        }
+        if !douyin.x_tt_passport_verify_portrait.trim().is_empty() {
+            std::env::set_var(
+                "DOUYIN_X_TT_PASSPORT_VERIFY_PORTRAIT",
+                douyin.x_tt_passport_verify_portrait.trim(),
+            );
+        }
+        if !douyin.x_tt_session_dtrait.trim().is_empty() {
+            std::env::set_var(
+                "DOUYIN_X_TT_SESSION_DTRAIT",
+                douyin.x_tt_session_dtrait.trim(),
+            );
+        }
+        if !douyin.sign.trim().is_empty() {
+            std::env::set_var("DOUYIN_SIGN", douyin.sign.trim());
+        }
+        if !douyin.qs.trim().is_empty() {
+            std::env::set_var("DOUYIN_QS", douyin.qs.trim());
+        }
         log::info!("Loaded QR login overrides from {:?}", qr_login_path);
     }
 
@@ -488,12 +729,32 @@ impl Config {
     ) -> Result<Self, String> {
         if let Ok(content) = std::fs::read_to_string(config_path) {
             if let Ok(mut config) = toml::from_str::<Config>(&content) {
+                let mut needs_save = false;
                 config.config_path = config_path.to_str().unwrap().into();
                 config.update_interval = Arc::new(AtomicU64::new(config.status_check_interval));
+                if config.reverse_generate_path.trim().is_empty() {
+                    if let Some(path) = Self::infer_reverse_generate_dir() {
+                        config.reverse_generate_path = path.to_string_lossy().into_owned();
+                        needs_save = true;
+                    }
+                }
+                if config.record_protocol_preference.trim().is_empty() {
+                    config.record_protocol_preference = default_record_protocol_preference();
+                    needs_save = true;
+                }
                 if config.normalize_storage_paths(default_cache, default_output) {
-                    config.save();
+                    needs_save = true;
                 }
                 if config.apply_default_account_override() {
+                    needs_save = true;
+                }
+                if config.normalize_account_switches() {
+                    needs_save = true;
+                }
+                if content.contains("[douyin_passport]") || content.contains("[tiktok_feed]") {
+                    needs_save = true;
+                }
+                if needs_save {
                     config.save();
                 }
                 config.apply_qr_login_overrides(config_path);
@@ -526,13 +787,19 @@ impl Config {
             clip_name_format: default_clip_name_format(),
             auto_generate: default_auto_generate_config(),
             status_check_interval: default_status_check_interval(),
+            record_protocol_preference: default_record_protocol_preference(),
             config_path: config_path.to_str().unwrap().into(),
             whisper_language: default_whisper_language(),
             webhook_url: default_webhook_url(),
             danmu_ass_options: default_danmu_ass_options(),
             update_interval: Arc::new(AtomicU64::new(default_status_check_interval())),
             powerlive_key: default_powerlive_key(),
+            reverse_generate_path: Self::infer_reverse_generate_dir()
+                .map(|path| path.to_string_lossy().into_owned())
+                .unwrap_or_default(),
             douyin_passport: default_douyin_passport(),
+            guest_accounts: default_guest_accounts(),
+            use_guest_accounts: default_use_guest_accounts(),
             default_accounts: default_default_accounts(),
             use_default_accounts: default_use_default_accounts(),
             tiktok_feed: default_tiktok_feed(),
@@ -669,53 +936,75 @@ impl Config {
         }
     }
 
+    pub fn apply_record_protocol_env(&self) {
+        let value = self.record_protocol_preference.trim();
+        if value.is_empty() {
+            std::env::remove_var("BSR_KUAISHOU_PREFER_PROTOCOL");
+            std::env::remove_var("BSR_TIKTOK_PREFER_PROTOCOL");
+        } else {
+            std::env::set_var("BSR_KUAISHOU_PREFER_PROTOCOL", value);
+            std::env::set_var("BSR_TIKTOK_PREFER_PROTOCOL", value);
+        }
+    }
+
     pub fn apply_douyin_passport_env(&self) {
         let cfg = &self.douyin_passport;
-        std::env::set_var("DOUYIN_PASSPORT_PROVIDER_URL", &cfg.provider_url);
-        std::env::set_var("DOUYIN_SIGN", &cfg.sign);
-        std::env::set_var("DOUYIN_QS", &cfg.qs);
-        std::env::set_var("DOUYIN_PASSPORT_JSSDK_VERSION", &cfg.passport_jssdk_version);
-        std::env::set_var("DOUYIN_PASSPORT_JSSDK_TYPE", &cfg.passport_jssdk_type);
-        std::env::set_var("DOUYIN_IS_FROM_TTACCOUNTSDK", &cfg.is_from_ttaccountsdk);
-        std::env::set_var("DOUYIN_AID", &cfg.aid);
-        std::env::set_var("DOUYIN_LANGUAGE", &cfg.language);
-        std::env::set_var("DOUYIN_ACCOUNT_APP_LANGUAGE", &cfg.account_app_language);
-        std::env::set_var("DOUYIN_NEXT", &cfg.next);
-        std::env::set_var("DOUYIN_NEED_SHORT_URL", &cfg.need_short_url);
-        std::env::set_var("DOUYIN_NEED_LOGO", &cfg.need_logo);
-        std::env::set_var("DOUYIN_IS_NEW_LOGIN", &cfg.is_new_login);
-        std::env::set_var("DOUYIN_IS_FROM_IESACCOUNTSAAS", &cfg.is_from_iesaccountsaas);
-        std::env::set_var("DOUYIN_ACCOUNT_SDK_SOURCE", &cfg.account_sdk_source);
-        std::env::set_var("DOUYIN_ACCOUNT_SDK_SOURCE_INFO", &cfg.account_sdk_source_info);
-        std::env::set_var("DOUYIN_SERVICE", &cfg.service);
-        std::env::set_var("DOUYIN_P_UI", &cfg.p_ui);
-        std::env::set_var("DOUYIN_P_CA", &cfg.p_ca);
-        std::env::set_var("DOUYIN_P_CA_REAL", &cfg.p_ca_real);
-        std::env::set_var("DOUYIN_P_JS_V", &cfg.p_js_v);
-        std::env::set_var("DOUYIN_P_JS_T", &cfg.p_js_t);
-        std::env::set_var("DOUYIN_P_ZT", &cfg.p_zt);
-        std::env::set_var("DOUYIN_P_VER", &cfg.p_ver);
-        std::env::set_var("DOUYIN_P_VER_REAL", &cfg.p_ver_real);
-        std::env::set_var("DOUYIN_REQUEST_HOST", &cfg.request_host);
-        std::env::set_var("DOUYIN_P_BD", &cfg.p_bd);
-        std::env::set_var("DOUYIN_P_TS", &cfg.p_ts);
-        std::env::set_var("DOUYIN_P_NO", &cfg.p_no);
-        std::env::set_var("DOUYIN_BIZ_TRACE_ID", &cfg.biz_trace_id);
-        std::env::set_var("DOUYIN_DEVICE_PLATFORM", &cfg.device_platform);
-        std::env::set_var("DOUYIN_VERIFY_FP", &cfg.verify_fp);
-        std::env::set_var("DOUYIN_FP", &cfg.fp);
-        std::env::set_var("DOUYIN_MS_TOKEN", &cfg.ms_token);
-        std::env::set_var("DOUYIN_A_BOGUS", &cfg.a_bogus);
-        std::env::set_var("DOUYIN_X_TT_PASSPORT_CSRF_TOKEN", &cfg.x_tt_passport_csrf_token);
-        std::env::set_var("DOUYIN_X_TT_PASSPORT_AID_SIGN", &cfg.x_tt_passport_aid_sign);
-        std::env::set_var("DOUYIN_X_TT_PASSPORT_TRACE_ID", &cfg.x_tt_passport_trace_id);
-        std::env::set_var(
+        let set_if_missing = |key: &str, value: &str| {
+            let has_value = std::env::var(key).ok().filter(|v| !v.trim().is_empty()).is_some();
+            if has_value {
+                return;
+            }
+            if value.trim().is_empty() {
+                std::env::remove_var(key);
+            } else {
+                std::env::set_var(key, value.trim());
+            }
+        };
+        set_if_missing("DOUYIN_PASSPORT_PROVIDER_URL", &cfg.provider_url);
+        set_if_missing("DOUYIN_SIGN", &cfg.sign);
+        set_if_missing("DOUYIN_QS", &cfg.qs);
+        set_if_missing("DOUYIN_PASSPORT_JSSDK_VERSION", &cfg.passport_jssdk_version);
+        set_if_missing("DOUYIN_PASSPORT_JSSDK_TYPE", &cfg.passport_jssdk_type);
+        set_if_missing("DOUYIN_IS_FROM_TTACCOUNTSDK", &cfg.is_from_ttaccountsdk);
+        set_if_missing("DOUYIN_AID", &cfg.aid);
+        set_if_missing("DOUYIN_LANGUAGE", &cfg.language);
+        set_if_missing("DOUYIN_ACCOUNT_APP_LANGUAGE", &cfg.account_app_language);
+        set_if_missing("DOUYIN_NEXT", &cfg.next);
+        set_if_missing("DOUYIN_NEED_SHORT_URL", &cfg.need_short_url);
+        set_if_missing("DOUYIN_NEED_LOGO", &cfg.need_logo);
+        set_if_missing("DOUYIN_IS_NEW_LOGIN", &cfg.is_new_login);
+        set_if_missing("DOUYIN_IS_FROM_IESACCOUNTSAAS", &cfg.is_from_iesaccountsaas);
+        set_if_missing("DOUYIN_ACCOUNT_SDK_SOURCE", &cfg.account_sdk_source);
+        set_if_missing("DOUYIN_ACCOUNT_SDK_SOURCE_INFO", &cfg.account_sdk_source_info);
+        set_if_missing("DOUYIN_SERVICE", &cfg.service);
+        set_if_missing("DOUYIN_P_UI", &cfg.p_ui);
+        set_if_missing("DOUYIN_P_CA", &cfg.p_ca);
+        set_if_missing("DOUYIN_P_CA_REAL", &cfg.p_ca_real);
+        set_if_missing("DOUYIN_P_JS_V", &cfg.p_js_v);
+        set_if_missing("DOUYIN_P_JS_T", &cfg.p_js_t);
+        set_if_missing("DOUYIN_P_ZT", &cfg.p_zt);
+        set_if_missing("DOUYIN_P_VER", &cfg.p_ver);
+        set_if_missing("DOUYIN_P_VER_REAL", &cfg.p_ver_real);
+        set_if_missing("DOUYIN_REQUEST_HOST", &cfg.request_host);
+        set_if_missing("DOUYIN_P_BD", &cfg.p_bd);
+        set_if_missing("DOUYIN_P_TS", &cfg.p_ts);
+        set_if_missing("DOUYIN_P_NO", &cfg.p_no);
+        set_if_missing("DOUYIN_BIZ_TRACE_ID", &cfg.biz_trace_id);
+        set_if_missing("DOUYIN_DEVICE_PLATFORM", &cfg.device_platform);
+        set_if_missing("DOUYIN_VERIFY_FP", &cfg.verify_fp);
+        set_if_missing("DOUYIN_FP", &cfg.fp);
+        set_if_missing("DOUYIN_MS_TOKEN", &cfg.ms_token);
+        set_if_missing("DOUYIN_A_BOGUS", &cfg.a_bogus);
+        set_if_missing("DOUYIN_X_TT_PASSPORT_CSRF_TOKEN", &cfg.x_tt_passport_csrf_token);
+        set_if_missing("DOUYIN_X_TT_PASSPORT_AID_SIGN", &cfg.x_tt_passport_aid_sign);
+        set_if_missing("DOUYIN_X_TT_PASSPORT_TRACE_ID", &cfg.x_tt_passport_trace_id);
+        set_if_missing(
             "DOUYIN_X_TT_PASSPORT_VERIFY_PORTRAIT",
             &cfg.x_tt_passport_verify_portrait,
         );
-        std::env::set_var("DOUYIN_X_TT_SESSION_DTRAIT", &cfg.x_tt_session_dtrait);
-        std::env::set_var("DOUYIN_QR_ORIGIN", &cfg.qr_origin);
-        std::env::set_var("DOUYIN_QR_REFERER", &cfg.qr_referer);
+        set_if_missing("DOUYIN_X_TT_SESSION_DTRAIT", &cfg.x_tt_session_dtrait);
+        set_if_missing("DOUYIN_QR_ORIGIN", &cfg.qr_origin);
+        set_if_missing("DOUYIN_QR_REFERER", &cfg.qr_referer);
     }
 
     pub fn apply_tiktok_feed_env(&self) {

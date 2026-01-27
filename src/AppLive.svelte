@@ -359,6 +359,9 @@
     if (scroll_timeout) {
       clearTimeout(scroll_timeout);
     }
+    if (live_id_poll) {
+      clearInterval(live_id_poll);
+    }
 
     // 防抖处理，避免频繁计算
     scroll_timeout = setTimeout(() => {
@@ -508,6 +511,45 @@
   let selected_video = null;
 
   let video: HTMLVideoElement;
+  let live_id_poll: ReturnType<typeof setInterval> | null = null;
+
+  function build_live_url(next_live_id: string) {
+    const params = new URLSearchParams();
+    params.set("platform", platform);
+    params.set("room_id", room_id);
+    params.set("live_id", next_live_id);
+    if (focus_start) {
+      params.set("start", focus_start.toString());
+    }
+    if (focus_end) {
+      params.set("end", focus_end.toString());
+    }
+    return `${window.location.origin}${window.location.pathname}?${params.toString()}`;
+  }
+
+  async function refresh_live_id_if_needed() {
+    try {
+      const summary = (await invoke("get_recorder_list")) as any;
+      const recorders = summary?.recorders || [];
+      const recorder = recorders.find(
+        (r) =>
+          r?.room_info?.platform === platform &&
+          r?.room_info?.room_id === room_id
+      );
+      const next_live_id = recorder?.live_id;
+      if (
+        next_live_id &&
+        live_id &&
+        next_live_id !== live_id &&
+        recorder?.room_info?.status
+      ) {
+        log.info("Live id updated, reloading", live_id, next_live_id);
+        window.location.replace(build_live_url(next_live_id));
+      }
+    } catch (error) {
+      log.warn("Failed to refresh live_id", error);
+    }
+  }
 
   function pauseVideo() {
     if (video) {
@@ -543,6 +585,9 @@
         handle_resize();
       }
     }, 100);
+
+    refresh_live_id_if_needed();
+    live_id_poll = setInterval(refresh_live_id_if_needed, 5000);
   });
 
   get_video_list();

@@ -1,5 +1,8 @@
-// Prevents additional console window on Windows, DO NOT REMOVE!!
-#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
+// Prevents additional console window on Windows for release builds.
+#![cfg_attr(
+    all(not(debug_assertions), target_os = "windows"),
+    windows_subsystem = "windows"
+)]
 
 mod config;
 mod constants;
@@ -180,7 +183,7 @@ fn get_migrations() -> Vec<Migration> {
             version: 1,
             description: "create_initial_tables",
             sql: r"
-                CREATE TABLE accounts (uid INTEGER, platform TEXT NOT NULL DEFAULT 'bilibili', name TEXT, avatar TEXT, csrf TEXT, cookies TEXT, created_at TEXT, PRIMARY KEY(uid, platform));
+                CREATE TABLE accounts (uid INTEGER, platform TEXT NOT NULL DEFAULT 'bilibili', name TEXT, avatar TEXT, csrf TEXT, cookies TEXT, extra TEXT, created_at TEXT, PRIMARY KEY(uid, platform));
                 CREATE TABLE recorders (room_id INTEGER PRIMARY KEY, platform TEXT NOT NULL DEFAULT 'bilibili', created_at TEXT);
                 CREATE TABLE records (live_id TEXT PRIMARY KEY, platform TEXT NOT NULL DEFAULT 'bilibili', room_id INTEGER, title TEXT, length INTEGER, size INTEGER, cover BLOB, created_at TEXT);
                 CREATE TABLE danmu_statistics (live_id TEXT PRIMARY KEY, room_id INTEGER, value INTEGER, time_point TEXT);
@@ -414,6 +417,7 @@ fn get_migrations() -> Vec<Migration> {
                     avatar TEXT,
                     csrf TEXT,
                     cookies TEXT,
+                    extra TEXT,
                     created_at TEXT,
                     PRIMARY KEY (uid, platform)
                 );
@@ -424,6 +428,7 @@ fn get_migrations() -> Vec<Migration> {
                     avatar,
                     csrf,
                     cookies,
+                    extra,
                     created_at
                 )
                 SELECT
@@ -433,6 +438,7 @@ fn get_migrations() -> Vec<Migration> {
                     avatar,
                     csrf,
                     cookies,
+                    COALESCE(extra, ''),
                     created_at
                 FROM accounts;
                 DROP TABLE accounts;
@@ -462,6 +468,15 @@ fn get_migrations() -> Vec<Migration> {
             ",
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 15,
+            description: "add_extra_column_to_accounts",
+            sql: r"
+            ALTER TABLE accounts ADD COLUMN extra TEXT NOT NULL DEFAULT '';
+            ",
+            kind: MigrationKind::Up,
+        },
+
     ]
 }
 
@@ -523,6 +538,7 @@ async fn setup_server_state(args: Args) -> Result<State, Box<dyn std::error::Err
         }
     };
     config.apply_network_env();
+    config.apply_record_protocol_env();
     config.apply_douyin_passport_env();
     config.apply_tiktok_feed_env();
     let config = Arc::new(RwLock::new(config));
@@ -553,6 +569,7 @@ async fn setup_server_state(args: Args) -> Result<State, Box<dyn std::error::Err
     db.finish_pending_tasks().await?;
     let config_snapshot = config.read().await.clone();
     crate::handlers::account::ensure_default_accounts(&db, &config_snapshot).await;
+    crate::handlers::account::ensure_guest_accounts(&db, &config_snapshot).await;
 
     let progress_manager = Arc::new(ProgressManager::new());
     let emitter = EventEmitter::new(progress_manager.get_event_sender());
@@ -620,6 +637,7 @@ async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::
         }
     };
     config.apply_network_env();
+    config.apply_record_protocol_env();
     config.apply_douyin_passport_env();
     config.apply_tiktok_feed_env();
 
@@ -638,6 +656,7 @@ async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::
     db_clone.finish_pending_tasks().await?;
     let config_snapshot = config.read().await.clone();
     crate::handlers::account::ensure_default_accounts(&db, &config_snapshot).await;
+    crate::handlers::account::ensure_guest_accounts(&db, &config_snapshot).await;
     let webhook_poster =
         webhook::poster::create_webhook_poster(&config.read().await.webhook_url, None).unwrap();
     let mut task_manager = TaskManager::new();
@@ -757,8 +776,10 @@ fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
         crate::handlers::config::update_openai_api_key,
         crate::handlers::config::update_openai_api_endpoint,
         crate::handlers::config::update_network_config,
+        crate::handlers::config::update_record_protocol_preference,
         crate::handlers::config::update_auto_generate,
         crate::handlers::config::update_use_default_accounts,
+        crate::handlers::config::update_use_guest_accounts,
         crate::handlers::config::update_status_check_interval,
         crate::handlers::config::update_whisper_language,
         crate::handlers::config::update_webhook_url,
@@ -772,6 +793,7 @@ fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
         crate::handlers::recorder::get_recorder_list,
         crate::handlers::recorder::add_recorder,
         crate::handlers::recorder::remove_recorder,
+        crate::handlers::recorder::reload_recorder,
         crate::handlers::recorder::get_room_info,
         crate::handlers::recorder::get_archive_disk_usage,
         crate::handlers::recorder::get_archives,

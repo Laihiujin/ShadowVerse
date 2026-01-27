@@ -34,6 +34,7 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 #[cfg(feature = "gui")]
 use tauri_plugin_notification::NotificationExt;
 use thiserror::Error;
@@ -155,6 +156,7 @@ pub struct RecorderManager {
     task_manager: Arc<TaskManager>,
     recorders: Arc<RwLock<HashMap<String, RecorderType>>>,
     to_remove: Arc<RwLock<HashSet<String>>>,
+    missing_account_retry: Arc<RwLock<HashMap<String, Instant>>>,
     event_tx: broadcast::Sender<RecorderEvent>,
     is_migrating: Arc<AtomicBool>,
     webhook_poster: WebhookPoster,
@@ -219,6 +221,7 @@ impl RecorderManager {
             task_manager,
             recorders: Arc::new(RwLock::new(HashMap::new())),
             to_remove: Arc::new(RwLock::new(HashSet::new())),
+            missing_account_retry: Arc::new(RwLock::new(HashMap::new())),
             event_tx,
             is_migrating: Arc::new(AtomicBool::new(false)),
             webhook_poster,
@@ -242,11 +245,49 @@ impl RecorderManager {
         self.event_tx.clone()
     }
 
+    async fn stop_recorder_in_manager(&self, platform: PlatformType, room_id: &str) {
+        let mut recorder_id = format!("{}:{}", platform.as_str(), room_id);
+        let existing_id = {
+            let recorders = self.recorders.read().await;
+            if recorders.contains_key(&recorder_id) {
+                Some(recorder_id.clone())
+            } else {
+                recorders
+                    .keys()
+                    .find(|key| key.as_str().ends_with(&format!(":{room_id}")))
+                    .cloned()
+            }
+        };
+
+        if let Some(found_id) = existing_id {
+            recorder_id = found_id;
+            if let Some(recorder) = self.recorders.write().await.remove(&recorder_id) {
+                recorder.stop().await;
+            }
+        }
+    }
+
     async fn select_account_for_platform(
         &self,
         platform: PlatformType,
     ) -> Result<Option<Account>, DatabaseError> {
         let config = self.config.read().await.clone();
+        if config.use_guest_accounts {
+            let guest_cookie = config
+                .guest_accounts
+                .iter()
+                .find(|entry| entry.platform == platform.as_str() && !entry.cookies.trim().is_empty())
+                .map(|entry| entry.cookies.clone());
+            if let Some(guest_cookie) = guest_cookie {
+                let accounts = self.db.get_accounts().await?;
+                let matched = accounts.iter().find(|account| {
+                    account.platform == platform.as_str() && account.cookies == guest_cookie
+                });
+                return Ok(matched.map(|account| account.to_account()));
+            }
+            return Ok(None);
+        }
+
         if config.use_default_accounts {
             let default_cookie = config
                 .default_accounts
@@ -554,7 +595,20 @@ impl RecorderManager {
                     continue;
                 }
                 let (auto_start, extra) = recorder_map.get(&(platform, room_id.clone())).unwrap();
-                let account_required = !matches!(platform, PlatformType::Huya | PlatformType::Kuaishou);
+                let account_required = !matches!(platform, PlatformType::Huya);
+                let recorder_id = format!("{}:{}", platform.as_str(), room_id);
+                if account_required {
+                    let now = Instant::now();
+                    let next_retry = {
+                        let retry_map = self.missing_account_retry.read().await;
+                        retry_map.get(&recorder_id).cloned()
+                    };
+                    if let Some(next_retry) = next_retry {
+                        if next_retry > now {
+                            continue;
+                        }
+                    }
+                }
                 let account = match self.select_account_for_platform(platform).await {
                     Ok(account) => account,
                     Err(e) => {
@@ -564,7 +618,15 @@ impl RecorderManager {
                 };
                 if account_required && account.is_none() {
                     log::info!("Skip recorder without account: {platform:?} {room_id}");
+                    let next_retry = Instant::now() + Duration::from_secs(300);
+                    self.missing_account_retry
+                        .write()
+                        .await
+                        .insert(recorder_id, next_retry);
                     continue;
+                }
+                if account_required {
+                    self.missing_account_retry.write().await.remove(&recorder_id);
                 }
                 let account = account.unwrap_or_default();
 
@@ -705,6 +767,51 @@ impl RecorderManager {
         Ok(())
     }
 
+    pub async fn restart_recorders_for_platforms(
+        &self,
+        platforms: &[PlatformType],
+    ) -> Result<(), RecorderManagerError> {
+        if platforms.is_empty() {
+            return Ok(());
+        }
+        let platform_set: HashSet<PlatformType> = platforms.iter().cloned().collect();
+        let rows = self.db.get_recorders().await?;
+        for row in rows {
+            let platform = PlatformType::from_str(&row.platform).map_err(|_| {
+                RecorderManagerError::InvalidPlatformType {
+                    platform: row.platform.clone(),
+                }
+            })?;
+            if !platform_set.contains(&platform) {
+                continue;
+            }
+
+            let room_id = row.room_id.clone();
+            let extra = row.extra.clone();
+            let enabled = row.auto_start;
+
+            self.stop_recorder_in_manager(platform, &room_id).await;
+
+            let account = self
+                .select_account_for_platform(platform)
+                .await?
+                .unwrap_or_default();
+
+            if let Err(err) = self
+                .add_recorder(&account, platform, &room_id, &extra, enabled)
+                .await
+            {
+                log::warn!(
+                    "Failed to restart recorder: {} {} ({err})",
+                    platform.as_str(),
+                    room_id
+                );
+            }
+        }
+
+        Ok(())
+    }
+
     pub async fn stop_all(&self) {
         for recorder_ref in self.recorders.read().await.values() {
             recorder_ref.stop().await;
@@ -812,6 +919,33 @@ impl RecorderManager {
             .await
             .unwrap();
         Ok(bytes)
+    }
+
+    fn playlist_path(&self, platform: PlatformType, room_id: &str, live_id: &str) -> PathBuf {
+        let cache_path = self.config.blocking_read().cache.clone();
+        Path::new(&cache_path)
+            .join(platform.as_str())
+            .join(room_id)
+            .join(live_id)
+            .join("playlist.m3u8")
+    }
+
+    async fn wait_for_playlist(
+        &self,
+        platform: PlatformType,
+        room_id: &str,
+        live_id: &str,
+        timeout_ms: u64,
+    ) -> bool {
+        let path = self.playlist_path(platform, room_id, live_id);
+        let start = std::time::Instant::now();
+        while start.elapsed().as_millis() < timeout_ms as u128 {
+            if path.exists() {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        path.exists()
     }
 
     /// Check if the playlist is outdated
@@ -1658,7 +1792,19 @@ impl RecorderManager {
         };
 
         if path_segs[3] == "playlist.m3u8" {
-            let playlist = self.load_playlist(platform, room_id, live_id).await?;
+            let playlist = match self.load_playlist(platform, room_id, live_id).await {
+                Ok(playlist) => playlist,
+                Err(RecorderManagerError::IoError(err))
+                    if err.kind() == std::io::ErrorKind::NotFound =>
+                {
+                    if self.wait_for_playlist(platform, room_id, live_id, 2000).await {
+                        self.load_playlist(platform, room_id, live_id).await?
+                    } else {
+                        return Err(RecorderManagerError::IoError(err));
+                    }
+                }
+                Err(err) => return Err(err),
+            };
             let playlist = self.playlist_range(&playlist, range).await?;
             let mut bytes: Vec<u8> = Vec::new();
             playlist.write_to(&mut bytes).unwrap();

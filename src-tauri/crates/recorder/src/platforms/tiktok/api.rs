@@ -1,7 +1,8 @@
 use super::response::{RoomInfo as SigiRoomInfo, SigiStateResponse, StreamUrl as SigiStreamUrl};
-use super::x_gnarly;
 use crate::account::Account;
 use crate::errors::RecorderError;
+use crate::reverse_generate::x_bogus::XBogus;
+use crate::reverse_generate::x_gnarly;
 use chrono::Utc;
 use rand::Rng;
 use regex::Regex;
@@ -13,9 +14,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::HashMap;
 use std::env;
+use std::fs;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicI64, Ordering};
 use url::form_urlencoded::Serializer;
-use base64::Engine as _;
+use base64::{engine::general_purpose, Engine as _};
+use toml::Value as TomlValue;
 
 const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36";
 const FEED_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36";
@@ -403,196 +407,6 @@ fn to_iso_8859_1_bytes(value: &str) -> Vec<u8> {
         .collect()
 }
 
-struct XBogus {
-    user_agent: String,
-}
-
-impl XBogus {
-    fn new(user_agent: &str) -> Self {
-        Self {
-            user_agent: user_agent.to_string(),
-        }
-    }
-
-    fn md5_str_to_array(&self, md5_str: &str) -> Vec<u8> {
-        if md5_str.len() > 32 {
-            return md5_str.as_bytes().to_vec();
-        }
-        let mut array = Vec::new();
-        let mut idx = 0;
-        while idx + 1 < md5_str.len() {
-            let high = md5_str.as_bytes()[idx] as char;
-            let low = md5_str.as_bytes()[idx + 1] as char;
-            let hi = high.to_digit(16).unwrap_or(0) as u8;
-            let lo = low.to_digit(16).unwrap_or(0) as u8;
-            array.push((hi << 4) | lo);
-            idx += 2;
-        }
-        array
-    }
-
-    fn md5_bytes(&self, input: &[u8]) -> String {
-        format!("{:x}", md5::compute(input))
-    }
-
-    fn md5(&self, input: &str) -> String {
-        let array = self.md5_str_to_array(input);
-        self.md5_bytes(&array)
-    }
-
-    fn md5_encrypt(&self, url_path: &str) -> Vec<u8> {
-        let first = self.md5(url_path);
-        let second = self.md5_str_to_array(&first);
-        let third = self.md5_str_to_array(&self.md5_bytes(&second));
-        third
-    }
-
-    fn rc4_encrypt(&self, key: &[u8], data: &[u8]) -> Vec<u8> {
-        let mut s: Vec<u8> = (0..=255).collect();
-        let mut j = 0u8;
-        for i in 0..256usize {
-            j = j.wrapping_add(s[i]).wrapping_add(key[i % key.len()]);
-            s.swap(i, j as usize);
-        }
-        let mut i = 0u8;
-        let mut j2 = 0u8;
-        let mut output = Vec::with_capacity(data.len());
-        for byte in data {
-            i = i.wrapping_add(1);
-            j2 = j2.wrapping_add(s[i as usize]);
-            s.swap(i as usize, j2 as usize);
-            let idx = s[i as usize].wrapping_add(s[j2 as usize]);
-            let k = s[idx as usize];
-            output.push(byte ^ k);
-        }
-        output
-    }
-
-    fn calculation(&self, a1: u8, a2: u8, a3: u8) -> String {
-        let x3 = ((a1 as u32) << 16) | ((a2 as u32) << 8) | (a3 as u32);
-        let table = b"Dkdpgh4ZKsQB80/Mfvw36XI1R25-WUAlEi7NLboqYTOPuzmFjJnryx9HVGcaStCe=";
-        let mut out = String::with_capacity(4);
-        out.push(table[((x3 & 16515072) >> 18) as usize] as char);
-        out.push(table[((x3 & 258048) >> 12) as usize] as char);
-        out.push(table[((x3 & 4032) >> 6) as usize] as char);
-        out.push(table[(x3 & 63) as usize] as char);
-        out
-    }
-
-    fn encoding_conversion(values: &[u8]) -> Vec<u8> {
-        let a = values[0];
-        let b = values[1];
-        let c = values[2];
-        let e = values[3];
-        let d = values[4];
-        let t = values[5];
-        let f = values[6];
-        let r = values[7];
-        let n = values[8];
-        let o = values[9];
-        let i = values[10];
-        let underscore = values[11];
-        let x = values[12];
-        let u = values[13];
-        let s = values[14];
-        let l = values[15];
-        let v = values[16];
-        let h = values[17];
-        let p = values[18];
-
-        vec![
-            a,
-            i,
-            b,
-            underscore,
-            c,
-            x,
-            e,
-            u,
-            d,
-            s,
-            t,
-            l,
-            f,
-            v,
-            r,
-            h,
-            n,
-            p,
-            o,
-        ]
-    }
-
-    fn get_x_bogus(&self, url_path: &str) -> String {
-        let ua_bytes = to_iso_8859_1_bytes(&self.user_agent);
-        let ua_key = [0x00u8, 0x01u8, 0x0c];
-        let rc4_ua = self.rc4_encrypt(&ua_key, &ua_bytes);
-        let rc4_b64 = base64::engine::general_purpose::STANDARD.encode(rc4_ua);
-        let array1 = self.md5_str_to_array(&self.md5(&rc4_b64));
-
-        let array2 = self.md5_str_to_array(&self.md5_bytes(&self.md5_str_to_array(
-            "d41d8cd98f00b204e9800998ecf8427e",
-        )));
-        let url_path_array = self.md5_encrypt(url_path);
-
-        let timer = chrono::Utc::now().timestamp() as u32;
-        let ct: u32 = 536919696;
-        let mut new_array = vec![
-            64u32,
-            0,
-            1,
-            12,
-            url_path_array[14] as u32,
-            url_path_array[15] as u32,
-            array2[14] as u32,
-            array2[15] as u32,
-            array1[14] as u32,
-            array1[15] as u32,
-            (timer >> 24) & 255,
-            (timer >> 16) & 255,
-            (timer >> 8) & 255,
-            timer & 255,
-            (ct >> 24) & 255,
-            (ct >> 16) & 255,
-            (ct >> 8) & 255,
-            ct & 255,
-        ];
-        let mut xor_result = new_array[0];
-        for value in &new_array[1..] {
-            xor_result ^= *value;
-        }
-        new_array.push(xor_result);
-
-        let mut array3 = Vec::new();
-        let mut array4 = Vec::new();
-        for (idx, value) in new_array.iter().enumerate() {
-            if idx % 2 == 0 {
-                array3.push(*value as u8);
-            } else {
-                array4.push(*value as u8);
-            }
-        }
-        let mut merge_array = array3;
-        merge_array.extend(array4);
-        let encoding_bytes = Self::encoding_conversion(&merge_array);
-        let key = b"?";
-        let rc4_data = self.rc4_encrypt(key, &encoding_bytes);
-        let mut garbled = Vec::with_capacity(rc4_data.len() + 2);
-        garbled.push(2);
-        garbled.push(255);
-        garbled.extend_from_slice(&rc4_data);
-
-        let mut xb = String::new();
-        let mut idx = 0usize;
-        while idx + 2 < garbled.len() {
-            xb.push_str(&self.calculation(garbled[idx], garbled[idx + 1], garbled[idx + 2]));
-            idx += 3;
-        }
-        xb
-    }
-}
-
-
 fn mssdk_url() -> String {
     env::var("TIKTOK_MSSDK_URL").unwrap_or_else(|_| TIKTOK_MSSDK_URL.to_string())
 }
@@ -600,12 +414,25 @@ fn mssdk_url() -> String {
 fn apply_tiktok_extra_headers(headers: &mut HeaderMap) {
     let mappings = [
         ("TIKTOK_X_MSSDK_INFO", "x-mssdk-info"),
-        ("TIKTOK_TT_TICKET_GUARD_CLIENT_DATA", "tt-ticket-guard-client-data"),
         ("TIKTOK_TT_TICKET_GUARD_ITERATION_VERSION", "tt-ticket-guard-iteration-version"),
         ("TIKTOK_TT_TICKET_GUARD_PUBLIC_KEY", "tt-ticket-guard-public-key"),
         ("TIKTOK_TT_TICKET_GUARD_VERSION", "tt-ticket-guard-version"),
         ("TIKTOK_TT_TICKET_GUARD_WEB_VERSION", "tt-ticket-guard-web-version"),
     ];
+    if let Ok(value) = env::var("TIKTOK_TT_TICKET_GUARD_CLIENT_DATA") {
+        let value = value.trim();
+        if !value.is_empty() {
+            let encoded = if value.starts_with('{') || value.starts_with('[') {
+                let bytes = to_iso_8859_1_bytes(value);
+                general_purpose::STANDARD.encode(bytes)
+            } else {
+                value.to_string()
+            };
+            if let Ok(parsed) = encoded.parse() {
+                headers.insert("tt-ticket-guard-client-data", parsed);
+            }
+        }
+    }
     for (env_key, header_name) in mappings {
         if let Ok(value) = env::var(env_key) {
             let value = value.trim();
@@ -1093,6 +920,9 @@ fn strip_empty_query_params(url: &str) -> String {
 }
 
 fn read_x_gnarly() -> Option<String> {
+    if let Some(value) = read_tiktok_web_value("x_gnarly") {
+        return Some(value);
+    }
     let candidates = ["TIKTOK_X_GNARLY", "TIKTOK_FEED_X_GNARLY"];
     for key in candidates {
         if let Ok(value) = env::var(key) {
@@ -1112,7 +942,43 @@ fn resolve_x_gnarly(query: &str, body: &str, user_agent: &str) -> Option<String>
     if query.trim().is_empty() {
         return None;
     }
-    Some(x_gnarly::sign(query, body, user_agent))
+    let signing_ua = read_tiktok_web_value("user_agent")
+        .unwrap_or_else(|| user_agent.to_string());
+    Some(x_gnarly::sign(query, body, &signing_ua))
+}
+
+fn reverse_generate_root() -> Option<PathBuf> {
+    let cwd = env::current_dir().ok()?;
+    let root = if cwd.file_name().and_then(|s| s.to_str()) == Some("src-tauri") {
+        cwd.parent().unwrap_or(&cwd).to_path_buf()
+    } else {
+        cwd
+    };
+    Some(
+        root.join("src-tauri")
+            .join("crates")
+            .join("recorder")
+            .join("src")
+            .join("ReverseGenerate"),
+    )
+}
+
+fn read_tiktok_web_value(key: &str) -> Option<String> {
+    let root = reverse_generate_root()?;
+    let path = root.join("tiktok_web.toml");
+    let raw = fs::read_to_string(path).ok()?;
+    let parsed: TomlValue = raw.parse().ok()?;
+    let table = parsed
+        .get("tiktok_web")
+        .and_then(|v| v.as_table())
+        .or_else(|| parsed.as_table())?;
+    let value = table.get(key)?.as_str()?;
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
 }
 
 fn build_live_referer(handle: &str) -> String {
@@ -3154,6 +3020,14 @@ async fn get_room_id_from_room_enter(
         .and_then(|map| {
             get_string_field(map, &["room_id_str", "room_id", "roomId", "roomIdStr"])
         });
+
+    if let Some(room_id) = room_id.as_ref() {
+        log::info!(
+            "[TikTok] room enter resolved room_id for {}: {}",
+            handle,
+            room_id
+        );
+    }
 
     Ok(room_id)
 }

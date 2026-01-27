@@ -1,4 +1,4 @@
-
+﻿
 <script lang="ts">
   import { invoke } from "../lib/invoker";
   import { open } from "@tauri-apps/plugin-dialog";
@@ -40,12 +40,14 @@
       encode_danmu: false,
     },
     status_check_interval: 67, // 默认67秒
+    record_protocol_preference: "hls",
     whisper_language: "",
     webhook_url: "",
     danmu_ass_options: {
       font_size: 36,
       opacity: 0.8,
     },
+    use_guest_accounts: false,
     use_default_accounts: false,
     http_proxy: "127.0.0.1:7890",
     https_proxy: "",
@@ -187,6 +189,12 @@
     });
   }
 
+  async function update_record_protocol_preference() {
+    await invoke("update_record_protocol_preference", {
+      recordProtocolPreference: setting_model.record_protocol_preference,
+    });
+  }
+
   async function update_webhook_url() {
     await invoke("update_webhook_url", {
       webhookUrl: setting_model.webhook_url,
@@ -194,8 +202,21 @@
   }
 
   async function update_use_default_accounts() {
+    if (setting_model.use_default_accounts) {
+      setting_model.use_guest_accounts = false;
+    }
     await invoke("update_use_default_accounts", {
       useDefaultAccounts: setting_model.use_default_accounts,
+    });
+    await get_default_account_platforms();
+  }
+
+  async function update_use_guest_accounts() {
+    if (setting_model.use_guest_accounts) {
+      setting_model.use_default_accounts = false;
+    }
+    await invoke("update_use_guest_accounts", {
+      useGuestAccounts: setting_model.use_guest_accounts,
     });
     await get_default_account_platforms();
   }
@@ -307,6 +328,29 @@
               <div class="flex items-center justify-between">
                 <div>
                   <h3 class="text-sm font-medium text-gray-900 dark:text-white">
+                    录制协议优先级
+                  </h3>
+                  <p class="text-sm text-gray-500 dark:text-gray-400">
+                    预览优先 HLS；录制按所选协议并支持回退。
+                  </p>
+                </div>
+                <div class="flex items-center space-x-2">
+                  <select
+                    class="px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white"
+                    bind:value={setting_model.record_protocol_preference}
+                    on:change={update_record_protocol_preference}
+                  >
+                    <option value="hls">HLS</option>
+                    <option value="flv">FLV</option>
+                    <option value="rtmp">RTMP</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+            <div class="p-4">
+              <div class="flex items-center justify-between">
+                <div>
+                  <h3 class="text-sm font-medium text-gray-900 dark:text-white">
                     Webhook URL
                   </h3>
                   <p class="text-sm text-gray-500 dark:text-gray-400">
@@ -326,7 +370,7 @@
             </div>
           </div>
         </div>
-        <div class="space-y-4">
+                                                                <div class="space-y-4">
           <h2
             class="text-lg font-medium text-gray-900 dark:text-white flex items-center space-x-2"
           >
@@ -336,6 +380,27 @@
           <div
             class="bg-white dark:bg-[#3c3c3e] rounded-xl border border-gray-200 dark:border-gray-700 divide-y divide-gray-200 dark:divide-gray-700"
           >
+            <div class="p-4">
+              <div class="flex items-center justify-between">
+                <div>
+                  <h3 class="text-sm font-medium text-gray-900 dark:text-white">使用访客 Cookie</h3>
+                  <p class="text-sm text-gray-500 dark:text-gray-400">
+                    启用后自动从内置浏览器更新访客 Cookie
+                  </p>
+                </div>
+                <label class="relative inline-block w-11 h-6">
+                  <input
+                    type="checkbox"
+                    class="peer opacity-0 w-0 h-0"
+                    bind:checked={setting_model.use_guest_accounts}
+                    on:change={update_use_guest_accounts}
+                  />
+                  <span
+                    class="switch-slider absolute cursor-pointer top-0 left-0 right-0 bottom-0 bg-gray-300 dark:bg-gray-600 rounded-full transition-all duration-300 before:absolute before:h-4 before:w-4 before:left-1 before:bottom-1 before:bg-white before:rounded-full before:transition-all before:duration-300 peer-checked:bg-blue-500 peer-checked:before:translate-x-5"
+                  ></span>
+                </label>
+              </div>
+            </div>
             <div class="p-4">
               <div class="flex items-center justify-between">
                 <div>
@@ -359,7 +424,7 @@
             </div>
           </div>
         </div>
-        {#if !TAURI_ENV}
+{#if !TAURI_ENV}
           <div class="space-y-4">
             <h2
               class="text-lg font-medium text-gray-900 dark:text-white flex items-center space-x-2"
@@ -818,7 +883,7 @@
                     </div>
                   </div>
                 </div>
-              {:else}
+              {:else if setting_model.subtitle_generator_type === "whisper"}
                 <div class="p-4">
                     <div class="flex items-center justify-between">
                       <div>
@@ -847,7 +912,35 @@
                       </button>
                     </div>
                   </div>
-                {/if}
+              {:else if setting_model.subtitle_generator_type === "whisper_online"}
+                <div class="p-4">
+                  <div class="flex items-center justify-between">
+                    <div>
+                      <h3
+                        class="text-sm font-medium text-gray-900 dark:text-white"
+                      >
+                        Whisper 模型名称
+                      </h3>
+                      <p class="text-sm text-gray-500 dark:text-gray-400">
+                        例如 whisper-1
+                      </p>
+                    </div>
+                    <div class="flex items-center space-x-2">
+                      <input
+                        type="text"
+                        class="px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white w-96"
+                        bind:value={setting_model.whisper_model}
+                        on:change={async () => {
+                          await invoke("update_whisper_model", {
+                            whisperModel: setting_model.whisper_model,
+                          });
+                        }}
+                        placeholder="whisper-1"
+                      />
+                    </div>
+                  </div>
+                </div>
+              {/if}
                 <!-- OpenAI API Settings -->
                 {#if setting_model.subtitle_generator_type === "whisper_online"}
                   <div class="p-4">

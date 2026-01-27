@@ -1,5 +1,4 @@
 pub mod api;
-mod abogus;
 pub mod params;
 mod response;
 pub mod stream_info;

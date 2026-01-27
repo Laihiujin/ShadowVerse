@@ -15,6 +15,7 @@ pub struct WhisperOnline {
     api_url: String,
     api_key: Option<String>,
     prompt: Option<String>,
+    model: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -33,6 +34,7 @@ pub async fn new(
     api_url: Option<&str>,
     api_key: Option<&str>,
     prompt: Option<&str>,
+    model: Option<&str>,
 ) -> Result<WhisperOnline, String> {
     let client = Client::builder()
         .no_proxy()
@@ -41,13 +43,24 @@ pub async fn new(
         .map_err(|e| format!("Failed to create HTTP client: {e}"))?;
 
     let api_url = api_url.unwrap_or("https://api.openai.com/v1");
-    let api_url = api_url.to_string() + "/audio/transcriptions";
+    let api_url = api_url.trim_end_matches('/');
+    let api_url = if api_url.ends_with("/audio/transcriptions") {
+        api_url.to_string()
+    } else {
+        format!("{}/audio/transcriptions", api_url)
+    };
+    let model = model
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .unwrap_or("whisper-1")
+        .to_string();
 
     Ok(WhisperOnline {
         client,
         api_url: api_url.to_string(),
         api_key: api_key.map(std::string::ToString::to_string),
         prompt: prompt.map(std::string::ToString::to_string),
+        model,
     })
 }
 
@@ -98,7 +111,7 @@ impl SubtitleGenerator for WhisperOnline {
 
         let mut form = reqwest::multipart::Form::new()
             .part("file", file_part)
-            .text("model", "whisper-1")
+            .text("model", self.model.clone())
             .text("response_format", "verbose_json")
             .text("temperature", "0.0");
 
@@ -217,14 +230,26 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_whisper_online() {
-        let result = new(Some("https://api.openai.com/v1"), Some("test-key"), None).await;
+        let result = new(
+            Some("https://api.openai.com/v1"),
+            Some("test-key"),
+            None,
+            None,
+        )
+        .await;
         assert!(result.is_ok());
     }
 
     #[tokio::test]
     #[ignore = "requres api key"]
     async fn test_generate_subtitle() {
-        let result = new(Some("https://api.openai.com/v1"), Some("sk-****"), None).await;
+        let result = new(
+            Some("https://api.openai.com/v1"),
+            Some("sk-****"),
+            None,
+            None,
+        )
+        .await;
         assert!(result.is_ok());
         let result = result.unwrap();
         let result = result

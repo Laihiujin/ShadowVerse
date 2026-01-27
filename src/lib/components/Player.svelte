@@ -403,16 +403,21 @@ ${mediaPlaylistUrl}`;
 
     try {
       let direct_url: string;
-      try {
-        const base_url = await get_static_url(
-          "hls",
-          `${platform}/${room_id}/${live_id}/playlist.m3u8`
-        );
-        direct_url = `${base_url}?start=${focus_start}&end=${focus_end}`;
-      } catch (error) {
-        log.warn("Failed to resolve static HLS URL, fallback to origin", error);
-        direct_url = `${ENDPOINT ? ENDPOINT : window.location.origin}/hls/${platform}/${room_id}/${live_id}/playlist.m3u8?start=${focus_start}&end=${focus_end}`;
-      }
+      const resolve_direct_url = async (forceRefresh = false) => {
+        try {
+          const base_url = await get_static_url(
+            "hls",
+            `${platform}/${room_id}/${live_id}/playlist.m3u8`,
+            forceRefresh
+          );
+          return `${base_url}?start=${focus_start}&end=${focus_end}`;
+        } catch (error) {
+          log.warn("Failed to resolve static HLS URL, fallback to origin", error);
+          return `${ENDPOINT ? ENDPOINT : window.location.origin}/hls/${platform}/${room_id}/${live_id}/playlist.m3u8?start=${focus_start}&end=${focus_end}`;
+        }
+      };
+
+      direct_url = await resolve_direct_url(false);
       log.info("Player direct_url", direct_url);
       if (!TAURI_ENV) {
         const { offset, is_fmp4 } = await load_metadata(direct_url);
@@ -449,6 +454,14 @@ ${mediaPlaylistUrl}`;
         setTimeout(() => {
           location.reload();
         }, 1 * 1000);
+      } else if (error.code == 1001) {
+        try {
+          const retry_url = await resolve_direct_url(true);
+          log.warn("Retry player load with refreshed static port", retry_url);
+          await player.load(retry_url);
+        } catch (retryError) {
+          log.error("Retry load failed", retryError);
+        }
       } else {
         alert(
           "加载失败，请尝试刷新页面\n" +

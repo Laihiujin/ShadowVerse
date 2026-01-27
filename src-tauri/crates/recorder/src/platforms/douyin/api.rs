@@ -5,15 +5,19 @@ use regex::Regex;
 use reqwest::{Client, Proxy};
 
 use super::response::DouyinRoomInfoResponse;
-use super::{abogus, params};
-use std::path::Path;
+use super::params;
+use crate::reverse_generate::abogus;
+use std::path::{Path, PathBuf};
 use std::collections::HashMap;
 use reqwest::header::SET_COOKIE;
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
+use std::fs;
 use base64::{engine::general_purpose, Engine as _};
+use serde_json::json;
+use toml::Value as TomlValue;
 const DOUYIN_PASSPORT_UA_DEFAULT: &str =
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36";
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36";
 
 #[derive(Debug, Clone)]
 pub struct DouyinBasicRoomInfo {
@@ -71,7 +75,389 @@ fn passport_user_agent() -> String {
 fn generate_passport_headers() -> reqwest::header::HeaderMap {
     let mut headers = reqwest::header::HeaderMap::new();
     headers.insert("user-agent", passport_user_agent().parse().unwrap());
+    apply_douyin_browser_headers(&mut headers, None);
     headers
+}
+
+fn ttwid_check_payload(overrides: Option<&HashMap<String, String>>) -> serde_json::Value {
+    let aid = param_value(overrides, &["aid"], "DOUYIN_AID", "6383");
+    let service = param_value(
+        overrides,
+        &["ttwid_service", "service"],
+        "DOUYIN_TTWID_SERVICE",
+        "www.douyin.com",
+    );
+    json!({
+        "aid": aid.parse::<i64>().unwrap_or(6383),
+        "service": service,
+        "union": false,
+        "unionHost": "",
+        "needFid": false,
+        "fid": "",
+        "migrate_priority": 0
+    })
+}
+
+fn build_douyin_challenge_params(
+    overrides: Option<&HashMap<String, String>>,
+) -> Vec<(String, String)> {
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .to_string();
+    let now_secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+        .to_string();
+    let mut params = Vec::new();
+    push_param(
+        &mut params,
+        "passport_jssdk_version",
+        param_value(
+            overrides,
+            &["passport_jssdk_version"],
+            "DOUYIN_PASSPORT_JSSDK_VERSION",
+            "3.1.3",
+        ),
+    );
+    push_param(
+        &mut params,
+        "passport_jssdk_type",
+        param_value(
+            overrides,
+            &["passport_jssdk_type"],
+            "DOUYIN_PASSPORT_JSSDK_TYPE",
+            "normal",
+        ),
+    );
+    push_param(
+        &mut params,
+        "is_from_ttaccountsdk",
+        param_value(
+            overrides,
+            &["is_from_ttaccountsdk"],
+            "DOUYIN_IS_FROM_TTACCOUNTSDK",
+            "1",
+        ),
+    );
+    push_param(
+        &mut params,
+        "aid",
+        param_value(overrides, &["aid"], "DOUYIN_AID", "6383"),
+    );
+    push_param(
+        &mut params,
+        "language",
+        param_value(overrides, &["language"], "DOUYIN_LANGUAGE", "zh"),
+    );
+    push_param(
+        &mut params,
+        "account_app_language",
+        param_value(
+            overrides,
+            &["account_app_language"],
+            "DOUYIN_ACCOUNT_APP_LANGUAGE",
+            "zh-CN",
+        ),
+    );
+    push_param(
+        &mut params,
+        "ts",
+        param_value(overrides, &["ts"], "DOUYIN_TS", &now_secs),
+    );
+    push_param(
+        &mut params,
+        "request_host",
+        param_value(
+            overrides,
+            &["request_host"],
+            "DOUYIN_REQUEST_HOST",
+            "https://www.douyin.com",
+        ),
+    );
+    push_param(
+        &mut params,
+        "skip_c",
+        param_value(overrides, &["skip_c"], "DOUYIN_SKIP_C", "1"),
+    );
+    push_param(&mut params, "p_ca", env_or("DOUYIN_P_CA", "4.0.17"));
+    push_param(
+        &mut params,
+        "p_ca_real",
+        param_value(
+            overrides,
+            &["p_ca_real"],
+            "DOUYIN_P_CA_REAL",
+            "1.0.0.729",
+        ),
+    );
+    push_param(
+        &mut params,
+        "account_sdk_source",
+        param_value(
+            overrides,
+            &["account_sdk_source"],
+            "DOUYIN_ACCOUNT_SDK_SOURCE",
+            "web",
+        ),
+    );
+    push_param(
+        &mut params,
+        "account_sdk_source_info",
+        override_value(overrides, &["account_sdk_source_info"])
+            .or_else(|| read_env("DOUYIN_ACCOUNT_SDK_SOURCE_INFO"))
+            .unwrap_or_default(),
+    );
+    push_param(&mut params, "p_js_v", env_or("DOUYIN_P_JS_V", "3.1.3"));
+    push_param(&mut params, "p_js_t", env_or("DOUYIN_P_JS_T", "pro"));
+    push_param(&mut params, "p_zt", env_or("DOUYIN_P_ZT", "3.3.10"));
+    push_param(&mut params, "p_ver", env_or("DOUYIN_P_VER", "1.1.3"));
+    push_param(&mut params, "p_ver_real", env_or("DOUYIN_P_VER_REAL", "0"));
+    push_param(
+        &mut params,
+        "p_bd",
+        param_value(overrides, &["p_bd"], "DOUYIN_P_BD", "1.0.1.19-fix.01"),
+    );
+    push_param(
+        &mut params,
+        "p_ts",
+        param_value(overrides, &["p_ts"], "DOUYIN_P_TS", &now_ms),
+    );
+    push_param(
+        &mut params,
+        "p_no",
+        override_value(overrides, &["p_no"])
+            .or_else(|| read_env("DOUYIN_P_NO"))
+            .unwrap_or_else(|| now_secs.clone()),
+    );
+    push_param(
+        &mut params,
+        "biz_trace_id",
+        override_value(overrides, &["biz_trace_id"])
+            .or_else(|| read_env("DOUYIN_BIZ_TRACE_ID"))
+            .unwrap_or_else(|| now_ms.clone()),
+    );
+    push_param(
+        &mut params,
+        "device_platform",
+        param_value(
+            overrides,
+            &["device_platform"],
+            "DOUYIN_DEVICE_PLATFORM",
+            "web_app",
+        ),
+    );
+    let ms_token = override_value(overrides, &["msToken", "ms_token"])
+        .or_else(|| read_env("DOUYIN_MS_TOKEN"))
+        .unwrap_or_else(|| generate_ms_token());
+    push_param(&mut params, "msToken", ms_token);
+    if let Some(sign) = override_value(overrides, &["sign"]).or_else(|| read_env("DOUYIN_SIGN")) {
+        push_param(&mut params, "sign", sign);
+    }
+    if let Some(qs) = override_value(overrides, &["qs"]).or_else(|| read_env("DOUYIN_QS")) {
+        push_param(&mut params, "qs", qs);
+    }
+    let param_str = build_query_string_owned(&params);
+    let a_bogus = override_value(overrides, &["a_bogus", "a-bogus"])
+        .or_else(|| read_env("DOUYIN_A_BOGUS"))
+        .unwrap_or_else(|| generate_a_bogus(&param_str));
+    push_param(&mut params, "a_bogus", a_bogus);
+    params
+}
+
+fn challenge_body_override(overrides: Option<&HashMap<String, String>>) -> Option<String> {
+    override_value(overrides, &["challenge_body", "challenge_body_raw"])
+        .or_else(|| read_env("DOUYIN_PASSPORT_CHALLENGE_BODY"))
+}
+
+fn challenge_content_type_override(overrides: Option<&HashMap<String, String>>) -> String {
+    override_value(
+        overrides,
+        &["challenge_content_type", "challenge_content-type"],
+    )
+    .or_else(|| read_env("DOUYIN_PASSPORT_CHALLENGE_CONTENT_TYPE"))
+    .unwrap_or_else(|| "application/x-www-form-urlencoded".to_string())
+}
+
+fn normalize_params_raw(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    if let Some(map) = parse_structured_kv(trimmed) {
+        if map.is_empty() {
+            return trimmed.to_string();
+        }
+        let mut params = Vec::with_capacity(map.len());
+        for (k, v) in map {
+            params.push((k, v));
+        }
+        return build_query_string_owned(&params);
+    }
+    trimmed.to_string()
+}
+
+fn normalize_body(raw: &str, content_type: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    let is_json = content_type.to_ascii_lowercase().contains("json");
+    if let Some(map) = parse_structured_kv(trimmed) {
+        if map.is_empty() {
+            return trimmed.to_string();
+        }
+        if is_json {
+            return serde_json::to_string(&map).unwrap_or_else(|_| trimmed.to_string());
+        }
+        let mut params = Vec::with_capacity(map.len());
+        for (k, v) in map {
+            params.push((k, v));
+        }
+        return build_query_string_owned(&params);
+    }
+    trimmed.to_string()
+}
+
+fn parse_structured_kv(raw: &str) -> Option<HashMap<String, String>> {
+    let mut map = HashMap::new();
+    if raw.starts_with('{') {
+        if let Ok(json) = serde_json::from_str::<serde_json::Value>(raw) {
+            if let Some(obj) = json.as_object() {
+                for (k, v) in obj {
+                    if let Some(s) = v.as_str() {
+                        map.insert(k.clone(), s.to_string());
+                    } else if v.is_number() || v.is_boolean() {
+                        map.insert(k.clone(), v.to_string());
+                    }
+                }
+                return Some(map);
+            }
+        }
+    }
+    if let Ok(toml) = raw.parse::<TomlValue>() {
+        if toml.is_table() {
+            collect_toml_kv(&toml, &mut map);
+            if !map.is_empty() {
+                return Some(map);
+            }
+        }
+    }
+    if raw.trim_start().starts_with('{') {
+        let wrapped = format!("data = {raw}");
+        if let Ok(toml) = wrapped.parse::<TomlValue>() {
+            if let Some(data) = toml.get("data") {
+                if data.is_table() {
+                    collect_toml_kv(data, &mut map);
+                    if !map.is_empty() {
+                        return Some(map);
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+async fn fetch_douyin_passport_challenge(
+    client: &Client,
+    headers: &reqwest::header::HeaderMap,
+    cookies: &mut HashMap<String, String>,
+    overrides: Option<&HashMap<String, String>>,
+) {
+    let raw_query = override_value(overrides, &["challenge_params_raw"])
+        .or_else(|| read_env("DOUYIN_PASSPORT_CHALLENGE_PARAMS_RAW"));
+    let url = if let Some(raw) = raw_query {
+        let param_str = normalize_params_raw(&raw);
+        format!("https://login.douyin.com/passport/web/challenge/?{param_str}")
+    } else {
+        let params = build_douyin_challenge_params(overrides);
+        let param_str = build_query_string_owned(&params);
+        format!("https://login.douyin.com/passport/web/challenge/?{param_str}")
+    };
+    let mut req_headers = headers.clone();
+    let content_type = challenge_content_type_override(overrides);
+    if let Ok(parsed) = content_type.parse() {
+        req_headers.insert("content-type", parsed);
+    }
+    let cookie_header = format_cookie_header(cookies);
+    if !cookie_header.is_empty() {
+        req_headers.insert("Cookie", cookie_header.parse().unwrap());
+    }
+    let body = challenge_body_override(overrides)
+        .map(|raw| normalize_body(&raw, &content_type))
+        .unwrap_or_default();
+    let resp = client
+        .post(&url)
+        .headers(req_headers)
+        .body(body)
+        .send()
+        .await;
+    let Ok(resp) = resp else {
+        return;
+    };
+    let resp_headers = resp.headers().clone();
+    let json: serde_json::Value = resp.json().await.unwrap_or_default();
+    if let Some(data) = json.get("data") {
+        let passportiv_len = data
+            .get("passportiv")
+            .and_then(|v| v.as_str())
+            .map(|v| v.len())
+            .unwrap_or(0);
+        let template_len = data
+            .get("template")
+            .and_then(|v| v.as_str())
+            .map(|v| v.len())
+            .unwrap_or(0);
+        log::info!(
+            "[Douyin] challenge ok: passportiv_len={}, template_len={}",
+            passportiv_len,
+            template_len
+        );
+    } else {
+        log::warn!("[Douyin] challenge response: {}", json);
+    }
+    let resp_cookies = parse_set_cookies(&resp_headers);
+    for (k, v) in resp_cookies {
+        cookies.insert(k, v);
+    }
+}
+
+async fn fetch_ttwid_check(
+    client: &Client,
+    headers: &reqwest::header::HeaderMap,
+    cookies: &mut HashMap<String, String>,
+    overrides: Option<&HashMap<String, String>>,
+) {
+    let payload = ttwid_check_payload(overrides);
+    let mut ttwid_headers = headers.clone();
+    let ttwid_accept = override_value(overrides, &["ttwid_accept"])
+        .unwrap_or_else(|| "application/json, text/plain, */*".to_string());
+    if let Ok(parsed) = ttwid_accept.parse() {
+        ttwid_headers.insert("accept", parsed);
+    }
+    ttwid_headers.insert("content-type", "application/json".parse().unwrap());
+    let cookie_header = format_cookie_header(cookies);
+    if !cookie_header.is_empty() {
+        ttwid_headers.insert("Cookie", cookie_header.parse().unwrap());
+    }
+    let resp = client
+        .post("https://login.douyin.com/ttwid/check/")
+        .headers(ttwid_headers)
+        .json(&payload)
+        .send()
+        .await;
+    let Ok(resp) = resp else {
+        return;
+    };
+    let resp_headers = resp.headers().clone();
+    let _ = resp.json::<serde_json::Value>().await;
+    let resp_cookies = parse_set_cookies(&resp_headers);
+    for (k, v) in resp_cookies {
+        cookies.insert(k, v);
+    }
 }
 
 pub async fn get_room_info(
@@ -422,6 +808,33 @@ fn env_or(key: &str, default: &str) -> String {
     read_env(key).unwrap_or_else(|| default.to_string())
 }
 
+fn reverse_generate_root() -> Option<PathBuf> {
+    let cwd = std::env::current_dir().ok()?;
+    let root = if cwd.file_name().and_then(|s| s.to_str()) == Some("src-tauri") {
+        cwd.parent().unwrap_or(&cwd).to_path_buf()
+    } else {
+        cwd
+    };
+    Some(
+        root.join("src-tauri")
+            .join("crates")
+            .join("recorder")
+            .join("src")
+            .join("ReverseGenerate"),
+    )
+}
+
+fn douyin_overrides_path() -> Option<PathBuf> {
+    if let Some(path) = read_env("DOUYIN_PASSPORT_OVERRIDES_FILE") {
+        let trimmed = path.trim();
+        if !trimmed.is_empty() {
+            return Some(PathBuf::from(trimmed));
+        }
+    }
+    let root = reverse_generate_root()?;
+    Some(root.join("qr_login.toml"))
+}
+
 fn push_param(params: &mut Vec<(String, String)>, key: &str, value: String) {
     if !value.is_empty() {
         params.push((key.to_string(), value));
@@ -509,6 +922,16 @@ fn build_douyin_passport_params(
     );
     push_param(
         &mut params,
+        "cookie_enabled",
+        param_value(
+            overrides,
+            &["cookie_enabled"],
+            "DOUYIN_COOKIE_ENABLED",
+            "true",
+        ),
+    );
+    push_param(
+        &mut params,
         "passport_jssdk_type",
         param_value(
             overrides,
@@ -531,6 +954,91 @@ fn build_douyin_passport_params(
         &mut params,
         "aid",
         param_value(overrides, &["aid"], "DOUYIN_AID", "6383"),
+    );
+    push_param(
+        &mut params,
+        "browser_language",
+        param_value(
+            overrides,
+            &["browser_language"],
+            "DOUYIN_BROWSER_LANGUAGE",
+            "zh-CN",
+        ),
+    );
+    push_param(
+        &mut params,
+        "browser_platform",
+        param_value(
+            overrides,
+            &["browser_platform"],
+            "DOUYIN_BROWSER_PLATFORM",
+            "Win32",
+        ),
+    );
+    push_param(
+        &mut params,
+        "browser_name",
+        param_value(
+            overrides,
+            &["browser_name"],
+            "DOUYIN_BROWSER_NAME",
+            "Chrome",
+        ),
+    );
+    push_param(
+        &mut params,
+        "browser_version",
+        param_value(
+            overrides,
+            &["browser_version"],
+            "DOUYIN_BROWSER_VERSION",
+            "138.0.0.0",
+        ),
+    );
+    push_param(
+        &mut params,
+        "browser_online",
+        param_value(
+            overrides,
+            &["browser_online"],
+            "DOUYIN_BROWSER_ONLINE",
+            "true",
+        ),
+    );
+    push_param(
+        &mut params,
+        "screen_width",
+        param_value(
+            overrides,
+            &["screen_width"],
+            "DOUYIN_SCREEN_WIDTH",
+            "2560",
+        ),
+    );
+    push_param(
+        &mut params,
+        "screen_height",
+        param_value(
+            overrides,
+            &["screen_height"],
+            "DOUYIN_SCREEN_HEIGHT",
+            "1440",
+        ),
+    );
+    push_param(
+        &mut params,
+        "os_name",
+        param_value(overrides, &["os_name"], "DOUYIN_OS_NAME", "Windows"),
+    );
+    push_param(
+        &mut params,
+        "os_version",
+        param_value(overrides, &["os_version"], "DOUYIN_OS_VERSION", "10"),
+    );
+    push_param(
+        &mut params,
+        "platform",
+        param_value(overrides, &["platform"], "DOUYIN_PLATFORM", "PC"),
     );
     push_param(
         &mut params,
@@ -560,7 +1068,7 @@ fn build_douyin_passport_params(
                 overrides,
                 &["next"],
                 "DOUYIN_NEXT",
-                "https://live.douyin.com",
+                "https://www.douyin.com",
             ),
         );
     }
@@ -640,7 +1148,7 @@ fn build_douyin_passport_params(
             overrides,
             &["service"],
             "DOUYIN_SERVICE",
-            "https://live.douyin.com",
+            "https://www.douyin.com",
         ),
     );
     push_param(&mut params, "p_js_v", env_or("DOUYIN_P_JS_V", "3.1.3"));
@@ -655,7 +1163,7 @@ fn build_douyin_passport_params(
             overrides,
             &["request_host"],
             "DOUYIN_REQUEST_HOST",
-            "https://live.douyin.com",
+            "https://www.douyin.com",
         ),
     );
     push_param(
@@ -724,9 +1232,9 @@ fn apply_douyin_passport_headers(
     overrides: Option<&HashMap<String, String>>,
 ) {
     let origin = override_value(overrides, &["qr_origin", "origin"])
-        .unwrap_or_else(|| env_or("DOUYIN_QR_ORIGIN", "https://live.douyin.com"));
+        .unwrap_or_else(|| env_or("DOUYIN_QR_ORIGIN", "https://www.douyin.com"));
     let referer = override_value(overrides, &["qr_referer", "referer"])
-        .unwrap_or_else(|| env_or("DOUYIN_QR_REFERER", "https://live.douyin.com/"));
+        .unwrap_or_else(|| env_or("DOUYIN_QR_REFERER", "https://www.douyin.com/"));
     headers.insert("Origin", origin.parse().unwrap());
     headers.insert("Referer", referer.parse().unwrap());
     let csrf = override_value(
@@ -772,29 +1280,123 @@ fn apply_douyin_passport_headers(
     }
 }
 
+fn apply_douyin_browser_headers(
+    headers: &mut reqwest::header::HeaderMap,
+    overrides: Option<&HashMap<String, String>>,
+) {
+    let defaults = [
+        ("accept", "application/json, text/javascript"),
+        ("accept-encoding", "gzip, deflate, br, zstd"),
+        ("accept-language", "zh-CN,zh;q=0.9,en;q=0.8"),
+        (
+            "sec-ch-ua",
+            "\"Not)A;Brand\";v=\"8\", \"Chromium\";v=\"138\", \"Google Chrome\";v=\"138\"",
+        ),
+        ("sec-ch-ua-mobile", "?0"),
+        ("sec-ch-ua-platform", "\"Windows\""),
+        ("sec-fetch-dest", "empty"),
+        ("sec-fetch-mode", "cors"),
+        ("sec-fetch-site", "same-site"),
+    ];
+    for (key, value) in defaults {
+        let override_key = key.replace('-', "_");
+        let picked = override_value(overrides, &[key, override_key.as_str()])
+            .or_else(|| read_env(&format!("DOUYIN_{}", override_key.to_ascii_uppercase())));
+        let value = picked.unwrap_or_else(|| value.to_string());
+        if let Ok(parsed) = value.parse() {
+            headers.insert(key, parsed);
+        }
+    }
+}
+
 async fn fetch_douyin_passport_overrides(
     client: &Client,
 ) -> Option<HashMap<String, String>> {
-    let url = read_env("DOUYIN_PASSPORT_PROVIDER_URL")?;
-    if url.trim().is_empty() {
-        return None;
-    }
-    let resp = client.get(url).send().await.ok()?;
-    let json: serde_json::Value = resp.json().await.ok()?;
-    let data = json.get("data").unwrap_or(&json);
-    let obj = data.as_object()?;
     let mut map = HashMap::new();
-    for (k, v) in obj {
-        if let Some(s) = v.as_str() {
-            map.insert(k.clone(), s.to_string());
-        } else if v.is_number() || v.is_boolean() {
-            map.insert(k.clone(), v.to_string());
+
+    if let Some(path) = douyin_overrides_path() {
+        if let Ok(raw) = fs::read_to_string(&path) {
+            let ext = path
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .unwrap_or("")
+                .to_ascii_lowercase();
+            let mut parsed = false;
+            if ext == "json" || ext.is_empty() {
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&raw) {
+                    let data = json.get("data").unwrap_or(&json);
+                    if let Some(obj) = data.as_object() {
+                        for (k, v) in obj {
+                            if let Some(s) = v.as_str() {
+                                map.insert(k.clone(), s.to_string());
+                            } else if v.is_number() || v.is_boolean() {
+                                map.insert(k.clone(), v.to_string());
+                            } else if v.is_object() || v.is_array() {
+                                map.insert(k.clone(), v.to_string());
+                            }
+                        }
+                    }
+                    parsed = true;
+                }
+            }
+            if !parsed {
+                if let Ok(toml) = raw.parse::<TomlValue>() {
+                    if let Some(table) = toml.as_table() {
+                        if let Some(douyin) = table.get("douyin_passport") {
+                            collect_toml_kv(douyin, &mut map);
+                        } else if let Some(douyin) = table.get("douyin") {
+                            collect_toml_kv(douyin, &mut map);
+                        } else if let Some(qr_login) = table.get("qr_login") {
+                            if let Some(qr_table) = qr_login.as_table() {
+                                if let Some(douyin) = qr_table.get("douyin_passport") {
+                                    collect_toml_kv(douyin, &mut map);
+                                } else if let Some(douyin) = qr_table.get("douyin") {
+                                    collect_toml_kv(douyin, &mut map);
+                                }
+                            }
+                        } else {
+                            collect_toml_kv(&toml, &mut map);
+                        }
+                    }
+                }
+            }
         }
     }
-    if map.is_empty() {
-        None
-    } else {
-        Some(map)
+
+    if let Some(url) = read_env("DOUYIN_PASSPORT_PROVIDER_URL") {
+        if !url.trim().is_empty() {
+            if let Ok(resp) = client.get(url).send().await {
+                if let Ok(json) = resp.json::<serde_json::Value>().await {
+                    let data = json.get("data").unwrap_or(&json);
+                    if let Some(obj) = data.as_object() {
+                        for (k, v) in obj {
+                            if let Some(s) = v.as_str() {
+                                map.entry(k.clone()).or_insert_with(|| s.to_string());
+                            } else if v.is_number() || v.is_boolean() {
+                                map.entry(k.clone()).or_insert_with(|| v.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if map.is_empty() { None } else { Some(map) }
+}
+
+fn collect_toml_kv(value: &TomlValue, map: &mut HashMap<String, String>) {
+    let Some(table) = value.as_table() else {
+        return;
+    };
+    for (k, v) in table {
+        if let Some(s) = v.as_str() {
+            map.insert(k.to_string(), s.to_string());
+        } else if v.is_integer() || v.is_float() || v.is_bool() {
+            map.insert(k.to_string(), v.to_string());
+        } else if v.is_table() || v.is_array() {
+            map.insert(k.to_string(), v.to_string());
+        }
     }
 }
 
@@ -841,15 +1443,37 @@ pub async fn get_qr_login(client: &Client) -> Result<DouyinQrInfo, RecorderError
         .unwrap_or_default();
     let mut overrides = fetch_douyin_passport_overrides(&request_client).await.unwrap_or_default();
     apply_passport_cookie_overrides(&mut overrides, &mut cookies);
+    apply_douyin_browser_headers(&mut headers, Some(&overrides));
     apply_douyin_passport_headers(&mut headers, &passport_csrf, Some(&overrides));
     let cookie_header = format_cookie_header(&cookies);
     if !cookie_header.is_empty() {
         headers.insert("Cookie", cookie_header.parse().unwrap());
     }
+    if env_or("DOUYIN_PASSPORT_CHALLENGE", "1") == "1" {
+        fetch_douyin_passport_challenge(&request_client, &headers, &mut cookies, Some(&overrides))
+            .await;
+        let cookie_header = format_cookie_header(&cookies);
+        if !cookie_header.is_empty() {
+            headers.insert("Cookie", cookie_header.parse().unwrap());
+        }
+    }
+    if env_or("DOUYIN_TTWID_CHECK", "1") == "1" {
+        fetch_ttwid_check(&request_client, &headers, &mut cookies, Some(&overrides)).await;
+        let cookie_header = format_cookie_header(&cookies);
+        if !cookie_header.is_empty() {
+            headers.insert("Cookie", cookie_header.parse().unwrap());
+        }
+    }
 
     let url = {
-        let query_params = build_douyin_passport_params(true, Some(&overrides));
-        let param_str = build_query_string_owned(&query_params);
+        let raw_query = override_value(Some(&overrides), &["params_raw"])
+            .or_else(|| read_env("DOUYIN_PASSPORT_PARAMS_RAW"));
+        let param_str = if let Some(raw) = raw_query {
+            normalize_params_raw(&raw)
+        } else {
+            let query_params = build_douyin_passport_params(true, Some(&overrides));
+            build_query_string_owned(&query_params)
+        };
         format!(
             "https://login.douyin.com/passport/web/get_qrcode/?{param_str}"
         )
@@ -928,15 +1552,32 @@ pub async fn get_qr_login_status(
     let mut cookie_map = parse_cookie_header(&cookie_header);
     let mut overrides = fetch_douyin_passport_overrides(&request_client).await.unwrap_or_default();
     apply_passport_cookie_overrides(&mut overrides, &mut cookie_map);
+    apply_douyin_browser_headers(&mut headers, Some(&overrides));
     apply_douyin_passport_headers(&mut headers, passport_csrf, Some(&overrides));
-    if !cookie_header.is_empty() {
-        headers.insert("Cookie", cookie_header.parse().unwrap());
+    let merged_cookie_header = format_cookie_header(&cookie_map);
+    if !merged_cookie_header.is_empty() {
+        headers.insert("Cookie", merged_cookie_header.parse().unwrap());
+    }
+    if env_or("DOUYIN_PASSPORT_CHALLENGE", "1") == "1" {
+        fetch_douyin_passport_challenge(&request_client, &headers, &mut cookie_map, Some(&overrides))
+            .await;
+        let merged_cookie_header = format_cookie_header(&cookie_map);
+        if !merged_cookie_header.is_empty() {
+            headers.insert("Cookie", merged_cookie_header.parse().unwrap());
+        }
     }
 
     let url = {
-        let mut query_params = build_douyin_passport_params(false, Some(&overrides));
-        push_param(&mut query_params, "token", token.to_string());
-        let param_str = build_query_string_owned(&query_params);
+        let raw_query = override_value(Some(&overrides), &["params_raw_status", "params_raw"])
+            .or_else(|| read_env("DOUYIN_PASSPORT_PARAMS_RAW_STATUS"))
+            .or_else(|| read_env("DOUYIN_PASSPORT_PARAMS_RAW"));
+        let param_str = if let Some(raw) = raw_query {
+            normalize_params_raw(&raw)
+        } else {
+            let mut query_params = build_douyin_passport_params(false, Some(&overrides));
+            push_param(&mut query_params, "token", token.to_string());
+            build_query_string_owned(&query_params)
+        };
         format!(
             "https://login.douyin.com/passport/web/check_qrconnect/?{param_str}"
         )
@@ -999,6 +1640,17 @@ pub async fn get_qr_login_status(
         .unwrap_or("");
 
     if error_code != 0 || top_message == "error" {
+        if error_code == 4031 {
+            let missing_session = !headers.contains_key("x-tt-session-dtrait");
+            let missing_portrait = !headers.contains_key("x-tt-passport-verify-portrait");
+            if missing_session || missing_portrait {
+                log::warn!(
+                    "[Douyin] QR headers missing: session_dtrait={}, verify_portrait={}. Set DOUYIN_X_TT_SESSION_DTRAIT / DOUYIN_X_TT_PASSPORT_VERIFY_PORTRAIT or overrides file.",
+                    missing_session,
+                    missing_portrait
+                );
+            }
+        }
         let msg = if !description.is_empty() {
             description.to_string()
         } else if error_code != 0 {

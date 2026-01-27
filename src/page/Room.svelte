@@ -44,6 +44,123 @@
       room.room_info.room_id.toString().includes(query)
     );
   });
+  let multiSelect = false;
+  let selectedRoomKeys: string[] = [];
+  $: selectedRoomCount = selectedRoomKeys.length;
+  const cardElements: Map<string, HTMLElement> = new Map();
+  let gridRef: HTMLDivElement;
+  let dragSelecting = false;
+  let dragStart = { x: 0, y: 0 };
+  let dragRect: { left: number; top: number; width: number; height: number } | null =
+    null;
+
+  function roomKey(room: RecorderInfo) {
+    return `${room.room_info.platform}:${room.room_info.room_id}`;
+  }
+
+  function isRoomSelected(room: RecorderInfo) {
+    return selectedRoomKeys.includes(roomKey(room));
+  }
+
+  function toggleRoomSelection(room: RecorderInfo) {
+    const key = roomKey(room);
+    if (selectedRoomKeys.includes(key)) {
+      selectedRoomKeys = selectedRoomKeys.filter((item) => item !== key);
+    } else {
+      selectedRoomKeys = [...selectedRoomKeys, key];
+    }
+  }
+
+  function clearRoomSelection() {
+    selectedRoomKeys = [];
+  }
+
+  function selectAllFiltered() {
+    selectedRoomKeys = filteredRecorders.map((room) => roomKey(room));
+  }
+
+  function getSelectedRooms() {
+    const selected = new Map<string, RecorderInfo>();
+    for (const room of summary.recorders) {
+      const key = roomKey(room);
+      if (selectedRoomKeys.includes(key)) {
+        selected.set(key, room);
+      }
+    }
+    return Array.from(selected.values());
+  }
+
+  function cardRef(node: HTMLElement, room: RecorderInfo) {
+    const key = roomKey(room);
+    cardElements.set(key, node);
+    return {
+      update(newRoom: RecorderInfo) {
+        const newKey = roomKey(newRoom);
+        if (newKey !== key) {
+          cardElements.delete(key);
+          cardElements.set(newKey, node);
+        }
+      },
+      destroy() {
+        cardElements.delete(key);
+      },
+    };
+  }
+
+  function shouldIgnoreSelectionTarget(target: HTMLElement) {
+    if (!target) return false;
+    return !!target.closest(
+      "button, a, input, textarea, select, svg, path, .dropdown, .flowbite-dropdown"
+    );
+  }
+
+  function handleRoomClick(event: MouseEvent, room: RecorderInfo) {
+    if (!multiSelect) return;
+    const target = event.target as HTMLElement;
+    if (shouldIgnoreSelectionTarget(target)) return;
+    toggleRoomSelection(room);
+  }
+
+  function handleGridMouseDown(event: MouseEvent) {
+    if (!multiSelect) return;
+    const target = event.target as HTMLElement;
+    if (shouldIgnoreSelectionTarget(target)) return;
+    dragSelecting = true;
+    dragStart = { x: event.clientX, y: event.clientY };
+    dragRect = { left: event.clientX, top: event.clientY, width: 0, height: 0 };
+  }
+
+  function handleDragMove(event: MouseEvent) {
+    if (!dragSelecting) return;
+    const left = Math.min(dragStart.x, event.clientX);
+    const top = Math.min(dragStart.y, event.clientY);
+    const width = Math.abs(event.clientX - dragStart.x);
+    const height = Math.abs(event.clientY - dragStart.y);
+    dragRect = { left, top, width, height };
+  }
+
+  function handleDragEnd() {
+    if (!dragSelecting) return;
+    dragSelecting = false;
+    if (!dragRect || (dragRect.width < 4 && dragRect.height < 4)) {
+      dragRect = null;
+      return;
+    }
+    const selected: string[] = [];
+    for (const [key, el] of cardElements) {
+      const rect = el.getBoundingClientRect();
+      const intersects =
+        rect.left < dragRect.left + dragRect.width &&
+        rect.left + rect.width > dragRect.left &&
+        rect.top < dragRect.top + dragRect.height &&
+        rect.top + rect.height > dragRect.top;
+      if (intersects) {
+        selected.push(key);
+      }
+    }
+    selectedRoomKeys = selected;
+    dragRect = null;
+  }
 
   function default_avatar(platform: string) {
     const avatarMap = {
@@ -174,13 +291,17 @@
     }
 
     summary = new_summary;
+    const validKeys = new Set(new_summary.recorders.map((room) => roomKey(room)));
+    selectedRoomKeys = selectedRoomKeys.filter((key) => validKeys.has(key));
   }
   update_summary();
   setInterval(update_summary, 5000);
 
   // modals
   let deleteModal = false;
-  let deleteRoom = null;
+  let deleteRoom: RecorderInfo = null;
+  let deleteRooms: RecorderInfo[] = [];
+  let deleteMode: "single" | "bulk" = "single";
 
   let addModal = false;
   let addRoom = "";
@@ -192,6 +313,9 @@
   let batchValidCount = 0;
   let batchInvalidCount = 0;
   let batchEntries: { roomId: string; platform: string }[] = [];
+  // generate whole clip modal state
+  let generateWholeClipModal = false;
+  let generateWholeClipArchive: RecordItem | null = null;
   $: {
     if (!batchMode) {
       const trimmed = addRoom.trim();
@@ -207,8 +331,7 @@
         addErrorMsg = "";
       } else if (needsNumeric && !Number.isInteger(Number(normalizedRoomId))) {
         addValid = false;
-        addErrorMsg =
-          "\u0049\u0044\u683c\u5f0f\u9519\u8bef\uff0c\u8bf7\u68c0\u67e5\u8f93\u5165";
+        addErrorMsg = "\u0049\u0044\u683c\u5f0f\u9519\u8bef\uff0c\u8bf7\u68c0\u67e5\u8f93\u5165";
       } else {
         addValid = true;
         addErrorMsg = "";
@@ -289,9 +412,6 @@
         );
       });
 
-      // 更新总数（如果后端支持的话）
-      // totalCount = await invoke("get_archives_count", { roomId: archiveRoom.room_id });
-
       currentPage++;
     } catch (error) {
       console.error("Failed to load archives:", error);
@@ -353,62 +473,47 @@
     return ((size * 8) / duration / 1024).toFixed(0);
   }
 
-  function handleModalClickOutside(event) {
-    // 检查点击是否在任何modal内部
-    const clickedElement = event.target;
+  function handleModalClickOutside(event: MouseEvent) {
+    const clickedElement = event.target as HTMLElement;
 
-    // 检查是否点击了按钮，如果是则不关闭modal
     if (clickedElement.closest("button")) {
       return;
     }
 
-    // 按层级顺序检查modal，优先处理最上层的modal
-    // 如果点击在最上层modal内部，则不处理任何modal关闭
-
-    // 最上层：generateWholeClipModal (handled by component)
     if (generateWholeClipModal) {
-      return; // Let the component handle its own modal closing
+      return;
     }
 
-    // 第二层：archiveModal
     if (archiveModal) {
       const archiveModalEl = document.querySelector(".archive-modal");
       if (archiveModalEl) {
         if (archiveModalEl.contains(clickedElement)) {
-          // 点击在archiveModal内部，不关闭任何modal
           return;
         } else {
-          // 点击在archiveModal外部，关闭它
           archiveModal = false;
           return;
         }
       }
     }
 
-    // 第三层：addModal
     if (addModal) {
       const addModalEl = document.querySelector(".add-modal");
       if (addModalEl) {
         if (addModalEl.contains(clickedElement)) {
-          // 点击在addModal内部，不关闭任何modal
           return;
         } else {
-          // 点击在addModal外部，关闭它
           addModal = false;
           return;
         }
       }
     }
 
-    // 第四层：deleteModal
     if (deleteModal) {
       const deleteModalEl = document.querySelector(".delete-modal");
       if (deleteModalEl) {
         if (deleteModalEl.contains(clickedElement)) {
-          // 点击在deleteModal内部，不关闭任何modal
           return;
         } else {
-          // 点击在deleteModal外部，关闭它
           deleteModal = false;
           return;
         }
@@ -481,31 +586,49 @@
     const patterns = [
       {
         platform: "bilibili",
-        re: /(?:bsr:\/\/)?https?:\/\/live\.bilibili\.com\/(\d+)/i,
+        re: new RegExp(
+          String.raw`(?:bsr://)?https?://live\.bilibili\.com/(\d+)`,
+          "i"
+        ),
       },
       {
         platform: "bilibili",
-        re: /bsr:\/\/live\.bilibili\.com\/(\d+)/i,
+        re: new RegExp(String.raw`bsr://live\.bilibili\.com/(\d+)`, "i"),
       },
       {
         platform: "douyin",
-        re: /(?:bsr:\/\/)?https?:\/\/live\.douyin\.com\/(\d+)/i,
+        re: new RegExp(
+          String.raw`(?:bsr://)?https?://live\.douyin\.com/(\d+)`,
+          "i"
+        ),
       },
       {
         platform: "kuaishou",
-        re: /(?:bsr:\/\/)?https?:\/\/live\.kuaishou\.com\/(?:u\/)?([A-Za-z0-9]+)/i,
+        re: new RegExp(
+          String.raw`(?:bsr://)?https?://live\.kuaishou\.com/(?:u/)?([A-Za-z0-9]+)`,
+          "i"
+        ),
       },
       {
         platform: "tiktok",
-        re: /webcast\.tiktok\.com\/webcast\/(?:feed|room\/info|im\/fetch)\/.*[?&]room_id=(\d+)/i,
+        re: new RegExp(
+          String.raw`webcast\.tiktok\.com/webcast/(?:feed|room/info|im/fetch)/.*[?&]room_id=(\d+)`,
+          "i"
+        ),
       },
       {
         platform: "tiktok",
-        re: /(?:bsr:\/\/)?https?:\/\/(?:www\.)?tiktok\.com\/@?([^\/\?]+)\/live/i,
+        re: new RegExp(
+          String.raw`(?:bsr://)?https?://(?:www\.)?tiktok\.com/@?([^/\?]+)/live`,
+          "i"
+        ),
       },
       {
         platform: "tiktok",
-        re: /(?:bsr:\/\/)?https?:\/\/(?:www\.)?tiktok\.com\/@?([^\/\?]+)\/?$/i,
+        re: new RegExp(
+          String.raw`(?:bsr://)?https?://(?:www\.)?tiktok\.com/@?([^/\?]+)/?$`,
+          "i"
+        ),
       },
     ];
 
@@ -538,7 +661,8 @@
   }
 
   function buildBatchEntries(raw: string, defaultPlatform: string) {
-    const lines = raw.split(/\r?\n/);
+    const normalizedRaw = raw.replace(/\\r?\\n/g, "\n");
+    const lines = normalizedRaw.split(/\r?\n/);
     const entries: { roomId: string; platform: string }[] = [];
     const seen = new Set<string>();
     let invalidCount = 0;
@@ -578,13 +702,12 @@
         ? entry.roomId
         : `${entry.platform} ${entry.roomId}`
     );
-    batchInput = normalizedLines.join("\n");
+    batchInput = normalizedLines.join("\\n");
     batchValidCount = entries.length;
     batchInvalidCount = invalidCount;
   }
 
   function addNewRecorder(room_id: string, platform: string, extra: string) {
-    // if extra contains ?, remove it
     if (extra.includes("?")) {
       extra = extra.split("?")[0];
     }
@@ -605,7 +728,7 @@
 
   async function addBatchRecorders() {
     if (batchEntries.length === 0) {
-      await message("\u6ca1\u6709\u53ef\u6dfb\u52a0\u7684\u76f4\u64ad\u95f4");
+      await message("没有可添加的直播间");
       return;
     }
     let success = 0;
@@ -631,8 +754,8 @@
     addModal = false;
     addRoom = "";
     batchInput = "";
-    const detail = failed > 0 ? `\uff0c\u5931\u8d25 ${failed} \u4e2a` : "";
-    const summary = `\u6210\u529f ${success} \u4e2a${detail}`;
+    const detail = failed > 0 ? `，失败 ${failed} 个` : "";
+    const summary = `成功 ${success} 个${detail}`;
     if (failures.length > 0) {
       const maxLines = 20;
       const lines = failures
@@ -640,22 +763,14 @@
         .map((failure) => `${failure.platform}:${failure.roomId} - ${failure.error}`);
       const more =
         failures.length > maxLines
-          ? `\n... (${failures.length - maxLines} \u6761)`
+          ? `\\n... (${failures.length - maxLines} 条)`
           : "";
       await message(
-        `${summary}\n\n\u5931\u8d25\u660e\u7ec6:\n${lines.join("\n")}${more}`
+        `${summary}\\n\\n失败明细:\\n${lines.join("\\n")}${more}`
       );
     } else {
       await message(summary);
     }
-  }
-
-  let generateWholeClipModal = false;
-  let generateWholeClipArchive: RecordItem = null;
-
-  async function openGenerateWholeClipModal(archive: RecordItem) {
-    generateWholeClipModal = true;
-    generateWholeClipArchive = archive;
   }
 
   function handleWholeClipGenerated() {
@@ -668,10 +783,6 @@
       console.log("Received Deep Link:", urls);
       if (urls.length > 0) {
         const url = urls[0];
-        // extract platform and room_id from url
-        // url example:
-        // bsr://live.bilibili.com/167537?live_from=85001&spm_id_from=333.1365.live_users.item.click
-        // bsr://live.douyin.com/200525029536
 
         let platform = "";
         let room_id = "";
@@ -704,7 +815,9 @@
 
         if (url.startsWith("bsr://live.kuaishou.com/")) {
           room_id = url.replace("bsr://live.kuaishou.com/", "").split("?")[0];
-          room_id = room_id.replace(/^u\//, "");
+          if (room_id.startsWith("u/")) {
+            room_id = room_id.slice(2);
+          }
           platform = "kuaishou";
         }
 
@@ -723,13 +836,19 @@
             addValid = true;
             addErrorMsg = "";
           } else {
-            addErrorMsg = "ID格式错误，请检查输入";
+            addErrorMsg = "\u0049\u0044\u683c\u5f0f\u9519\u8bef\uff0c\u8bf7\u68c0\u67e5\u8f93\u5165";
             addValid = false;
           }
         }
       }
     });
   });
+
+  function openGenerateWholeClipModal(archive: RecordItem) {
+    generateWholeClipArchive = archive;
+    generateWholeClipModal = true;
+  }
+
 </script>
 
 <div class="flex-1 p-6 overflow-auto custom-scrollbar-light bg-gray-50 dark:bg-black">
@@ -764,6 +883,50 @@
           />
         </div>
         <button
+          class={"px-3 py-2 rounded-lg border text-sm transition-colors " +
+            (multiSelect
+              ? "bg-blue-500 text-white border-blue-500"
+              : "bg-white dark:bg-[#3c3c3e] text-gray-700 dark:text-gray-200 border-gray-200 dark:border-gray-600 hover:bg-gray-100 dark:hover:bg-gray-700")}
+          on:click={() => {
+            multiSelect = !multiSelect;
+            if (!multiSelect) {
+              clearRoomSelection();
+            }
+          }}
+        >
+          多选
+        </button>
+        {#if multiSelect}
+          <button
+            class="px-3 py-2 rounded-lg border text-sm bg-white dark:bg-[#3c3c3e] text-gray-700 dark:text-gray-200 border-gray-200 dark:border-gray-600 hover:bg-gray-100 dark:hover:bg-gray-700"
+            on:click={() => selectAllFiltered()}
+          >
+            全选
+          </button>
+          <button
+            class="px-3 py-2 rounded-lg border text-sm bg-white dark:bg-[#3c3c3e] text-gray-700 dark:text-gray-200 border-gray-200 dark:border-gray-600 hover:bg-gray-100 dark:hover:bg-gray-700"
+            on:click={() => clearRoomSelection()}
+          >
+            清空
+          </button>
+          <button
+            class={"px-3 py-2 rounded-lg border text-sm transition-colors " +
+              (selectedRoomCount === 0
+                ? "bg-gray-200 dark:bg-gray-700 text-gray-400 border-gray-200 dark:border-gray-700 cursor-not-allowed"
+                : "bg-red-600 text-white border-red-600 hover:bg-red-700")}
+            on:click={() => {
+              if (selectedRoomCount === 0) return;
+              deleteMode = "bulk";
+              deleteRooms = getSelectedRooms();
+              deleteRoom = null;
+              deleteModal = true;
+            }}
+            disabled={selectedRoomCount === 0}
+          >
+            删除选中({selectedRoomCount})
+          </button>
+        {/if}
+        <button
           class="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors flex items-center space-x-2"
           on:click={() => {
             addModal = true;
@@ -776,11 +939,20 @@
     </div>
 
     <!-- Room Grid -->
-    <div class="grid grid-cols-3 gap-4">
+    <div
+      class="grid grid-cols-3 gap-4"
+      bind:this={gridRef}
+      on:mousedown={handleGridMouseDown}
+    >
       <!-- Active Room Card -->
       {#each filteredRecorders as room (room.room_info.room_id)}
         <div
-          class="p-4 rounded-xl bg-white dark:bg-[#3c3c3e] border border-gray-200 dark:border-gray-700 hover:border-blue-500 dark:hover:border-blue-400 transition-colors"
+          use:cardRef={room}
+          class={"p-4 rounded-xl bg-white dark:bg-[#3c3c3e] border border-gray-200 dark:border-gray-700 hover:border-blue-500 dark:hover:border-blue-400 transition-colors " +
+            (multiSelect && isRoomSelected(room)
+              ? "ring-2 ring-blue-500 border-blue-500"
+              : "")}
+          on:click={(event) => handleRoomClick(event, room)}
         >
           <div class="relative">
             <img
@@ -847,11 +1019,28 @@
                 }}>打开网页直播间</DropdownItem
               >
               <DropdownItem
+                on:click={async () => {
+                  try {
+                    await invoke("reload_recorder", {
+                      roomId: room.room_info.room_id,
+                      platform: room.room_info.platform,
+                    });
+                    await update_summary();
+                  } catch (e) {
+                    console.error("Failed to reload recorder:", e);
+                  }
+                }}
+                >重载直播间</DropdownItem
+              >
+              <DropdownItem
                 class="text-red-500"
                 on:click={() => {
+                  deleteMode = "single";
                   deleteRoom = room;
+                  deleteRooms = [room];
                   deleteModal = true;
-                }}>移除直播间</DropdownItem
+                }}
+                }>移除直播间</DropdownItem
               >
             </Dropdown>
           </div>
@@ -969,10 +1158,12 @@
       <div class="p-6 space-y-4">
         <div class="text-center space-y-2">
           <h3 class="text-base font-medium text-gray-900 dark:text-white">
-            移除直播间
+            {deleteMode === "bulk" ? "批量移除直播间" : "移除直播间"}
           </h3>
           <p class="text-sm text-gray-500 dark:text-gray-400">
-            此操作将移除所有相关的录制记录
+            {deleteMode === "bulk"
+              ? `将移除选中的 ${deleteRooms.length} 个直播间及相关录制记录`
+              : "此操作将移除所有相关的录制记录"}
           </p>
         </div>
         <div class="flex justify-center space-x-3">
@@ -987,11 +1178,29 @@
           <button
             class="w-24 px-4 py-2 bg-red-600 hover:bg-red-700 text-white text-sm font-medium rounded-lg transition-colors"
             on:click={async () => {
-              await invoke("remove_recorder", {
-                roomId: deleteRoom.room_info.room_id,
-                platform: deleteRoom.room_info.platform,
-              });
+              if (deleteMode === "bulk") {
+                const targets = deleteRooms;
+                for (const room of targets) {
+                  try {
+                    await invoke("remove_recorder", {
+                      roomId: room.room_info.room_id,
+                      platform: room.room_info.platform,
+                    });
+                  } catch (e) {
+                    console.error("Failed to remove recorder:", e);
+                  }
+                }
+                clearRoomSelection();
+              } else if (deleteRoom) {
+                await invoke("remove_recorder", {
+                  roomId: deleteRoom.room_info.room_id,
+                  platform: deleteRoom.room_info.platform,
+                });
+              }
               deleteModal = false;
+              deleteRoom = null;
+              deleteRooms = [];
+              await update_summary();
             }}
           >
             移除
@@ -1412,7 +1621,18 @@
   on:generated={handleWholeClipGenerated}
 />
 
-<svelte:window on:mousedown={handleModalClickOutside} />
+<svelte:window
+  on:mousedown={handleModalClickOutside}
+  on:mousemove={handleDragMove}
+  on:mouseup={handleDragEnd}
+/>
+
+{#if dragRect}
+  <div
+    class="fixed pointer-events-none border border-blue-500/80 bg-blue-500/10 rounded"
+    style={`left:${dragRect.left}px;top:${dragRect.top}px;width:${dragRect.width}px;height:${dragRect.height}px;`}
+  ></div>
+{/if}
 
 <style>
   /* macOS style toggle switch */

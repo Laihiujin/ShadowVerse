@@ -153,12 +153,12 @@ let staticPortFetchedAt = 0;
 const STATIC_PORT_TTL_MS = 5000;
 let config: Config | null = null;
 
-async function get_static_url(base: string, path: string) {
+async function get_static_url(base: string, path: string, forceRefresh = false) {
   if (config === null) {
     config = (await invoke("get_config")) as any;
   }
   const now = Date.now();
-  if (STATIC_PORT === 0 || now - staticPortFetchedAt > STATIC_PORT_TTL_MS) {
+  if (forceRefresh || STATIC_PORT === 0 || now - staticPortFetchedAt > STATIC_PORT_TTL_MS) {
     const latest = await invoke("get_static_port");
     if (typeof latest === "number" && latest > 0) {
       if (latest !== STATIC_PORT) {

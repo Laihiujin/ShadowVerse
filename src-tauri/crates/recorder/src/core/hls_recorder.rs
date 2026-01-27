@@ -181,6 +181,7 @@ impl HlsRecorder {
                     }
                     RecorderError::M3u8ParseFailed { .. } => {
                         log::error!("[{}]M3u8 parse failed: {}", self.room_id, e);
+                        let _ = self.playlist.lock().await.close().await;
                         return Err(e);
                     }
                     RecorderError::InvalidResponseStatus { status }
@@ -198,11 +199,13 @@ impl HlsRecorder {
                     }
                     RecorderError::StreamExpired { .. } => {
                         log::error!("[{}]Stream expired", self.room_id);
+                        let _ = self.playlist.lock().await.close().await;
                         return Err(e);
                     }
                     _ => {
                         // Other errors are not critical, just log it
                         log::error!("[{}]Update entries error: {}", self.room_id, e);
+                        let _ = self.playlist.lock().await.close().await;
                         return Err(e);
                     }
                 }
@@ -211,6 +214,7 @@ impl HlsRecorder {
             tokio::time::sleep(UPDATE_INTERVAL).await;
         }
 
+        let _ = self.playlist.lock().await.close().await;
         Ok(())
     }
 

@@ -1,0 +1,5 @@
+[tiktok_web]
+# Optional override for X-Gnarly, if you already captured it.
+x_gnarly = ""
+# Optional override for signing user-agent.
+user_agent = ""

@@ -2,6 +2,7 @@ use crate::config::Config;
 use crate::danmu2ass::Danmu2AssOptions;
 use crate::state::State;
 use crate::state_type;
+use recorder::platforms::PlatformType;
 #[cfg(feature = "gui")]
 use tauri::Manager;
 
@@ -10,6 +11,9 @@ use tauri::Manager;
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn get_config(state: state_type!()) -> Result<Config, ()> {
     let mut config = state.config.read().await.clone();
+    for entry in &mut config.guest_accounts {
+        entry.cookies = String::new();
+    }
     for entry in &mut config.default_accounts {
         entry.cookies = String::new();
     }
@@ -258,6 +262,27 @@ pub async fn update_network_config(
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]
+pub async fn update_record_protocol_preference(
+    state: state_type!(),
+    record_protocol_preference: String,
+) -> Result<(), ()> {
+    let normalized = record_protocol_preference.trim().to_ascii_lowercase();
+    let mut config = state.config.write().await;
+    config.record_protocol_preference = normalized;
+    config.save();
+    config.apply_record_protocol_env();
+    drop(config);
+    if let Err(err) = state
+        .recorder_manager
+        .restart_recorders_for_platforms(&[PlatformType::Kuaishou, PlatformType::TikTok])
+        .await
+    {
+        log::warn!("Failed to restart recorders after protocol change: {err}");
+    }
+    Ok(())
+}
+
+#[cfg_attr(feature = "gui", tauri::command)]
 pub async fn update_auto_generate(
     state: state_type!(),
     enabled: bool,
@@ -278,13 +303,40 @@ pub async fn update_use_default_accounts(
 ) -> Result<(), ()> {
     let mut config = state.config.write().await;
     config.use_default_accounts = use_default_accounts;
+    if use_default_accounts {
+        config.use_guest_accounts = false;
+    }
     config.save();
     let config_snapshot = config.clone();
     drop(config);
     if use_default_accounts {
         crate::handlers::account::ensure_default_accounts(&state.db, &config_snapshot).await;
+        crate::handlers::account::remove_guest_accounts(&state.db, &config_snapshot).await;
     } else {
         crate::handlers::account::remove_default_accounts(&state.db, &config_snapshot).await;
+    }
+    Ok(())
+}
+
+#[cfg_attr(feature = "gui", tauri::command)]
+#[cfg_attr(feature = "headless", allow(dead_code))]
+pub async fn update_use_guest_accounts(
+    state: state_type!(),
+    use_guest_accounts: bool,
+) -> Result<(), String> {
+    let mut config = state.config.write().await;
+    config.use_guest_accounts = use_guest_accounts;
+    if use_guest_accounts {
+        config.use_default_accounts = false;
+    }
+    config.save();
+    let config_snapshot = config.clone();
+    drop(config);
+    if use_guest_accounts {
+        crate::handlers::account::remove_default_accounts(&state.db, &config_snapshot).await;
+        crate::handlers::account::refresh_guest_accounts(state.clone()).await?;
+    } else {
+        crate::handlers::account::remove_guest_accounts(&state.db, &config_snapshot).await;
     }
     Ok(())
 }

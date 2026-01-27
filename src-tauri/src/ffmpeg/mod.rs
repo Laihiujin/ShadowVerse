@@ -726,6 +726,7 @@ pub async fn generate_video_subtitle(
                 Some(openai_api_endpoint),
                 Some(openai_api_key),
                 Some(whisper_prompt),
+                Some(whisper_model),
             )
             .await
             {

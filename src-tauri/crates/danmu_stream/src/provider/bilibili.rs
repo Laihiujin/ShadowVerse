@@ -313,9 +313,10 @@ impl BiliDanmu {
         if let Some(user_id) = user_id {
             Ok(user_id)
         } else {
-            Err(DanmuStreamError::InvalidIdentifier {
-                err: format!("Failed to find user_id in cookie: {cookie}"),
-            })
+            log::warn!(
+                "Bilibili cookie missing DedeUserID, fallback to anonymous uid=0"
+            );
+            Ok(0)
         }
     }
 
@@ -436,6 +437,17 @@ struct WsSend {
     platform: String,
     #[serde(rename = "type")]
     t: u32,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::BiliDanmu;
+
+    #[test]
+    fn parse_user_id_allows_anonymous() {
+        let uid = BiliDanmu::parse_user_id("buvid3=abc; bili_jct=def").unwrap();
+        assert_eq!(uid, 0);
+    }
 }
 
 #[derive(Debug, Deserialize, Clone)]

@@ -13,6 +13,7 @@ pub struct AccountRow {
     pub avatar: String,
     pub csrf: String,
     pub cookies: String,
+    pub extra: String,
     pub created_at: String,
 }
 
@@ -35,13 +36,14 @@ impl Database {
     pub async fn add_account(&self, account: &AccountRow) -> Result<(), DatabaseError> {
         let lock = self.db.read().await.clone().unwrap();
         sqlx::query(
-            "INSERT INTO accounts (uid, platform, name, avatar, csrf, cookies, created_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7)
+            "INSERT INTO accounts (uid, platform, name, avatar, csrf, cookies, extra, created_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
              ON CONFLICT(uid, platform) DO UPDATE SET
                 name = excluded.name,
                 avatar = excluded.avatar,
                 csrf = excluded.csrf,
                 cookies = excluded.cookies,
+                extra = excluded.extra,
                 created_at = excluded.created_at",
         )
         .bind(&account.uid)
@@ -50,6 +52,7 @@ impl Database {
         .bind(&account.avatar)
         .bind(&account.csrf)
         .bind(&account.cookies)
+        .bind(&account.extra)
         .bind(&account.created_at)
         .execute(&lock)
         .await?;
@@ -210,6 +213,9 @@ fn merge_accounts(base: &AccountRow, accounts: &[AccountRow]) -> AccountRow {
         }
         if merged.csrf.trim().is_empty() && !account.csrf.trim().is_empty() {
             merged.csrf = account.csrf.clone();
+        }
+        if merged.extra.trim().is_empty() && !account.extra.trim().is_empty() {
+            merged.extra = account.extra.clone();
         }
 
         let extra = cookie_kv_map(&account.cookies);

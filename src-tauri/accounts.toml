@@ -1,0 +1,44 @@
+[[guest_accounts]]
+platform = "douyin"
+cookies = "fpk1=U2FsdGVkX183i36dptUOaiM3HT31q/Iaagp5/Mu16p0KznkpcUvHGuRkcCxr9FhHfELHUAhKcjYAZeUn6rtoAA==; IsDouyinActive=false; fpk2=7ddeda88d0c599cc494da0dece6554d5; __live_version__=%221.1.4.7799%22; hevc_supported=true; live_can_add_dy_2_desktop=%220%22; ttwid=1%7CwCYuG0_cqUTsIB2yfCGratVKsHOO2uzqWFXNcyz6AhA%7C1769501128%7C30621d9fc50c4c58abef8ae7855c56cdf26df39abb808db29faa47635b6545c2; isdouyinactive=false; live_use_vvc=%22false%22"
+extra = ""
+
+[[guest_accounts]]
+platform = "kuaishou"
+cookies = "kpn=GAME_ZONE; client_key=65890b29; kuaishou.live.bfb1s=477cb0011daca84b36b3a4676857e5a1; kwfv1=PnGU+9+Y8008S+nH0U+0mjPf8fP08f+98f+nLlwnrIP9+Sw/ZFGfzY+eGlGf+f+e4SGfbYP0QfGnLFwBLU80mYGALFGAm0808f+eLIPe4Dw/Ph+fc9w/W9+Bp0+echwezSGfzYPe8jPnHA+BPI+Bc9Pfb0PAGAGA8SGArhP0DI+AP=; didv=1769516854132; kwpsecproductname=PCLive; _did=web_386660621B19BB4; clientid=3; did=web_1e27b2260ee53bc8f45cd45a8e12b4b3"
+extra = ""
+
+[[guest_accounts]]
+platform = "tiktok"
+cookies = "tiktok_webapp_theme_source=auto; msToken=AEQggRKXN-SaBACHFF9S-8x_eSizG_274jBfMRxoJnl20T_pBzDNzzkE5-_OL4jOgI4hVY0PHCBSO3BI7KOsrG801-vbFX22Vck7N4EiWZizcyiWVwSCu3cNP5cuyy3K1t_CalFyThDKUw==; tt_csrf_token=JHQ4lSM2-5rE5-k8VTOFNiqc0Ah2kUKWudCc; passport_csrf_token_default=be683babc9e220acb2d6a219c58e9f1a; g_state={\"i_l\":0,\"i_ll\":1769501168525,\"i_b\":\"gloS++t//Uk1uFugtJyiphUk1N5l2dVhsLSq1LQjG+E\",\"i_e\":{\"enable_itp_optimization\":0}}; tt_chain_token=cfwVhvf38GxHMTui5BzfMA==; tiktok_webapp_theme=dark; mstoken=AEQggRKXN-SaBACHFF9S-8x_eSizG_274jBfMRxoJnl20T_pBzDNzzkE5-_OL4jOgI4hVY0PHCBSO3BI7KOsrG801-vbFX22Vck7N4EiWZizcyiWVwSCu3cNP5cuyy3K1t_CalFyThDKUw==; delay_guest_mode_vid=5; passport_csrf_token=be683babc9e220acb2d6a219c58e9f1a; ttwid=1%7CaDu-N7feC4HJYRrbbr2yAgh0EMz2IinT0N_95RZjUMA%7C1769501168%7Ca7b5098f2f37ddcf7745940c01cb65706347d6f438a140df04421a0489c5ee5f"
+extra = ""
+
+[[guest_accounts]]
+platform = "bilibili"
+cookies = "buvid3=2F34115E-6B80-1BC8-DF94-AEFB59E76FB531084infoc; bili_ticket_expires=1769760271; bili_ticket=eyJhbGciOiJIUzI1NiIsImtpZCI6InMwMyIsInR5cCI6IkpXVCJ9.eyJleHAiOjE3Njk3NjAzMzEsImlhdCI6MTc2OTUwMTA3MSwicGx0IjotMX0.xz97BSrCtGkXA5774SyRcQpZUrNS_99ptl10p9H1k_o; b_nut=1769501131; buvid4=12526CF6-B9A1-BE1C-78C4-B534CD34B54D31537-026012716-O6RsdG8LRWvzMGAhi07H9g%3D%3D; buvid_fp=ac690b66844d0278774565252807717d"
+extra = ""
+
+[[guest_accounts]]
+platform = "huya"
+cookies = "udb_anobiztoken=AQB5p1CWQjVJ7wzkNnDA8-eAyzJDotpLtZ2sfU3CD-Sr8G1eXCllmGYP5BMq4Dxo11tXl10u_8hIVscixZUMtVn3_kgJIqTA1TisfZW7NTIb42Z3PjClokcGolNEbE0NirV08D-BfzxcEOaRHoSNKmfm1U5TXsUSzaJiIfBrfR6T9KmnmqaBPGkPT3ulJrBNbAWEKydgl6uNdymiZsIM8fdhFWw80CLyoTLvQwMZz1vIIaQhLcdGCPJK48K4ZOx08GDIjI14891Te7hXmVUi9O8LSqpvJZYX1TZchKMGpOWKXA61ulgsxtTVXxWJSI14_WGKQNJKOQUNOh8tu0iFjcKR; SoundValue=0.50; _qimei_uuid42=1a11b141b231005ec633bc7dd500bd2461b5da0359; udb_guiddata=06dd4969a59f4be1ac3be1defa89f868; __yamid_new=CB8681F4FC000001808815DB16E11D3A; soundvalue=0.50; udb_deviceid=w_1068628371179712512; __yasmid=0.14901246085681408; _rep_cnt=2; huya_ua=webh5&0.0.1&activity; huya_web_rep_cnt=3; rep_cnt=1; udb_anouid=1470677145343; game_did=lBXsppyHwBMTm12NRJJW8-Y6hYrWbS3EU54; guid=0a89316e39af78693701b69bb79b1efe; __yamid_tt1=0.14901246085681408; _yasids=__rootsid%3DCB8681F51E7000019EB31BCA2A5210F0"
+extra = ""
+
+[[default_accounts]]
+platform = "douyin"
+cookies = ""
+extra = ""
+
+[[default_accounts]]
+platform = "kuaishou"
+cookies = "kuaishou.live.web.at=ChRrdWFpc2hvdS5saXZlLndlYi5hdBKwAZ4AnnXBQr1QydCl7ql5WRoJcecHKG0eYVN3EW4AzhzAiDoZJewzdu1NyMi8M7jfEkUtnofuqMfdBoxxygTsa8AHz91aywsb4NDOOcN5UuYZVYQskfpVXGsaaLCKiRPZosdyVMHx67qGRgDhR4BkDkOyzfH-rv029_eAm-40KZFxE6YhuIMVomgLpquhgelJ1pmFwD9N6yxbDzVYFh5SLoCqJdcELRUg2LXPxPdP_-H2GhJiaiaN_zlHVImhqY_KHZPstqMiIKdSid7XmaAcHH_ZQM15A89ZzWYsZlR9kiFipWfWYP8RKAUwAQ; kuaishou.live.web_st=ChRrdWFpc2hvdS5saXZlLndlYi5zdBKgAV_y01hCktOnuNGFFkw8E37V49BiRiO3HVTvv4imHdbzWsV2YXIo9hngmzmpW_50rSa7sP3OViseN7eXrA-2BTjpqhPrgjW2TDxohf46zXNWaFwAdhEakuOeSG8OZ6ESgwsIy35uPRn2BScLXcrGjdoYO4JXG0uZ54DHAIsbIQsEJ4mHdmelsnhylbooI4xcj2P4njxObi42DnRD4Jdx-BoaEqzjCHq0fUXesXMf4ciyRnDKKyIgm4SllLvxR25mOtrjhrNXajrnuyx-TwqA_RfwXkgRCP0oBTAB; passToken=ChNwYXNzcG9ydC5wYXNzLXRva2VuErABmpAlY1KYy9YisAQ7Cv7fgL0niCow8MmgCujHrP7HBz9QDPboEEcLTr6n96r8EhOIk0bPrIzICBkTf0j_osDMgyvfFGcZfBbNek4Gs9jJHIBXI_fSYIkVWG7u_-xEnUrGTDgyY_BnAaUppVyb7GXONcO95vDRtYnCv20aZYekkaKCat0L3RMVRdc6FxEBMui3CzqspPBlxvWIFPSJlpvm3vIFbADP6yC7ek2gLlBxw8oaEgkFF-v-qk7Oq0WzNNyIan9OdiIgwtI4wdtyEkAVFG3oBTK0DECP46QGJGZp9kmBsaXAdugoBTAB; ssecurity=tk4mdRJ7hkRtRQ+9c/L7RQ==; userId=2376346635"
+extra = ""
+
+[[default_accounts]]
+platform = "tiktok"
+cookies = ""
+extra = ""
+
+[[default_accounts]]
+platform = "bilibili"
+cookies = ""
+extra = ""

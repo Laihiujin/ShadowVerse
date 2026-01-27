@@ -4,13 +4,14 @@ pub mod response;
 use crate::account::Account;
 use crate::core::flv_recorder::FlvRecorder;
 use crate::core::hls_recorder::{construct_stream_from_variant, HlsRecorder};
+use crate::core::rtmp_recorder::RtmpRecorder;
 use crate::core::{Codec, Format};
 use crate::danmu::DanmuStorage;
 use crate::errors::RecorderError;
 use crate::events::RecorderEvent;
 use crate::platforms::PlatformType;
 use crate::traits::RecorderTrait;
-use crate::{Recorder, RoomInfo, UserInfo};
+use crate::{CachePath, Recorder, RoomInfo, UserInfo};
 use async_trait::async_trait;
 use chrono::Utc;
 use danmu_stream::danmu_stream::DanmuStream;
@@ -26,9 +27,36 @@ const KUAISHOU_USER_AGENT: &str =
 const KUAISHOU_MOBILE_USER_AGENT: &str =
     "ios/7.830 (ios 17.0; ; iPhone 15 (A2846/A3089/A3090/A3092))";
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum KuaishouProtocol {
+    Hls,
+    Flv,
+    Rtmp,
+}
+
+impl KuaishouProtocol {
+    fn from_str(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "hls" | "m3u8" => Some(Self::Hls),
+            "flv" => Some(Self::Flv),
+            "rtmp" => Some(Self::Rtmp),
+            _ => None,
+        }
+    }
+
+    fn matches_url(self, url: &str) -> bool {
+        match self {
+            Self::Hls => url.contains(".m3u8"),
+            Self::Flv => url.contains(".flv"),
+            Self::Rtmp => url.starts_with("rtmp://") || url.starts_with("rtmps://"),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct KuaishouExtra {
     stream_url: Arc<RwLock<Option<String>>>,
+    stream_list: Arc<RwLock<Vec<api::StreamInfo>>>,
     pre_live_id: Arc<RwLock<Option<String>>>,
     should_continue: Arc<AtomicBool>,
     last_error_ts: Arc<AtomicI64>,
@@ -59,6 +87,7 @@ impl KuaishouRecorder {
             .map_err(|e| RecorderError::ApiError{ error: e.to_string() })?;
         let extra = KuaishouExtra {
             stream_url: Arc::new(RwLock::new(None)),
+            stream_list: Arc::new(RwLock::new(Vec::new())),
             pre_live_id: Arc::new(RwLock::new(None)),
             should_continue: Arc::new(AtomicBool::new(false)),
             last_error_ts: Arc::new(AtomicI64::new(0)),
@@ -100,13 +129,69 @@ impl KuaishouRecorder {
         log::error!("[Kuaishou][{}]{}", self.room_id, message);
     }
 
-    fn prefer_flv() -> bool {
+    fn parse_bool_env(value: &str) -> Option<bool> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "1" | "true" | "yes" | "on" => Some(true),
+            "0" | "false" | "no" | "off" => Some(false),
+            _ => None,
+        }
+    }
+
+    fn prefer_flv_env() -> Option<bool> {
         std::env::var("BSR_KUAISHOU_PREFER_FLV")
-            .map(|v| {
-                let v = v.to_ascii_lowercase();
-                v == "1" || v == "true" || v == "yes" || v == "on"
-            })
-            .unwrap_or(true)
+            .ok()
+            .and_then(|v| Self::parse_bool_env(&v))
+    }
+
+    fn prefer_protocol() -> KuaishouProtocol {
+        if let Ok(value) = std::env::var("BSR_KUAISHOU_PREFER_PROTOCOL") {
+            if let Some(protocol) = KuaishouProtocol::from_str(&value) {
+                return protocol;
+            }
+        }
+        if let Some(prefer_flv) = Self::prefer_flv_env() {
+            if prefer_flv {
+                return KuaishouProtocol::Flv;
+            }
+        }
+        KuaishouProtocol::Hls
+    }
+
+    fn select_stream_url(
+        streams: &[api::StreamInfo],
+        prefer: KuaishouProtocol,
+    ) -> Option<String> {
+        let mut selected = streams
+            .iter()
+            .find(|stream| prefer.matches_url(&stream.url))
+            .map(|stream| stream.url.clone());
+
+        if selected.is_none() {
+            selected = streams
+                .iter()
+                .find(|stream| KuaishouProtocol::Hls.matches_url(&stream.url))
+                .map(|stream| stream.url.clone());
+        }
+
+        if selected.is_none() {
+            selected = streams
+                .iter()
+                .find(|stream| KuaishouProtocol::Flv.matches_url(&stream.url))
+                .map(|stream| stream.url.clone());
+        }
+
+        if selected.is_none() {
+            selected = streams
+                .iter()
+                .find(|stream| KuaishouProtocol::Rtmp.matches_url(&stream.url))
+                .map(|stream| stream.url.clone());
+        }
+
+        if selected.is_none() {
+            selected = streams.first().map(|stream| stream.url.clone());
+        }
+
+        selected
     }
 
     pub async fn reset(&self) {
@@ -208,9 +293,9 @@ impl KuaishouRecorder {
                     return false;
                 }
 
-                // No need to check stream if should not record
+                // No need to poll aggressively if should not record.
                 if !self.should_record().await {
-                    return true;
+                    return false;
                 }
 
                 // Get stream URLs
@@ -218,37 +303,11 @@ impl KuaishouRecorder {
 
                 match new_stream {
                     Ok(streams) => {
-                        let mut selected_url = if Self::prefer_flv() {
-                            streams
-                                .iter()
-                                .find(|stream| stream.url.contains(".flv"))
-                                .map(|stream| stream.url.clone())
-                        } else {
-                            streams
-                                .iter()
-                                .find(|stream| stream.url.contains(".m3u8"))
-                                .map(|stream| stream.url.clone())
-                        };
-
-                        if selected_url.is_none() {
-                            selected_url = streams
-                                .iter()
-                                .find(|stream| stream.url.contains(".m3u8"))
-                                .map(|stream| stream.url.clone());
-                        }
-
-                        if selected_url.is_none() {
-                            selected_url = streams
-                                .iter()
-                                .find(|stream| stream.url.contains(".flv"))
-                                .map(|stream| stream.url.clone());
-                        }
-
-                        if selected_url.is_none() {
-                            selected_url = streams.first().map(|stream| stream.url.clone());
-                        }
+                        let prefer = Self::prefer_protocol();
+                        let selected_url = Self::select_stream_url(&streams, prefer);
 
                         if let Some(url) = selected_url {
+                            *self.extra.stream_list.write().await = streams.clone();
                             let pre_stream = self.extra.stream_url.read().await.clone();
                             *self.extra.stream_url.write().await = Some(url.clone());
                             self.last_update
@@ -360,6 +419,15 @@ impl KuaishouRecorder {
         let Some(stream_url) = current_stream_url else {
             return Err(RecorderError::NoStreamAvailable);
         };
+        let stream_list = self.extra.stream_list.read().await.clone();
+        let fallback_hls = stream_list
+            .iter()
+            .find(|stream| stream.url.contains(".m3u8"))
+            .map(|stream| stream.url.clone());
+        let fallback_flv = stream_list
+            .iter()
+            .find(|stream| stream.url.contains(".flv"))
+            .map(|stream| stream.url.clone());
 
         let work_dir = self.work_dir(live_id).await;
         self.log_info(&format!("New record started: {}", live_id));
@@ -406,11 +474,26 @@ impl KuaishouRecorder {
             headers.insert("Cookie", self.account.cookies.parse().unwrap());
         }
 
+        if stream_url.starts_with("rtmp://") || stream_url.starts_with("rtmps://") {
+            self.log_info("Using RTMP recorder");
+            let rtmp_recorder = RtmpRecorder::new(
+                stream_url,
+                work_dir.full_path(),
+                self.enabled.clone(),
+                self.event_channel.clone(),
+                live_id.to_string(),
+            );
+            if let Err(e) = rtmp_recorder.start().await {
+                self.log_error(&format!("Rtmp recorder quit with error: {}", e));
+                return Err(e);
+            }
+            return Ok(());
+        }
         if stream_url.contains(".flv") {
             self.log_info("Using FLV recorder");
             let flv_recorder = FlvRecorder::new(
-                stream_url,
-                headers,
+                stream_url.clone(),
+                headers.clone(),
                 work_dir.full_path(),
                 self.enabled.clone(),
                 self.event_channel.clone(),
@@ -418,6 +501,12 @@ impl KuaishouRecorder {
             );
             if let Err(e) = flv_recorder.start().await {
                 self.log_error(&format!("Flv recorder quit with error: {}", e));
+                if let Some(hls_url) = fallback_hls {
+                    self.log_info("FLV failed, fallback to HLS recorder");
+                    return self
+                        .run_hls_recorder(&hls_url, &headers, &work_dir, live_id)
+                        .await;
+                }
                 return Err(e);
             }
             return Ok(());
@@ -425,9 +514,43 @@ impl KuaishouRecorder {
 
         // Create HLS stream
         // Kuaishou stream URLs are direct m3u8 URLs
+        if let Err(e) = self
+            .run_hls_recorder(&stream_url, &headers, &work_dir, live_id)
+            .await
+        {
+            self.log_error(&format!("Hls recorder quit with error: {}", e));
+            if let Some(flv_url) = fallback_flv {
+                self.log_info("HLS failed, fallback to FLV recorder");
+                let flv_recorder = FlvRecorder::new(
+                    flv_url,
+                    headers,
+                    work_dir.full_path(),
+                    self.enabled.clone(),
+                    self.event_channel.clone(),
+                    live_id.to_string(),
+                );
+                if let Err(err) = flv_recorder.start().await {
+                    self.log_error(&format!("Flv recorder quit with error: {}", err));
+                    return Err(err);
+                }
+                return Ok(());
+            }
+            return Err(e);
+        }
+
+        Ok(())
+    }
+
+    async fn run_hls_recorder(
+        &self,
+        stream_url: &str,
+        headers: &reqwest::header::HeaderMap,
+        work_dir: &CachePath,
+        live_id: &str,
+    ) -> Result<(), RecorderError> {
         let hls_stream = construct_stream_from_variant(
             live_id,
-            &stream_url,
+            stream_url,
             Format::TS,
             Codec::Avc,
         )
@@ -443,19 +566,14 @@ impl KuaishouRecorder {
             } else {
                 Some(self.account.cookies.clone())
             },
-            Some(headers),
+            Some(headers.clone()),
             self.event_channel.clone(),
             work_dir.full_path(),
             self.enabled.clone(),
         )
         .await?;
 
-        if let Err(e) = hls_recorder.start().await {
-            self.log_error(&format!("Hls recorder quit with error: {}", e));
-            return Err(e);
-        }
-
-        Ok(())
+        hls_recorder.start().await
     }
 }
 
@@ -518,6 +636,26 @@ impl RecorderTrait<KuaishouExtra> for KuaishouRecorder {
                     // If should continue with previous recording, no need to sleep
                     if self_clone.extra.should_continue.load(Ordering::Relaxed) {
                         continue;
+                    }
+                    let error_backoff = std::env::var("BSR_KUAISHOU_ERROR_BACKOFF_SECS")
+                        .ok()
+                        .and_then(|v| v.trim().parse::<u64>().ok())
+                        .unwrap_or(60);
+                    let error_window = std::env::var("BSR_KUAISHOU_ERROR_WINDOW_SECS")
+                        .ok()
+                        .and_then(|v| v.trim().parse::<u64>().ok())
+                        .unwrap_or(120);
+                    let last_error_ts = self_clone.extra.last_error_ts.load(atomic::Ordering::Relaxed);
+                    if last_error_ts > 0 {
+                        let now = Utc::now().timestamp();
+                        if now.saturating_sub(last_error_ts) <= error_window as i64 {
+                            let interval = self_clone.update_interval.load(atomic::Ordering::Relaxed);
+                            let mut sleep_secs = crate::utils::jitter_interval_secs(interval, 10);
+                            sleep_secs = sleep_secs.max(interval);
+                            sleep_secs = sleep_secs.saturating_add(error_backoff);
+                            tokio::time::sleep(Duration::from_secs(sleep_secs)).await;
+                            continue;
+                        }
                     }
                     // Go check status again after random 2-5 secs
                     let secs = rand::random::<u64>() % 4 + 2;

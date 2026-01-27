@@ -57,6 +57,7 @@
   let webview_cookie_polling = false;
   let webview_cookie_poll_timer = null;
   let webview_cookie_poll_attempts = 0;
+  let webview_cookie_extra = "";
 
   let manualModal = false;
 
@@ -268,6 +269,7 @@ function toggleDropdown(uid) {
         await invoke("update_default_account", {
           cookies: qr_status.cookies,
           platform: selectedPlatform,
+          extra: webview_cookie_extra || undefined,
         });
         await update_accounts();
         addModal = false;
@@ -338,9 +340,18 @@ function toggleDropdown(uid) {
       await invoke("add_account", {
         cookies: cookie_str,
         platform: selectedPlatform,
+        extra: webview_cookie_extra || undefined,
       });
+      if (webview_cookie_extra) {
+        await invoke("update_default_account", {
+          cookies: cookie_str,
+          platform: selectedPlatform,
+          extra: webview_cookie_extra || undefined,
+        });
+      }
       await update_accounts();
       cookie_str = "";
+      webview_cookie_extra = "";
       addModal = false;
     } catch (e) {
       alert("\u6dfb\u52a0\u8d26\u53f7\u5931\u8d25\uff1a" + e);
@@ -382,7 +393,11 @@ function toggleDropdown(uid) {
       return "";
     }
     try {
-      const cookies = (await invoke(config.get)) as string;
+      const result = await invoke(config.get);
+      const cookies =
+        typeof result === "string" ? result : (result as any)?.cookies || "";
+      webview_cookie_extra =
+        typeof result === "string" ? "" : (result as any)?.extra || "";
       cookie_str = cookies;
       return cookies;
     } catch (e) {

@@ -1,6 +1,6 @@
 pub mod api;
 pub mod response;
-mod x_gnarly;
+pub use crate::reverse_generate::x_gnarly;
 
 use crate::account::Account;
 use crate::core::flv_recorder::FlvRecorder;
@@ -14,6 +14,7 @@ use crate::traits::RecorderTrait;
 use crate::{Recorder, RoomInfo, UserInfo};
 use async_trait::async_trait;
 use chrono::Utc;
+use std::env;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{atomic, Arc};
@@ -22,6 +23,24 @@ use tokio::sync::{broadcast, Mutex, RwLock};
 
 const TIKTOK_USER_AGENT: &str =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TikTokProtocol {
+    Hls,
+    Flv,
+    Rtmp,
+}
+
+impl TikTokProtocol {
+    fn from_str(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "hls" | "m3u8" => Some(Self::Hls),
+            "flv" => Some(Self::Flv),
+            "rtmp" => Some(Self::Rtmp),
+            _ => None,
+        }
+    }
+}
 
 fn build_tiktok_headers(account: &Account) -> reqwest::header::HeaderMap {
     let mut headers = reqwest::header::HeaderMap::new();
@@ -128,23 +147,44 @@ impl TikTokRecorder {
         log::error!("[TikTok][{}]{}", self.room_id, message);
     }
 
-    fn prefer_flv() -> bool {
-        std::env::var("BSR_TIKTOK_PREFER_FLV")
-            .map(|v| {
-                let v = v.to_ascii_lowercase();
-                v == "1" || v == "true" || v == "yes" || v == "on"
-            })
-            .unwrap_or(false)
+    fn parse_bool_env(value: &str) -> Option<bool> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "1" | "true" | "yes" | "on" => Some(true),
+            "0" | "false" | "no" | "off" => Some(false),
+            _ => None,
+        }
     }
 
-    fn prefer_hls() -> bool {
-        std::env::var("BSR_TIKTOK_PREFER_HLS")
-            .map(|v| {
-                let v = v.to_ascii_lowercase();
-                v == "1" || v == "true" || v == "yes" || v == "on"
-            })
-            .unwrap_or(false)
+    fn parse_poll_override() -> Option<u64> {
+        let raw = env::var("TIKTOK_DANMU_POLL_MS").ok()?;
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+        trimmed.parse::<u64>().ok()
     }
+
+    fn prefer_protocol() -> TikTokProtocol {
+        if let Ok(value) = std::env::var("BSR_TIKTOK_PREFER_PROTOCOL") {
+            if let Some(protocol) = TikTokProtocol::from_str(&value) {
+                return protocol;
+            }
+        }
+        if let Ok(value) = std::env::var("BSR_TIKTOK_PREFER_HLS") {
+            if let Some(true) = Self::parse_bool_env(&value) {
+                return TikTokProtocol::Hls;
+            }
+        }
+        if let Ok(value) = std::env::var("BSR_TIKTOK_PREFER_FLV") {
+            if let Some(true) = Self::parse_bool_env(&value) {
+                return TikTokProtocol::Flv;
+            }
+        }
+        TikTokProtocol::Hls
+    }
+
+
+
 
     async fn resolve_danmu_room_id(&self) -> Result<String, RecorderError> {
         if self.is_room_id_numeric() {
@@ -340,7 +380,17 @@ impl TikTokRecorder {
                             storage.add_line(ts, &message).await;
                         }
                     }
-                    let interval_ms = result.fetch_interval_ms.unwrap_or(1000).clamp(250, 5000);
+                    let mut interval_ms =
+                        result.fetch_interval_ms.unwrap_or(1000).clamp(250, 5000);
+                    if let Some(override_ms) = Self::parse_poll_override() {
+                        interval_ms = override_ms.clamp(200, 5000);
+                    } else if interval_ms >= 2000 {
+                        log::debug!(
+                            "[TikTok][{}]Danmu poll interval {}ms",
+                            self.room_id,
+                            interval_ms
+                        );
+                    }
                     tokio::time::sleep(Duration::from_millis(interval_ms)).await;
                 }
                 Err(err) => {
@@ -397,9 +447,7 @@ impl TikTokRecorder {
         let hls_url = stream_info.hls_url.clone();
         let rtmp_url = stream_info.rtmp_url.clone();
 
-        let flv_url = rtmp_url
-            .clone()
-            .filter(|url| url.contains(".flv"));
+        let rtmp_input = rtmp_url.clone();
 
         let start_flv = |url: String| async {
             let headers = build_tiktok_headers(&self.account);
@@ -414,13 +462,17 @@ impl TikTokRecorder {
             flv_recorder.start().await
         };
 
-        let prefer_hls = Self::prefer_hls();
-        let prefer_flv = Self::prefer_flv();
+        let prefer_protocol = Self::prefer_protocol();
+        let prefer_rtmp = matches!(prefer_protocol, TikTokProtocol::Flv | TikTokProtocol::Rtmp);
         let mut flv_attempted = false;
         let mut flv_error: Option<String> = None;
-        if flv_url.is_some() && !prefer_hls {
-            let url = flv_url.clone().unwrap();
-            let mode = if prefer_flv { "prefer_flv" } else { "auto" };
+        if rtmp_input.is_some() && prefer_rtmp {
+            let url = rtmp_input.clone().unwrap();
+            let mode = match prefer_protocol {
+                TikTokProtocol::Flv => "prefer_flv",
+                TikTokProtocol::Rtmp => "prefer_rtmp",
+                TikTokProtocol::Hls => "auto",
+            };
             self.log_info(&format!("Using FLV recorder ({mode})"));
             flv_attempted = true;
             if let Err(e) = start_flv(url).await {
@@ -432,7 +484,7 @@ impl TikTokRecorder {
         }
 
         if hls_url.is_none() {
-            if let Some(url) = flv_url.clone() {
+            if let Some(url) = rtmp_input.clone() {
                 if !flv_attempted {
                     self.log_info("Using FLV recorder (HLS unavailable)");
                     if let Err(e) = start_flv(url).await {
@@ -482,7 +534,7 @@ impl TikTokRecorder {
 
         if let Err(e) = hls_recorder.start().await {
             self.log_error(&format!("Hls recorder quit with error: {}", e));
-            if let Some(url) = flv_url {
+            if let Some(url) = rtmp_input {
                 let label = if flv_attempted {
                     "HLS failed, retry FLV recorder"
                 } else {

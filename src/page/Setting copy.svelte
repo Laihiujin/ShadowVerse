@@ -1,3 +1,4 @@
+﻿
 <script lang="ts">
   import { invoke } from "../lib/invoker";
   import { open } from "@tauri-apps/plugin-dialog";
@@ -38,13 +39,15 @@
       enabled: false,
       encode_danmu: false,
     },
-    status_check_interval: 67, // 默认67�?
+    status_check_interval: 67, // 默认67秒
+    record_protocol_preference: "hls",
     whisper_language: "",
     webhook_url: "",
     danmu_ass_options: {
       font_size: 36,
       opacity: 0.8,
     },
+    use_guest_accounts: false,
     use_default_accounts: false,
     http_proxy: "127.0.0.1:7890",
     https_proxy: "",
@@ -58,7 +61,8 @@
   let proxyEnabled = true;
   let proxyHost = "127.0.0.1";
   let proxyPort = "7890";
-  let clearingWebviewData = false;
+  let httpProxy = "127.0.0.1:7890";
+  let httpsProxy = "";
 
   function updateTheme() {
     localStorage.setItem("theme", darkMode ? "dark" : "light");
@@ -74,7 +78,9 @@
   async function get_config() {
     let config: Config = await invoke("get_config");
     setting_model = config;
-    const proxyValue = config.http_proxy || "";
+    httpProxy = config.http_proxy || "";
+    httpsProxy = config.https_proxy || "";
+    const proxyValue = httpProxy || httpsProxy;
     if (proxyValue.includes("://")) {
       try {
         const parsed = new URL(proxyValue);
@@ -176,10 +182,16 @@
 
   async function update_status_check_interval() {
     if (setting_model.status_check_interval < 10) {
-      setting_model.status_check_interval = 10; // 最小值为10�?
+      setting_model.status_check_interval = 10; // 最小值为10秒
     }
     await invoke("update_status_check_interval", {
       interval: setting_model.status_check_interval,
+    });
+  }
+
+  async function update_record_protocol_preference() {
+    await invoke("update_record_protocol_preference", {
+      recordProtocolPreference: setting_model.record_protocol_preference,
     });
   }
 
@@ -190,39 +202,37 @@
   }
 
   async function update_use_default_accounts() {
+    if (setting_model.use_default_accounts) {
+      setting_model.use_guest_accounts = false;
+    }
     await invoke("update_use_default_accounts", {
       useDefaultAccounts: setting_model.use_default_accounts,
     });
     await get_default_account_platforms();
   }
 
+  async function update_use_guest_accounts() {
+    if (setting_model.use_guest_accounts) {
+      setting_model.use_default_accounts = false;
+    }
+    await invoke("update_use_guest_accounts", {
+      useGuestAccounts: setting_model.use_guest_accounts,
+    });
+    await get_default_account_platforms();
+  }
+
   async function update_network_config() {
+    const httpProxyValue = httpProxy.trim();
+    const httpsProxyValue = httpsProxy.trim();
     const port = proxyEnabled ? proxyPort.trim() : "";
     const host = proxyHost.trim() || "127.0.0.1";
     const proxyUrl = port ? `http://${host}:${port}` : "";
+    const finalHttpProxy = httpProxyValue || proxyUrl;
+    const finalHttpsProxy = httpsProxyValue;
     await invoke("update_network_config", {
-      httpProxy: proxyUrl,
-      httpsProxy: "",
+      httpProxy: finalHttpProxy,
+      httpsProxy: finalHttpsProxy,
     });
-  }
-
-  async function clear_webview_data() {
-    if (!TAURI_ENV || clearingWebviewData) {
-      return;
-    }
-    const ok = confirm("将清空内置浏览器的缓存与 Cookie，可能会导致账号需要重新登录。是否继续？");
-    if (!ok) {
-      return;
-    }
-    clearingWebviewData = true;
-    try {
-      await invoke("clear_webview_data");
-      alert("��������������� Cookie ����ա�");
-    } catch (e) {
-      alert("���ʧ�ܣ�" + e);
-    } finally {
-      clearingWebviewData = false;
-    }
   }
 
 
@@ -282,27 +292,6 @@
                 </label>
               </div>
             </div>
-            {#if TAURI_ENV}
-              <div class="p-4">
-                <div class="flex items-center justify-between">
-                  <div>
-                    <h3 class="text-sm font-medium text-gray-900 dark:text-white">
-                      清空内置浏览器缓存与 Cookie
-                    </h3>
-                    <p class="text-sm text-gray-500 dark:text-gray-400">
-                      将清除登录态和缓存数据，可能需要重新登录账�?
-                    </p>
-                  </div>
-                  <button
-                    class="px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                    on:click={clear_webview_data}
-                    disabled={clearingWebviewData}
-                  >
-                    {clearingWebviewData ? "清理�?.." : "一键清�?}
-                  </button>
-                </div>
-              </div>
-            {/if}
           </div>
         </div>
         <div class="space-y-4">
@@ -319,10 +308,10 @@
               <div class="flex items-center justify-between">
                 <div>
                   <h3 class="text-sm font-medium text-gray-900 dark:text-white">
-                    直播间状态检查间�?
+                    直播间状态检查间隔
                   </h3>
                   <p class="text-sm text-gray-500 dark:text-gray-400">
-                    设置直播间状态检查的时间间隔，单位为秒，过于频繁可能会触发风�?
+                    设置直播间状态检查的时间间隔，单位为秒，过于频繁可能会触发风控
                   </p>
                 </div>
                 <div class="flex items-center space-x-2">
@@ -339,10 +328,33 @@
               <div class="flex items-center justify-between">
                 <div>
                   <h3 class="text-sm font-medium text-gray-900 dark:text-white">
+                    录制协议优先级
+                  </h3>
+                  <p class="text-sm text-gray-500 dark:text-gray-400">
+                    预览优先 HLS；录制按所选协议并支持回退。
+                  </p>
+                </div>
+                <div class="flex items-center space-x-2">
+                  <select
+                    class="px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white"
+                    bind:value={setting_model.record_protocol_preference}
+                    on:change={update_record_protocol_preference}
+                  >
+                    <option value="hls">HLS</option>
+                    <option value="flv">FLV</option>
+                    <option value="rtmp">RTMP</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+            <div class="p-4">
+              <div class="flex items-center justify-between">
+                <div>
+                  <h3 class="text-sm font-medium text-gray-900 dark:text-white">
                     Webhook URL
                   </h3>
                   <p class="text-sm text-gray-500 dark:text-gray-400">
-                    设置 Webhook URL，用于接收事件通知�?
+                    设置 Webhook URL，用于接收事件通知；
                   </p>
                 </div>
                 <div class="flex items-center space-x-2">
@@ -358,7 +370,7 @@
             </div>
           </div>
         </div>
-        <div class="space-y-4">
+                                                                <div class="space-y-4">
           <h2
             class="text-lg font-medium text-gray-900 dark:text-white flex items-center space-x-2"
           >
@@ -371,9 +383,30 @@
             <div class="p-4">
               <div class="flex items-center justify-between">
                 <div>
+                  <h3 class="text-sm font-medium text-gray-900 dark:text-white">使用访客 Cookie</h3>
+                  <p class="text-sm text-gray-500 dark:text-gray-400">
+                    启用后自动从内置浏览器更新访客 Cookie
+                  </p>
+                </div>
+                <label class="relative inline-block w-11 h-6">
+                  <input
+                    type="checkbox"
+                    class="peer opacity-0 w-0 h-0"
+                    bind:checked={setting_model.use_guest_accounts}
+                    on:change={update_use_guest_accounts}
+                  />
+                  <span
+                    class="switch-slider absolute cursor-pointer top-0 left-0 right-0 bottom-0 bg-gray-300 dark:bg-gray-600 rounded-full transition-all duration-300 before:absolute before:h-4 before:w-4 before:left-1 before:bottom-1 before:bg-white before:rounded-full before:transition-all before:duration-300 peer-checked:bg-blue-500 peer-checked:before:translate-x-5"
+                  ></span>
+                </label>
+              </div>
+            </div>
+            <div class="p-4">
+              <div class="flex items-center justify-between">
+                <div>
                   <h3 class="text-sm font-medium text-gray-900 dark:text-white">使用默认账号</h3>
                   <p class="text-sm text-gray-500 dark:text-gray-400">
-                    启用后优先使用配置文件中的默认账�?
+                    启用后优先使用配置文件中的默认账号
                   </p>
                 </div>
                 <label class="relative inline-block w-11 h-6">
@@ -391,7 +424,7 @@
             </div>
           </div>
         </div>
-        {#if !TAURI_ENV}
+{#if !TAURI_ENV}
           <div class="space-y-4">
             <h2
               class="text-lg font-medium text-gray-900 dark:text-white flex items-center space-x-2"
@@ -487,7 +520,7 @@
                       <h3
                         class="text-sm font-medium text-gray-900 dark:text-white"
                       >
-                        日志文件�?
+                        日志文件夹
                       </h3>
                       <p class="text-sm text-gray-500 dark:text-gray-400">
                         查看应用程序日志文件
@@ -639,7 +672,7 @@
                       启用代理
                     </h3>
                     <p class="text-sm text-gray-500 dark:text-gray-400">
-                      代理地址固定�?127.0.0.1，端口可配置
+                      代理地址固定为 127.0.0.1，端口可配置
                     </p>
                   </div>
                   <label class="relative inline-block w-11 h-6">
@@ -687,7 +720,7 @@
                       代理地址
                     </h3>
                     <p class="text-sm text-gray-500 dark:text-gray-400">
-                      例：127.0.0.1（留空则使用本机�?
+                      例：127.0.0.1（留空则使用本机）
                     </p>
                   </div>
                   <input
@@ -699,7 +732,49 @@
                   />
                 </div>
               </div>
-
+              <div class="p-4">
+                <div class="flex items-center justify-between">
+                  <div>
+                    <h3
+                      class="text-sm font-medium text-gray-900 dark:text-white"
+                    >
+                      HTTP_PROXY
+                    </h3>
+                    <p class="text-sm text-gray-500 dark:text-gray-400">
+                      例：http://127.0.0.1:7890（为空则使用上面的端口）
+                    </p>
+                  </div>
+                  <input
+                    class="w-64 px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white text-right"
+                    type="text"
+                    bind:value={httpProxy}
+                    on:blur={update_network_config}
+                    on:change={update_network_config}
+                  />
+                </div>
+              </div>
+              <div class="p-4">
+                <div class="flex items-center justify-between">
+                  <div>
+                    <h3
+                      class="text-sm font-medium text-gray-900 dark:text-white"
+                    >
+                      HTTPS_PROXY
+                    </h3>
+                    <p class="text-sm text-gray-500 dark:text-gray-400">
+                      例：https://127.0.0.1:7890（留空则不使用 HTTPS 代理）
+                    </p>
+                  </div>
+                  <input
+                    class="w-64 px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white text-right"
+                    type="text"
+                    bind:value={httpsProxy}
+                    on:blur={update_network_config}
+                    on:change={update_network_config}
+                  />
+                </div>
+              </div>
+            </div>
           </div>
 
           <!-- Subtitle Generation Settings -->
@@ -746,10 +821,10 @@
                     <h3
                       class="text-sm font-medium text-gray-900 dark:text-white"
                     >
-                      字幕生成器类�?
+                      字幕生成器类型
                     </h3>
                     <p class="text-sm text-gray-500 dark:text-gray-400">
-                      选择字幕生成的方式：本地模型，OpenAI 服务�?<a
+                      选择字幕生成的方式：本地模型，OpenAI 服务或 <a
                         href="https://www.powerlive.io/"
                         class="text-blue-500 hover:underline"
                         target="_blank"
@@ -790,7 +865,7 @@
                         PowerLive API 密钥
                       </h3>
                       <p class="text-sm text-gray-500 dark:text-gray-400">
-                        设置 PowerLive API 的访问密�?
+                        设置 PowerLive API 的访问密钥
                       </p>
                     </div>
                     <div class="flex items-center space-x-2">
@@ -808,7 +883,7 @@
                     </div>
                   </div>
                 </div>
-              {:else}
+              {:else if setting_model.subtitle_generator_type === "whisper"}
                 <div class="p-4">
                     <div class="flex items-center justify-between">
                       <div>
@@ -818,7 +893,7 @@
                           Whisper 模型路径
                         </h3>
                         <p class="text-sm text-gray-500 dark:text-gray-400">
-                          {setting_model.whisper_model || "未设�?}
+                          {setting_model.whisper_model || "未设置"}
                           <span class="block mt-1 text-xs"
                             >可前往 <a
                               href="https://huggingface.co/ggerganov/whisper.cpp/tree/main"
@@ -837,7 +912,35 @@
                       </button>
                     </div>
                   </div>
-                {/if}
+              {:else if setting_model.subtitle_generator_type === "whisper_online"}
+                <div class="p-4">
+                  <div class="flex items-center justify-between">
+                    <div>
+                      <h3
+                        class="text-sm font-medium text-gray-900 dark:text-white"
+                      >
+                        Whisper 模型名称
+                      </h3>
+                      <p class="text-sm text-gray-500 dark:text-gray-400">
+                        例如 whisper-1
+                      </p>
+                    </div>
+                    <div class="flex items-center space-x-2">
+                      <input
+                        type="text"
+                        class="px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white w-96"
+                        bind:value={setting_model.whisper_model}
+                        on:change={async () => {
+                          await invoke("update_whisper_model", {
+                            whisperModel: setting_model.whisper_model,
+                          });
+                        }}
+                        placeholder="whisper-1"
+                      />
+                    </div>
+                  </div>
+                </div>
+              {/if}
                 <!-- OpenAI API Settings -->
                 {#if setting_model.subtitle_generator_type === "whisper_online"}
                   <div class="p-4">
@@ -877,7 +980,7 @@
                           OpenAI API 密钥
                         </h3>
                         <p class="text-sm text-gray-500 dark:text-gray-400">
-                          设置 OpenAI API 的访问密�?
+                          设置 OpenAI API 的访问密钥
                         </p>
                       </div>
                       <div class="flex items-center space-x-2">
@@ -906,7 +1009,7 @@
                         Whisper 语言
                       </h3>
                       <p class="text-sm text-gray-500 dark:text-gray-400">
-                        （测试）生成字幕时使用的语言，默认自动识�?
+                        （测试）生成字幕时使用的语言，默认自动识别
                       </p>
                     </div>
                     <div class="flex items-center space-x-2">
@@ -929,7 +1032,7 @@
                       <h3
                         class="text-sm font-medium text-gray-900 dark:text-white"
                       >
-                        Whisper 提示�?
+                        Whisper 提示词
                       </h3>
                       <p class="text-sm text-gray-500 dark:text-gray-400">
                         生成字幕时使用的提示词，尽量简洁明了，提示音频内容偏向的领域以及字幕的风格
@@ -958,7 +1061,7 @@
               class="text-lg font-medium text-gray-900 dark:text-white flex items-center space-x-2"
             >
               <DiscAlbum class="w-5 h-5 dark:icon-white" />
-              <span>切片文件名格�?</span>
+              <span>切片文件名格式</span>
             </h2>
             <div
               class="bg-white dark:bg-[#3c3c3e] rounded-xl border border-gray-200 dark:border-gray-700 divide-y divide-gray-200 dark:divide-gray-700"
@@ -969,7 +1072,7 @@
                     <h3
                       class="text-sm font-medium text-gray-900 dark:text-white"
                     >
-                      文件名格�?
+                      文件名格式
                     </h3>
                     <p class="text-sm text-gray-500 dark:text-gray-400">
                       可用标签：{"{title}"}
@@ -1044,11 +1147,11 @@
                     <h3
                       class="text-sm font-medium text-gray-900 dark:text-white"
                     >
-                      不透明�?
+                      不透明度
                     </h3>
                     <p class="text-sm text-gray-500 dark:text-gray-400">
                       设置弹幕不透明度，范围
-                      0.0-1.0�?.0为完全透明�?.0为完全不透明
+                      0.0-1.0，0.0为完全透明，1.0为完全不透明
                     </p>
                   </div>
                   <div class="flex items-center space-x-2">
@@ -1113,7 +1216,9 @@
               <div class="p-4">
                 <div class="flex items-center justify-between">
                   <div>
-                    <h3 class="text-sm font-medium text-gray-900 dark:text-white">
+                    <h3
+                      class="text-sm font-medium text-gray-900 dark:text-white"
+                    >
                       自动切片压制弹幕
                     </h3>
                     <p class="text-sm text-gray-500 dark:text-gray-400">
@@ -1141,6 +1246,7 @@
               </div>
             </div>
           </div>
+        {/if}
       </div>
     </div>
   </div>
@@ -1159,13 +1265,13 @@
             确认变更
           </h3>
           <p class="text-gray-600 dark:text-gray-400 mt-2">
-            根据文件大小，可能需要耗时较长时间，迁移期间直播间会暂时移除，迁移完成后直播间会自动恢复�?
+            根据文件大小，可能需要耗时较长时间，迁移期间直播间会暂时移除，迁移完成后直播间会自动恢复。
           </p>
           <p class="text-gray-600 dark:text-gray-400 mt-2 font-bold">
-            迁移期间请不要关闭程序，且不要在迁移期间再次更改目录�?
+            迁移期间请不要关闭程序，且不要在迁移期间再次更改目录！
           </p>
           <p class="text-gray-600 dark:text-gray-400 mt-2">
-            确认要进行变更吗�?
+            确认要进行变更吗？
           </p>
         </div>
       </div>
@@ -1186,6 +1292,3 @@
     </div>
   </div>
 {/if}
-
-
-

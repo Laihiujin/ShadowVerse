@@ -1,9 +1,0 @@
-[qr_login.douyin]
-# Filled via capture; do not commit secrets.
-verify_fp = ""
-fp = ""
-ms_token = ""
-a_bogus = ""
-sign = ""
-qs = ""
-user_agent = ""

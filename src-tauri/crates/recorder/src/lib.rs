@@ -6,6 +6,8 @@ pub mod errors;
 pub mod events;
 mod ffmpeg;
 pub mod platforms;
+#[path = "ReverseGenerate/mod.rs"]
+pub mod reverse_generate;
 pub mod traits;
 pub mod utils;
 use crate::danmu::DanmuStorage;

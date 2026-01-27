@@ -131,13 +131,14 @@ async fn handler_get_accounts(
 struct AddAccountRequest {
     platform: String,
     cookies: String,
+    extra: Option<String>,
 }
 
 async fn handler_add_account(
     state: axum::extract::State<State>,
     Json(param): Json<AddAccountRequest>,
 ) -> Result<Json<ApiResponse<()>>, ApiError> {
-    add_account(state.0, param.platform, &param.cookies).await?;
+    add_account(state.0, param.platform, &param.cookies, param.extra).await?;
     Ok(Json(ApiResponse::success(())))
 }
 
@@ -146,13 +147,14 @@ async fn handler_add_account(
 struct UpdateDefaultAccountRequest {
     platform: String,
     cookies: String,
+    extra: Option<String>,
 }
 
 async fn handler_update_default_account(
     state: axum::extract::State<State>,
     Json(param): Json<UpdateDefaultAccountRequest>,
 ) -> Result<Json<ApiResponse<()>>, ApiError> {
-    update_default_account(state.0, param.platform, param.cookies).await?;
+    update_default_account(state.0, param.platform, param.cookies, param.extra).await?;
     Ok(Json(ApiResponse::success(())))
 }
 
