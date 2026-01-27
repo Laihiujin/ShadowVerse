@@ -103,8 +103,8 @@ jobs:
           WHISPER_BACKEND: ${{ matrix.features }}
         with:
           tagName: v__VERSION__
-          releaseName: "BiliBili ShadowReplay v__VERSION__"
-          releaseBody: "> [!NOTE]\n> 如果你是第一次下载安装，请参考 [安装准备](https://bsr.xinrea.cn/getting-started/installation/desktop.html) 选择合适的版本。\n> Changelog: https://github.com/Xinrea/bili-shadowreplay/compare/${{ steps.get_previous_tag.outputs.previous_tag }}...${{ steps.get_previous_tag.outputs.current_tag }}"
+          releaseName: "ShadowVerse v__VERSION__"
+          releaseBody: ""
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }} ${{ matrix.platform == 'windows-latest' && matrix.features == 'cuda' && '--config src-tauri/tauri.windows.cuda.conf.json' || '' }}
