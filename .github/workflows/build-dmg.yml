@@ -1,0 +1,157 @@
+name: Build DMG
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: 'Build target'
+        required: true
+        default: 'aarch64-apple-darwin'
+        type: choice
+        options:
+          - aarch64-apple-darwin
+          - x86_64-apple-darwin
+          - universal
+  push:
+    branches:
+      - main
+      - develop
+    paths:
+      - 'src-tauri/**'
+      - 'src/**'
+      - '.github/workflows/build-dmg.yml'
+
+jobs:
+  build-dmg:
+    runs-on: macos-latest
+    permissions:
+      contents: write
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: 'yarn'
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Install frontend dependencies
+        run: yarn install
+
+      - name: Build for Apple Silicon
+        if: github.event.inputs.target == 'aarch64-apple-darwin' || github.event.inputs.target == 'universal'
+        env:
+          CMAKE_OSX_DEPLOYMENT_TARGET: '13.3'
+        run: |
+          yarn tauri build --target aarch64-apple-darwin
+
+      - name: Build for Intel
+        if: github.event.inputs.target == 'x86_64-apple-darwin' || github.event.inputs.target == 'universal'
+        env:
+          CMAKE_OSX_DEPLOYMENT_TARGET: '13.3'
+        run: |
+          yarn tauri build --target x86_64-apple-darwin
+
+      - name: Create Universal Binary (if universal build)
+        if: github.event.inputs.target == 'universal'
+        run: |
+          # Create universal app bundle
+          mkdir -p src-tauri/target/universal-apple-darwin/release/bundle/macos
+          cp -r src-tauri/target/aarch64-apple-darwin/release/bundle/macos/ShadowVerse.app \
+                src-tauri/target/universal-apple-darwin/release/bundle/macos/ShadowVerse.app
+          
+          # Create universal binary
+          lipo -create \
+            src-tauri/target/aarch64-apple-darwin/release/bundle/macos/ShadowVerse.app/Contents/MacOS/ShadowVerse \
+            src-tauri/target/x86_64-apple-darwin/release/bundle/macos/ShadowVerse.app/Contents/MacOS/ShadowVerse \
+            -output src-tauri/target/universal-apple-darwin/release/bundle/macos/ShadowVerse.app/Contents/MacOS/ShadowVerse
+          
+          # Create DMG for universal binary
+          yarn tauri build --target universal-apple-darwin || true
+
+      - name: Get version
+        id: version
+        run: |
+          VERSION=$(grep '^version = ' src-tauri/Cargo.toml | head -1 | cut -d '"' -f 2)
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Version: $VERSION"
+
+      - name: List build artifacts
+        run: |
+          echo "=== Build artifacts ==="
+          find src-tauri/target -name "*.dmg" -o -name "*.app" | head -20
+
+      - name: Rename DMG files
+        run: |
+          VERSION=${{ steps.version.outputs.version }}
+          
+          # Find and rename aarch64 DMG
+          if [ -f "src-tauri/target/aarch64-apple-darwin/release/bundle/macos/rw."*".dmg" ]; then
+            AARCH64_DMG=$(ls src-tauri/target/aarch64-apple-darwin/release/bundle/macos/rw.*.dmg 2>/dev/null | head -1)
+            if [ -n "$AARCH64_DMG" ]; then
+              cp "$AARCH64_DMG" "src-tauri/target/aarch64-apple-darwin/release/bundle/macos/ShadowVerse_${VERSION}_aarch64.dmg"
+              echo "Created: ShadowVerse_${VERSION}_aarch64.dmg"
+            fi
+          fi
+          
+          # Find and rename x86_64 DMG
+          if [ -f "src-tauri/target/x86_64-apple-darwin/release/bundle/macos/rw."*".dmg" ]; then
+            X86_64_DMG=$(ls src-tauri/target/x86_64-apple-darwin/release/bundle/macos/rw.*.dmg 2>/dev/null | head -1)
+            if [ -n "$X86_64_DMG" ]; then
+              cp "$X86_64_DMG" "src-tauri/target/x86_64-apple-darwin/release/bundle/macos/ShadowVerse_${VERSION}_x86_64.dmg"
+              echo "Created: ShadowVerse_${VERSION}_x86_64.dmg"
+            fi
+          fi
+          
+          # Find and rename universal DMG
+          if [ -f "src-tauri/target/universal-apple-darwin/release/bundle/macos/rw."*".dmg" ]; then
+            UNIVERSAL_DMG=$(ls src-tauri/target/universal-apple-darwin/release/bundle/macos/rw.*.dmg 2>/dev/null | head -1)
+            if [ -n "$UNIVERSAL_DMG" ]; then
+              cp "$UNIVERSAL_DMG" "src-tauri/target/universal-apple-darwin/release/bundle/macos/ShadowVerse_${VERSION}_universal.dmg"
+              echo "Created: ShadowVerse_${VERSION}_universal.dmg"
+            fi
+          fi
+
+      - name: Upload Apple Silicon DMG
+        if: github.event.inputs.target == 'aarch64-apple-darwin' || github.event.inputs.target == 'universal'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ShadowVerse-macOS-aarch64
+          path: src-tauri/target/aarch64-apple-darwin/release/bundle/macos/ShadowVerse_${{ steps.version.outputs.version }}_aarch64.dmg
+          if-no-files-found: warn
+
+      - name: Upload Intel DMG
+        if: github.event.inputs.target == 'x86_64-apple-darwin' || github.event.inputs.target == 'universal'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ShadowVerse-macOS-x86_64
+          path: src-tauri/target/x86_64-apple-darwin/release/bundle/macos/ShadowVerse_${{ steps.version.outputs.version }}_x86_64.dmg
+          if-no-files-found: warn
+
+      - name: Upload Universal DMG
+        if: github.event.inputs.target == 'universal'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ShadowVerse-macOS-universal
+          path: src-tauri/target/universal-apple-darwin/release/bundle/macos/ShadowVerse_${{ steps.version.outputs.version }}_universal.dmg
+          if-no-files-found: warn
+
+      - name: Create Release (on tag push)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            src-tauri/target/aarch64-apple-darwin/release/bundle/macos/ShadowVerse_${{ steps.version.outputs.version }}_aarch64.dmg
+            src-tauri/target/x86_64-apple-darwin/release/bundle/macos/ShadowVerse_${{ steps.version.outputs.version }}_x86_64.dmg
+            src-tauri/target/universal-apple-darwin/release/bundle/macos/ShadowVerse_${{ steps.version.outputs.version }}_universal.dmg
+          draft: true
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
