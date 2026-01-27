@@ -808,7 +808,7 @@ fn env_or(key: &str, default: &str) -> String {
     read_env(key).unwrap_or_else(|| default.to_string())
 }
 
-fn reverse_generate_root() -> Option<PathBuf> {
+pub fn reverse_generate_root() -> Option<PathBuf> {
     let cwd = std::env::current_dir().ok()?;
     let root = if cwd.file_name().and_then(|s| s.to_str()) == Some("src-tauri") {
         cwd.parent().unwrap_or(&cwd).to_path_buf()

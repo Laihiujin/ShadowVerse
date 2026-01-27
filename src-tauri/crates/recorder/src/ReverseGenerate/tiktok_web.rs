@@ -60,3 +60,28 @@ pub fn ensure_tiktok_web_defaults(path: &Path) -> Result<(), std::io::Error> {
     }
     Ok(())
 }
+
+pub fn fetch_tiktok_overrides() -> Option<std::collections::HashMap<String, String>> {
+    let root = match crate::platforms::douyin::api::reverse_generate_root() {
+        Some(path) => path,
+        None => return None,
+    };
+    let path = root.join("qr_login.toml");
+    if !path.exists() {
+        return None;
+    }
+    
+    let raw = fs::read_to_string(path).ok()?;
+    let parsed: TomlValue = raw.parse().ok()?;
+    
+    let mut map = std::collections::HashMap::new();
+    if let Some(table) = parsed.get("tiktok").and_then(|v| v.as_table()) {
+        for (k, v) in table {
+            if let Some(s) = v.as_str() {
+                map.insert(k.to_string(), s.to_string());
+            }
+        }
+    }
+    
+    if map.is_empty() { None } else { Some(map) }
+}

@@ -1502,14 +1502,28 @@ pub async fn get_stream_url_mobile(
 
 /// Get QR code for login
 pub async fn get_qr(client: &Client) -> Result<QrInfo, RecorderError> {
+    // Check overrides
+    let overrides = crate::reverse_generate::qr_login::fetch_kuaishou_overrides().unwrap_or_default();
+    
     let mut headers = reqwest::header::HeaderMap::new();
-    headers.insert("User-Agent", USER_AGENT.parse().unwrap());
+    let user_agent = overrides.get("user_agent").filter(|v| !v.is_empty())
+        .map(|v| v.as_str())
+        .unwrap_or(USER_AGENT);
+    
+    headers.insert("User-Agent", user_agent.parse().unwrap());
     headers.insert(
         "Content-Type",
         "application/x-www-form-urlencoded".parse().unwrap(),
     );
     headers.insert("Referer", "https://live.kuaishou.com/".parse().unwrap());
-    let mut qr_cookie = build_qr_cookie();
+    
+    // Check custom cookie in overrides
+    let mut qr_cookie = if let Some(cookie) = overrides.get("cookie").filter(|v| !v.is_empty()) {
+        cookie.clone()
+    } else {
+        build_qr_cookie()
+    };
+    
     headers.insert("Cookie", qr_cookie.parse().unwrap());
 
     let response = client

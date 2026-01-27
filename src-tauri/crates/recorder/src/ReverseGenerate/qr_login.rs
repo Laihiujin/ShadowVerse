@@ -112,10 +112,72 @@ pub fn ensure_qr_login_defaults(path: &Path) -> Result<(), std::io::Error> {
     ] {
         changed |= set_if_empty(douyin_table, key, "");
     }
+    
+    // Ensure critical Douyin params are set if using automatic construction
+    if read_string(douyin_table, "params_raw").unwrap_or_default().is_empty() {
+        changed |= set_if_empty(douyin_table, "aid", "6383");
+        changed |= set_if_empty(douyin_table, "device_platform", "web_app");
+        changed |= set_if_empty(douyin_table, "service", "https://www.douyin.com");
+    }
+
+    // TikTok defaults
+    let tiktok = table
+        .entry("tiktok")
+        .or_insert_with(|| TomlValue::Table(Default::default()));
+    if let Some(tiktok_table) = tiktok.as_table_mut() {
+        changed |= set_if_empty(
+            tiktok_table,
+            "user_agent",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36",
+        );
+        changed |= set_if_empty(tiktok_table, "device_id", "");
+        changed |= set_if_empty(tiktok_table, "verify_fp", "");
+        changed |= set_if_empty(tiktok_table, "ms_token", "");
+        changed |= set_if_empty(tiktok_table, "ttwid_migration_ticket", "");
+    }
+
+    // Kuaishou defaults
+    let kuaishou = table
+        .entry("kuaishou")
+        .or_insert_with(|| TomlValue::Table(Default::default()));
+    if let Some(kuaishou_table) = kuaishou.as_table_mut() {
+        changed |= set_if_empty(
+            kuaishou_table,
+            "user_agent",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36",
+        );
+        changed |= set_if_empty(kuaishou_table, "cookie", "");
+        changed |= set_if_empty(kuaishou_table, "device_id", "");
+    }
 
     if changed {
         let serialized = toml::to_string_pretty(&parsed).unwrap_or(raw);
         fs::write(path, serialized)?;
     }
     Ok(())
+}
+
+pub fn fetch_kuaishou_overrides() -> Option<std::collections::HashMap<String, String>> {
+    let root = match crate::platforms::douyin::api::reverse_generate_root() {
+        Some(path) => path,
+        None => return None,
+    };
+    let path = root.join("qr_login.toml");
+    if !path.exists() {
+        return None;
+    }
+    
+    let raw = fs::read_to_string(path).ok()?;
+    let parsed: TomlValue = raw.parse().ok()?;
+    
+    let mut map = std::collections::HashMap::new();
+    if let Some(table) = parsed.get("kuaishou").and_then(|v| v.as_table()) {
+        for (k, v) in table {
+            if let Some(s) = v.as_str() {
+                map.insert(k.to_string(), s.to_string());
+            }
+        }
+    }
+    
+    if map.is_empty() { None } else { Some(map) }
 }

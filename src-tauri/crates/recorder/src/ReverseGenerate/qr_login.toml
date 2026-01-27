@@ -64,6 +64,18 @@ x_tt_passport_trace_id = "7bcf51bb"
 x_tt_passport_verify_portrait = "bd6b1438-f55e-4297-bbcc-10ca95bd52a9.login"
 x_tt_session_dtrait = "d0_bE35DiByJiCecpHX11ckqRPbEzAjrrQ3JkwWtWfv9vGe/xUy8jsOv/l/cGdgWdiVYEZHcfmw6YnIbskvFaLLsR8EaQ3GvcYXwczGZ6tQDi1KeKyu9wvtSjVhg3ncGBhLL2tRpFIAEE9u9oM0dM7iW/ApJLuWIe8H8wQ6y+jpIxA1sHLerY25OjNYo9dh0WVfK4NZJ8W57KcHIHZK+QwM364Qf/MjYvhMwLq6VaN31JLY6TH4JxHWA7R2Qgm0uI+gd5uFTb+xJqPa1RKbufMw4NL2M/RCt0VYHxctEyuSUO/Z3h984duUg9Nmy5XKu2Kb3T5d6ml6/FFAwscdU6mM+w==_1xQ+yRLq7pRVgrW171MrF/q3HgK7yLGCXA6rSRfO2hF9wgqFhcvPMWX6gin2OQWCYHKPRlGejAdmfCNDQ6PJCbyt6Bw/LVC/r7TgXkKLe0+x+TSKrKBPDetfjwjFYRAGbG+XbI4YPIOJndZe1Y2DeYbbWtN478U68KY7dbSwuCBZr3MQ6yRb9nf91+mDbvPBb6zev7eEOaUBfESADnqWhxD4puBpOiIjGdFBY8ZW/fr7w4ORyTWTNyplmnXAU5NF4qwHimwx12P8YILyNXKoSqDUd7VqVx3EGINzBtmyWhIIBcQW8jUhphVY+4DV9wm/2rkRm9O/3Q8MWSISEBQlGKYNUfrBt8v4/Ho4u9JakXpZqS9q85SyQYAOznnd/9FXwtEeHPAYBOZjy96EO436oDiIQ/bnyPSlViiFR+rwOP+VfbxQaHf3QTny3M7Jwtplg8sBeeDagLV+w5tv+cXFnA=="
 
+[kuaishou]
+cookie = ""
+device_id = ""
+user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36"
+
+[tiktok]
+device_id = ""
+ms_token = ""
+ttwid_migration_ticket = ""
+user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36"
+verify_fp = ""
+
 [tiktok_feed]
 device_id = ""
 ms_token = ""

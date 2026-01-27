@@ -1675,9 +1675,26 @@ pub async fn get_qr_login(client: &Client) -> Result<TikTokQrInfo, RecorderError
     } else {
         client.clone()
     };
-    let device_id = gen_device_id();
-    let verify_fp = crate::platforms::douyin::params::gen_verify_fp();
+    
+    // Load overrides defaults
+    let overrides = crate::reverse_generate::tiktok_web::fetch_tiktok_overrides().unwrap_or_default();
+    
+    let device_id = overrides.get("device_id").filter(|v| !v.is_empty())
+        .map(|v| v.to_string())
+        .unwrap_or_else(gen_device_id);
+    let verify_fp = overrides.get("verify_fp").filter(|v| !v.is_empty())
+        .map(|v| v.to_string())
+        .unwrap_or_else(crate::platforms::douyin::params::gen_verify_fp);
+    
+    // Initial cookies bootstrap
     let mut cookies = bootstrap_tiktok_cookies(&request_client, &verify_fp, None).await;
+    
+    // Check if ms_token is overridden
+    if let Some(token) = overrides.get("ms_token").filter(|v| !v.is_empty()) {
+        cookies.insert("msToken".to_string(), token.to_string());
+    }
+    
+    // Determine ms_token to use
     let mut ms_token = cookies
         .get("msToken")
         .cloned()
@@ -1732,9 +1749,15 @@ pub async fn get_qr_login(client: &Client) -> Result<TikTokQrInfo, RecorderError
     };
 
     let mut oauth_key = format!("{token}|{device_id}|{verify_fp}|{ms_token}");
-    if !ttwid_ticket.is_empty() {
+    
+    // Check for overridden ticket or from response
+    let ticket = overrides.get("ttwid_migration_ticket").filter(|v| !v.is_empty())
+        .map(|v| v.as_str())
+        .unwrap_or(&ttwid_ticket);
+        
+    if !ticket.is_empty() {
         oauth_key.push('|');
-        oauth_key.push_str(&ttwid_ticket);
+        oauth_key.push_str(ticket);
     }
 
     Ok(TikTokQrInfo {
@@ -1768,7 +1791,10 @@ pub async fn get_qr_login_status(
     } else {
         client.clone()
     };
+    
+    // Initial cookies bootstrap
     let cookies = bootstrap_tiktok_cookies(&request_client, verify_fp, Some(ms_token)).await;
+    
     let params = build_qr_params(Some(token), device_id, verify_fp, ms_token);
     let query = build_query(&params);
     let mut headers = build_passport_headers(&cookies);
@@ -1780,6 +1806,7 @@ pub async fn get_qr_login_status(
         }
     }
     apply_tiktok_extra_headers(&mut headers);
+    // Add logic to rotate hosts or retry on failure
     let hosts = [
         "https://login-no1a.www.tiktok.com",
         "https://web-va.tiktok.com",
@@ -1787,24 +1814,23 @@ pub async fn get_qr_login_status(
     ];
     let mut response_cookies = cookies.clone();
     let mut json: Option<serde_json::Value> = None;
+    
+    // Attempt request parameters
     for host in hosts {
         let url = format!("{host}/passport/web/check_qrconnect/?{query}");
-        let resp = request_client.get(url).headers(headers.clone()).send().await?;
-        merge_cookie_maps(&mut response_cookies, collect_cookie_map(resp.headers()));
-        let current: serde_json::Value = resp.json().await?;
-        let is_rate_limited = current.get("message").and_then(Value::as_str) == Some("error")
-            && current
-                .get("data")
-                .and_then(|data| data.get("error_code"))
-                .and_then(Value::as_i64)
-                == Some(7);
-        if is_rate_limited {
-            log::warn!("[TikTok] QR rate limited on {}", host);
-            json = Some(current);
-            continue;
+        if let Ok(resp) = request_client.get(&url).headers(headers.clone()).send().await {
+             merge_cookie_maps(&mut response_cookies, collect_cookie_map(resp.headers()));
+             if let Ok(current) = resp.json::<serde_json::Value>().await {
+                 let is_error = current.get("message").and_then(Value::as_str) == Some("error");
+                 if is_error {
+                     log::warn!("[TikTok] QR check failed on {}: {}", host, current);
+                     json = Some(current);
+                     continue;
+                 }
+                 json = Some(current);
+                 break;
+             }
         }
-        json = Some(current);
-        break;
     }
     let json = json.unwrap_or_else(|| serde_json::json!({}));
     if let (Some(status_code), Some(sub_status_code)) = (
