@@ -948,11 +948,18 @@
       {#each filteredRecorders as room (room.room_info.room_id)}
         <div
           use:cardRef={room}
+          role="button"
+          tabindex="0"
           class={"p-4 rounded-xl bg-white dark:bg-[#3c3c3e] border border-gray-200 dark:border-gray-700 hover:border-blue-500 dark:hover:border-blue-400 transition-colors " +
             (multiSelect && isRoomSelected(room)
               ? "ring-2 ring-blue-500 border-blue-500"
               : "")}
           on:click={(event) => handleRoomClick(event, room)}
+          on:keydown={(event) => {
+            if (event.key === "Enter" || event.key === " ") {
+              handleRoomClick(event, room);
+            }
+          }}
         >
           <div class="relative">
             <img
