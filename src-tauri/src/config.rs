@@ -530,12 +530,8 @@ impl Config {
     }
 
     fn normalize_account_switches(&mut self) -> bool {
-        let mut changed = false;
-        if self.use_guest_accounts && self.use_default_accounts {
-            self.use_default_accounts = false;
-            changed = true;
-        }
-        changed
+        // Allow both to coexist; priority will be handled in recorder_manager
+        false
     }
 
     fn normalize_storage_paths(&mut self, default_cache: &Path, default_output: &Path) -> bool {

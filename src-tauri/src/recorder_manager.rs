@@ -272,49 +272,13 @@ impl RecorderManager {
         platform: PlatformType,
     ) -> Result<Option<Account>, DatabaseError> {
         let config = self.config.read().await.clone();
-        if config.use_guest_accounts {
-            let guest_cookie = config
-                .guest_accounts
-                .iter()
-                .find(|entry| entry.platform == platform.as_str() && !entry.cookies.trim().is_empty())
-                .map(|entry| entry.cookies.clone());
-            if let Some(guest_cookie) = guest_cookie {
-                let accounts = self.db.get_accounts().await?;
-                let matched = accounts.iter().find(|account| {
-                    account.platform == platform.as_str() && account.cookies == guest_cookie
-                });
-                return Ok(matched.map(|account| account.to_account()));
-            }
-            return Ok(None);
-        }
+        let platform_str = platform.as_str();
 
+        // 1. 优先尝试使用手动录入的默认账号 (Login Account)
         if config.use_default_accounts {
-            let default_cookie = config
+            if let Some(entry) = config
                 .default_accounts
                 .iter()
-                .find(|entry| entry.platform == platform.as_str() && !entry.cookies.trim().is_empty())
-                .map(|entry| entry.cookies.clone());
-            if let Some(default_cookie) = default_cookie {
-                let accounts = self.db.get_accounts().await?;
-                let matched = accounts.iter().find(|account| {
-                    account.platform == platform.as_str() && account.cookies == default_cookie
-                });
-                return Ok(matched.map(|account| account.to_account()));
-            }
-            return Ok(None);
-        }
-
-        match self.db.get_account_by_platform(platform.as_str()).await {
-            Ok(account) => Ok(Some(account.to_account())),
-            Err(DatabaseError::NotFound) => Ok(None),
-            Err(e) => Err(e),
-        }
-    }
-
-    async fn handle_events(&self) {
-        let mut rx = self.event_tx.subscribe();
-        while let Ok(event) = rx.recv().await {
-            match event {
                 RecorderEvent::LiveStart { recorder } => {
                     let event = events::new_webhook_event(
                         events::LIVE_STARTED,
