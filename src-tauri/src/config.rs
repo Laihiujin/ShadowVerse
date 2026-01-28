@@ -243,7 +243,7 @@ fn default_auto_generate_config() -> AutoGenerateConfig {
 }
 
 fn default_status_check_interval() -> u64 {
-    30
+    77
 }
 
 fn default_record_protocol_preference() -> String {

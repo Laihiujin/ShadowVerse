@@ -1,26 +1,26 @@
 [[guest_accounts]]
 platform = "douyin"
-cookies = "has_avx2=null; hevc_supported=true; IsDouyinActive=false; device_web_cpu_core=32; fpk1=U2FsdGVkX183i36dptUOaiM3HT31q/Iaagp5/Mu16p0KznkpcUvHGuRkcCxr9FhHfELHUAhKcjYAZeUn6rtoAA==; live_can_add_dy_2_desktop=%220%22; ttwid=1%7CwCYuG0_cqUTsIB2yfCGratVKsHOO2uzqWFXNcyz6AhA%7C1769501128%7C30621d9fc50c4c58abef8ae7855c56cdf26df39abb808db29faa47635b6545c2; device_web_memory_size=8; __live_version__=%221.1.4.7838%22; isdouyinactive=false; live_use_vvc=%22false%22; fpk2=7ddeda88d0c599cc494da0dece6554d5; webcast_local_quality=null"
+cookies = "__live_version__=%221.1.4.7838%22; isdouyinactive=false; webcast_local_quality=null; fpk2=940676c3a8a8572fffba9e3881d0fb19; live_can_add_dy_2_desktop=%220%22; fpk1=U2FsdGVkX1+6/A3ZZUEcJ/bW8rke+LuY/M9Tk5RsfBVBKurKrEKDujVhNtHx40Txg7+jiDM3TeLsWdTpiKmTyA==; has_avx2=null; device_web_memory_size=8; csrf_session_id=e42f87f2f9f73da97c4c605a96e22f74; live_use_vvc=%22false%22; ttwid=1%7Ca-07aqrqHBdcS6Xr8ExxADvpuThotUf2ONUl_4warTg%7C1769600138%7Ca41f375274e0d9cb16c0f39e2efa869cdb8f80dcac38931831dc32a33eec3cef; device_web_cpu_core=32; hevc_supported=true; IsDouyinActive=false"
 extra = ""
 
 [[guest_accounts]]
 platform = "kuaishou"
-cookies = "_did=web_386660621B19BB4; clientid=3; kpn=GAME_ZONE; kuaishou.live.bfb1s=477cb0011daca84b36b3a4676857e5a1; client_key=65890b29; didv=1769570049209; kwfv1=PnGU+9+Y8008S+nH0U+0mjPf8fP08f+98f+nLlwnrIP9+Sw/ZFGfzY+eGlGf+f+e4SGfbYP0QfGnLFwBLU80mYGALFGAm0808f+eLIPe4Dw/Ph+fc9w/W9+Bp0+echwezSGfzYPe8jPnHA+BPI+Bc9Pfb0PAGAGA8SGArhP0DI+AP=; did=web_1e27b2260ee53bc8f45cd45a8e12b4b3; kwpsecproductname=PCLive"
+cookies = "kuaishou.live.bfb1s=ac5f27b3b62895859c4c1622f49856a4; kwpsecproductname=PCLive; client_key=65890b29; did=web_03ed35f44414bc8b91d5b49117768800; didv=1769602933115; _did=web_912277295110C845; kpn=GAME_ZONE; clientid=3; kwfv1=PnGU+9+Y8008S+nH0U+0mjPf8fP08f+98f+nLlwnrIP9+Sw/ZFGfzY+eGlGf+f+e4SGfbYP0QfGnLFwBLU80mYGA+DwnH7G9LE+f+Y+fbjweqF+9b0+98DPeZI+B+080q7G0LAP0Q0+nrA+eWI8eLUG/r7Pf+D8nrF+0LMw/DUG0D="
 extra = ""
 
 [[guest_accounts]]
 platform = "tiktok"
-cookies = "passport_csrf_token=be683babc9e220acb2d6a219c58e9f1a; ttwid=1%7CaDu-N7feC4HJYRrbbr2yAgh0EMz2IinT0N_95RZjUMA%7C1769501168%7Ca7b5098f2f37ddcf7745940c01cb65706347d6f438a140df04421a0489c5ee5f; passport_csrf_token_default=be683babc9e220acb2d6a219c58e9f1a; mstoken=AEQggRKXN-SaBACHFF9S-8x_eSizG_274jBfMRxoJnl20T_pBzDNzzkE5-_OL4jOgI4hVY0PHCBSO3BI7KOsrG801-vbFX22Vck7N4EiWZizcyiWVwSCu3cNP5cuyy3K1t_CalFyThDKUw==; tt_chain_token=cfwVhvf38GxHMTui5BzfMA==; msToken=AEQggRKXN-SaBACHFF9S-8x_eSizG_274jBfMRxoJnl20T_pBzDNzzkE5-_OL4jOgI4hVY0PHCBSO3BI7KOsrG801-vbFX22Vck7N4EiWZizcyiWVwSCu3cNP5cuyy3K1t_CalFyThDKUw=="
-extra = ""
-
-[[guest_accounts]]
-platform = "bilibili"
-cookies = "buvid_fp=ac690b66844d0278774565252807717d; LIVE_BUVID=AUTO5517695700549730; _uuid=888334410-3FE2-A556-BE8E-C7177104C10AA351770infoc; theme_style=light; b_lsid=32D299D9_19C029826B6; b_nut=1769501131; bili_ticket=eyJhbGciOiJIUzI1NiIsImtpZCI6InMwMyIsInR5cCI6IkpXVCJ9.eyJleHAiOjE3Njk4MjkyNTQsImlhdCI6MTc2OTU2OTk5NCwicGx0IjotMX0.J1rmCpNZARVI1qF8nE945LKrZcAlgNE8KoJCzA_pFY4; buvid3=2F34115E-6B80-1BC8-DF94-AEFB59E76FB531084infoc; bili_ticket_expires=1769829194; buvid4=12526CF6-B9A1-BE1C-78C4-B534CD34B54D31537-026012716-O6RsdG8LRWvzMGAhi07H9g%3D%3D; PVID=1"
+cookies = "msToken=Rlv1NfK_FKs7jEdw2yKgzk2FvNXQOIreBL0bkrHTxzoc4M-vL2cGxQ6Vm70f_gHAHqqb1tpuSr1EmjaIkZNKukeSpDD7uBycfiEM8Pjg_JoNy_PIui9UxMtIA_L9QWZiuS-9SW0h_yz4OcoYsAuWK78=; tt_chain_token=Qm7u5U44VNTzztR124MYiA==; ttwid=1%7C5-b4uoFLMs_rWadm3hc1OItzhEegKa9MZdwTrInUtwU%7C1769600146%7C5ff200d85c8ad912f657cbafc5a4cf32185c26b1c58b3bb7821d7adddea2a702; mstoken=Rlv1NfK_FKs7jEdw2yKgzk2FvNXQOIreBL0bkrHTxzoc4M-vL2cGxQ6Vm70f_gHAHqqb1tpuSr1EmjaIkZNKukeSpDD7uBycfiEM8Pjg_JoNy_PIui9UxMtIA_L9QWZiuS-9SW0h_yz4OcoYsAuWK78="
 extra = ""
 
 [[guest_accounts]]
 platform = "huya"
-cookies = "game_did=zNf7cBLv2ZeO0dqYJ5twGhIIAw-8AlJyJ46; __yamid_new=CB86B4B0271000015AE464E01EE01B9D; soundvalue=0.50; guid=0a893112067f79692101762377237463; huya_ua=webh5&0.0.1&activity; SoundValue=0.50"
+cookies = "__yamid_new=CB86D16263200001F2E99E67B8FC127A; game_did=sTeWgxPYo1nEqyZiYGWb4THy0jm9UrOgOua; __yasmid=0.6174943483702738; soundvalue=0.50; hmaccount=65DD00E943EABB18; _yasids=__rootsid%3DCB86D40C82C00001CCEC153018604390; udb_anobiztoken=AQBEe_0vXVWp9YwLUFT30gwjT7J4cVXoOq1_acTTBvoqzV2cjLSBoju75s8XC85tMiGhlGZDEZ_qYLZwOo7Ah2qhgg-Q-a7TtizQP12OOvbPeZ-t4Dq-0Ro4IxUzZjYN8Zq5jF9CFymh-Qb2DmKYAR4nXzCqR_CUxV86jmIgeh1M6kTHe5BM4HLToKEvfpfyrW1r0cEu9KYFU-GfkAyBxqSqaJfKbzH_LncfpB_lIkUyTowRioM-CLoBuhUiuMUn2D8TF5uo9_BYA3EqyTRNbKSxg3Bq9iTkYwBNrWu8rO7e5jzhNAPuvxTf4a6LdB5Sh1Bsj4gAHMz02siHtkgfjtph; hm_lpvt_51700b6c722f5bb4cf39906a596ea41f=1769602935; guid=0a7d0c4e8df479693301ac62ad6272b9; hdid=a5a720002d2bf461f6edbbbbfc443eee148c5764; hm_lvt_51700b6c722f5bb4cf39906a596ea41f=1769600142,1769601685,1769602935; sdid=0UnHUgv0_qmfD4KAKlwzhqe0gjOwV-6EtKl2OabqC5BGUn7OZq6CDT_46DN2ZvMj1uJrz3qkJFf2BfKlxgUjcVuAsztbD69CXkQRStLHZqO7WVkn9LtfFJw_Qo4kgKr8OZHDqNnuwg612sGyflFn1ds6fZXmjrC7vhp2jkzEbfsPMg246unshAoT9ZJjy4Gap; huya_web_rep_cnt=12; SoundValue=0.50; __yamid_tt1=0.6174943483702738; udb_deviceid=w_1068977688379666432; udb_anouid=1470687097344; huya_ua=webh5&0.0.1&activity; Hm_lpvt_51700b6c722f5bb4cf39906a596ea41f=1769602935; Hm_lvt_51700b6c722f5bb4cf39906a596ea41f=1769600142,1769601685,1769602935; udb_guiddata=f656ad3e0e364d27a46187edbabd9761; HMACCOUNT=65DD00E943EABB18; _qimei_uuid42=1a11c132329100292c8e616e701160329b447d79bb"
+extra = ""
+
+[[guest_accounts]]
+platform = "bilibili"
+cookies = "home_feed_column=4; b_lsid=CBF9D4C9_19C048DEC1B; PVID=4; buvid3=583C250B-89C3-18A4-54FD-085E21227E0643788infoc; buvid_fp=75cbbdb2c4fb035d580088c1059c99f5; b_nut=1769600143; _uuid=E3AE75104-DB88-85C7-1032D-92D6F1077729643010infoc; bili_ticket_expires=1769860076; bili_ticket=eyJhbGciOiJIUzI1NiIsImtpZCI6InMwMyIsInR5cCI6IkpXVCJ9.eyJleHAiOjE3Njk4NjAxMzYsImlhdCI6MTc2OTYwMDg3NiwicGx0IjotMX0.KR6DSxhbNO2tSmw3XXCeGZaSn3UAvp-GqdIATmC5Cmg; buvid4=44A2AC79-38AA-8FD9-1228-6120FA41F29G43788-026012819-ASmm1gi1ciNrff04UzPUoQ%3D%3D; LIVE_BUVID=AUTO5417696001435219; browser_resolution=1100-800; theme_style=light"
 extra = ""
 
 [[default_accounts]]
