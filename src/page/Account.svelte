@@ -117,12 +117,12 @@
 
   function qr_help_text(platform: string) {
     const helpMap = {
-      bilibili: "\u8bf7\u4f7f\u7528BiliBili App\u626b\u63cf\u4e8c\u7ef4\u7801\u767b\u5f55",
-      douyin: "\u8bf7\u4f7f\u7528\u6296\u97f3App\u626b\u63cf\u4e8c\u7ef4\u7801\u767b\u5f55",
-      kuaishou: "\u8bf7\u4f7f\u7528\u5feb\u624bApp\u626b\u63cf\u4e8c\u7ef4\u7801\u767b\u5f55",
-      tiktok: "\u8bf7\u4f7f\u7528TikTok App\u626b\u63cf\u4e8c\u7ef4\u7801\u767b\u5f55"
+      bilibili: "请使用BiliBili App扫描二维码登录",
+      douyin: "请使用抖音App扫描二维码登录",
+      kuaishou: "请使用快手App扫描二维码登录",
+      tiktok: "请使用TikTok App扫描二维码登录"
     };
-    return helpMap[platform] || "\u8bf7\u4f7f\u7528App\u626b\u63cf\u4e8c\u7ef4\u7801\u767b\u5f55";
+    return helpMap[platform] || "请使用App扫描二维码登录";
   }
 function toggleDropdown(uid) {
     if (activeDropdown === uid) {
@@ -204,7 +204,7 @@ function toggleDropdown(uid) {
       }
 
       if (!qr_url) {
-        qr_error = "\u4e8c\u7ef4\u7801\u83b7\u53d6\u5931\u8d25";
+        qr_error = "二维码获取失败";
         return;
       }
 
@@ -212,7 +212,7 @@ function toggleDropdown(uid) {
       QRCode.toCanvas(canvas, qr_url, function (error) {
         if (error) {
           console.log(error);
-          qr_error = "\u4e8c\u7ef4\u7801\u6e32\u67d3\u5931\u8d25";
+          qr_error = "二维码渲染失败";
           return;
         }
         canvas.style.display = "block";
@@ -231,7 +231,7 @@ function toggleDropdown(uid) {
         }
       });
     } catch (e) {
-      qr_error = String(e || "\u4e8c\u7ef4\u7801\u83b7\u53d6\u5931\u8d25");
+      qr_error = String(e || "二维码获取失败");
     }
   }
 
@@ -278,7 +278,7 @@ function toggleDropdown(uid) {
       if (qr_status.code == 1 || qr_status.code == 2) {
         if (qr_status.message && qr_status.message !== "new") {
           qr_error = qr_status.message;
-          if (qr_status.message.includes("\u8bbf\u95ee\u592a\u9891\u7e41")) {
+          if (qr_status.message.includes("访问太频繁")) {
             if (check_interval) {
               clearInterval(check_interval);
             }
@@ -309,11 +309,11 @@ function toggleDropdown(uid) {
         if (check_interval) {
           clearInterval(check_interval);
         }
-        qr_error = qr_status.message || "\u4e8c\u7ef4\u7801\u767b\u5f55\u5df2\u7ec8\u6b62";
+        qr_error = qr_status.message || "二维码登录已终止";
         return;
       }
       if (selectedPlatform !== "bilibili") {
-        qr_error = qr_status.message || "\u626b\u7801\u672a\u786e\u8ba4";
+        qr_error = qr_status.message || "扫码未确认";
       } else if (qr_status.message && qr_status.message !== "new") {
         qr_error = qr_status.message;
       } else {
@@ -354,7 +354,7 @@ function toggleDropdown(uid) {
       webview_cookie_extra = "";
       addModal = false;
     } catch (e) {
-      alert("\u6dfb\u52a0\u8d26\u53f7\u5931\u8d25\uff1a" + e);
+      alert("添加账号失败：" + e);
     }
   }
 
@@ -459,10 +459,10 @@ function toggleDropdown(uid) {
 
   function platform_display(platform: string) {
     const platformMap = {
-      bilibili: "\u0042\u7ad9",
-      douyin: "\u6296\u97f3",
-      huya: "\u864e\u7259",
-      kuaishou: "\u5feb\u624b",
+      bilibili: "B站",
+      douyin: "抖音",
+      huya: "虎牙",
+      kuaishou: "快手",
       tiktok: "TikTok"
     };
     return platformMap[platform] || platform;

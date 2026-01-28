@@ -1629,35 +1629,43 @@ pub async fn get_bilibili_webview_cookies(state: state_type!()) -> Result<Webvie
 
 #[cfg(feature = "gui")]
 async fn get_tiktok_webview_guest_cookies(state: state_type!()) -> Result<String, String> {
-    let label = "tiktok-login";
-    let mut opened = false;
+    let label = "tiktok-guest";
+    let mut created = false;
     if state.app_handle.get_webview_window(label).is_none() {
-        open_tiktok_login_window(state.clone(), None).await?;
-        opened = true;
+        let url = Url::parse("https://live.tiktok.com/")
+            .map_err(|e| format!("Invalid guest URL: {e}"))?;
+        let mut builder = WebviewWindowBuilder::new(
+            &state.app_handle,
+            label,
+            WebviewUrl::External(url),
+        )
+        .title("TikTok Guest")
+        .inner_size(900.0, 700.0)
+        .visible(false);
+
+        let fallback_ua = std::env::var("TIKTOK_WEBVIEW_USER_AGENT")
+            .or_else(|_| std::env::var("TIKTOK_USER_AGENT"))
+            .unwrap_or_default();
+        let ua = fallback_ua.trim();
+        if !ua.is_empty() {
+            builder = builder.user_agent(ua);
+        }
+
+        builder
+            .build()
+            .map_err(|e| format!("Failed to open guest window: {e}"))?;
+        created = true;
     }
+
     let window = state
         .app_handle
         .get_webview_window(label)
-        .ok_or_else(|| "未找到内置浏览器窗口，请先打开 TikTok 窗口".to_string())?;
-    if opened {
-        tokio::time::sleep(Duration::from_millis(800)).await;
+        .ok_or_else(|| "未找到内置浏览器窗口，请先打开 TikTok 页面".to_string())?;
+    if created {
+        tokio::time::sleep(Duration::from_millis(1000)).await;
     }
 
-    let mut urls: Vec<String> = vec![
-        "https://live.tiktok.com/",
-        "https://www.tiktok.com",
-        "https://tiktok.com",
-        "https://m.tiktok.com",
-        "https://www.tiktok.com/live",
-        "https://www.tiktok.com/foryou",
-        "https://www.tiktok.com/@tiktok",
-        "https://www.tiktok.com/@tiktok/live",
-        "https://web-va.tiktok.com",
-        "https://login-no1a.www.tiktok.com",
-        "https://us.tiktok.com",
-        "https://mon.tiktokv.com",
-        "https://mcs-sg.tiktokv.com",
-    ]
+    let mut urls: Vec<String> = vec!["https://live.tiktok.com/"]
         .into_iter()
         .map(|url| url.to_string())
         .collect();
@@ -1705,23 +1713,48 @@ async fn get_tiktok_webview_guest_cookies(state: state_type!()) -> Result<String
     if cookie_map.is_empty() && !cookie_map_lower.is_empty() {
         log::warn!("[Account] TikTok guest cookies only available in lowercase map.");
     }
+    if created {
+        let _ = window.close();
+    }
     return Ok(cookie_str);
 }
 
 #[cfg(feature = "gui")]
 async fn get_douyin_webview_guest_cookies(state: state_type!()) -> Result<String, String> {
-    let label = "douyin-login";
-    let mut opened = false;
+    let label = "douyin-guest";
+    let mut created = false;
     if state.app_handle.get_webview_window(label).is_none() {
-        open_douyin_login_window(state.clone(), None).await?;
-        opened = true;
+        let url = Url::parse("https://live.douyin.com/")
+            .map_err(|e| format!("Invalid guest URL: {e}"))?;
+        let mut builder = WebviewWindowBuilder::new(
+            &state.app_handle,
+            label,
+            WebviewUrl::External(url),
+        )
+        .title("Douyin Guest")
+        .inner_size(900.0, 700.0)
+        .visible(false);
+
+        let fallback_ua = std::env::var("DOUYIN_WEBVIEW_USER_AGENT")
+            .or_else(|_| std::env::var("DOUYIN_PASSPORT_USER_AGENT"))
+            .unwrap_or_default();
+        let ua = fallback_ua.trim();
+        if !ua.is_empty() {
+            builder = builder.user_agent(ua);
+        }
+
+        builder
+            .build()
+            .map_err(|e| format!("Failed to open guest window: {e}"))?;
+        created = true;
     }
+
     let window = state
         .app_handle
         .get_webview_window(label)
-        .ok_or_else(|| "未找到内置浏览器窗口，请先打开抖音窗口".to_string())?;
-    if opened {
-        tokio::time::sleep(Duration::from_millis(800)).await;
+        .ok_or_else(|| "未找到内置浏览器窗口，请先打开抖音页面".to_string())?;
+    if created {
+        tokio::time::sleep(Duration::from_millis(1000)).await;
     }
 
     let mut urls: Vec<String> = vec!["https://live.douyin.com/"]
@@ -1777,23 +1810,48 @@ async fn get_douyin_webview_guest_cookies(state: state_type!()) -> Result<String
     if cookie_str.is_empty() {
         return Err("未读取到 Cookie，请先在内置浏览器访问抖音页面".to_string());
     }
+    if created {
+        let _ = window.close();
+    }
     return Ok(cookie_str);
 }
 
 #[cfg(feature = "gui")]
 async fn get_kuaishou_webview_guest_cookies(state: state_type!()) -> Result<String, String> {
-    let label = "kuaishou-login";
-    let mut opened = false;
+    let label = "kuaishou-guest";
+    let mut created = false;
     if state.app_handle.get_webview_window(label).is_none() {
-        open_kuaishou_login_window(state.clone(), None).await?;
-        opened = true;
+        let url = Url::parse("https://live.kuaishou.com/")
+            .map_err(|e| format!("Invalid guest URL: {e}"))?;
+        let mut builder = WebviewWindowBuilder::new(
+            &state.app_handle,
+            label,
+            WebviewUrl::External(url),
+        )
+        .title("Kuaishou Guest")
+        .inner_size(900.0, 700.0)
+        .visible(false);
+
+        let fallback_ua = std::env::var("KUAISHOU_WEBVIEW_USER_AGENT")
+            .or_else(|_| std::env::var("KUAISHOU_USER_AGENT"))
+            .unwrap_or_default();
+        let ua = fallback_ua.trim();
+        if !ua.is_empty() {
+            builder = builder.user_agent(ua);
+        }
+
+        builder
+            .build()
+            .map_err(|e| format!("Failed to open guest window: {e}"))?;
+        created = true;
     }
+
     let window = state
         .app_handle
         .get_webview_window(label)
-        .ok_or_else(|| "未找到内置浏览器窗口，请先打开快手窗口".to_string())?;
-    if opened {
-        tokio::time::sleep(Duration::from_millis(800)).await;
+        .ok_or_else(|| "未找到内置浏览器窗口，请先打开快手页面".to_string())?;
+    if created {
+        tokio::time::sleep(Duration::from_millis(1000)).await;
     }
 
     let mut urls: Vec<String> = vec!["https://live.kuaishou.com/"]
@@ -1842,10 +1900,11 @@ async fn get_kuaishou_webview_guest_cookies(state: state_type!()) -> Result<Stri
     if cookie_str.is_empty() {
         return Err("未读取到 Cookie，请先在内置浏览器访问快手页面".to_string());
     }
+    if created {
+        let _ = window.close();
+    }
     return Ok(cookie_str);
 }
-
-#[cfg(feature = "gui")]
 
 #[cfg(feature = "gui")]
 async fn get_huya_webview_guest_cookies(state: state_type!()) -> Result<String, String> {
@@ -1880,7 +1939,7 @@ async fn get_huya_webview_guest_cookies(state: state_type!()) -> Result<String, 
     let window = state
         .app_handle
         .get_webview_window(label)
-        .ok_or_else(|| "\\u672a\\u627e\\u5230\\u5185\\u7f6e\\u6d4f\\u89c8\\u5668\\u7a97\\u53e3\\uff0c\\u8bf7\\u5148\\u6253\\u5f00\\u864e\\u7259\\u7a97\\u53e3".to_string())?;
+        .ok_or_else(|| "未找到内置浏览器窗口，请先打开虎牙窗口".to_string())?;
     if created {
         tokio::time::sleep(Duration::from_millis(1000)).await;
     }
@@ -1904,7 +1963,7 @@ async fn get_huya_webview_guest_cookies(state: state_type!()) -> Result<String, 
         let url = Url::parse(&raw).map_err(|e| format!("Invalid cookie URL: {e}"))?;
         let cookies = window
             .cookies_for_url(url)
-            .map_err(|e| format!("\\u8bfb\\u53d6 Cookie \\u5931\\u8d25: {e}"))?;
+            .map_err(|e| format!("读取 Cookie 失败: {e}"))?;
         for cookie in cookies {
             let value = cookie.value();
             if value.is_empty() {
@@ -1928,7 +1987,7 @@ async fn get_huya_webview_guest_cookies(state: state_type!()) -> Result<String, 
         .collect::<Vec<_>>()
         .join("; ");
     if cookie_str.is_empty() {
-        return Err("\\u672a\\u8bfb\\u53d6\\u5230 Cookie\\uff0c\\u8bf7\\u5148\\u5728\\u5185\\u7f6e\\u6d4f\\u89c8\\u5668\\u8bbf\\u95ee\\u864e\\u7259\\u9875\\u9762".to_string());
+        return Err("未读取到 Cookie，请先在内置浏览器访问虎牙页面".to_string());
     }
 
     if created {
@@ -1939,19 +1998,42 @@ async fn get_huya_webview_guest_cookies(state: state_type!()) -> Result<String, 
 }
 
 
+#[cfg(feature = "gui")]
 async fn get_bilibili_webview_guest_cookies(state: state_type!()) -> Result<String, String> {
-    let label = "bilibili-login";
-    let mut opened = false;
+    let label = "bilibili-guest";
+    let mut created = false;
     if state.app_handle.get_webview_window(label).is_none() {
-        open_bilibili_login_window(state.clone(), None).await?;
-        opened = true;
+        let url = Url::parse("https://live.bilibili.com/")
+            .map_err(|e| format!("Invalid guest URL: {e}"))?;
+        let mut builder = WebviewWindowBuilder::new(
+            &state.app_handle,
+            label,
+            WebviewUrl::External(url),
+        )
+        .title("Bilibili Guest")
+        .inner_size(900.0, 700.0)
+        .visible(false);
+
+        let fallback_ua = std::env::var("BILIBILI_WEBVIEW_USER_AGENT")
+            .or_else(|_| std::env::var("BILIBILI_USER_AGENT"))
+            .unwrap_or_default();
+        let ua = fallback_ua.trim();
+        if !ua.is_empty() {
+            builder = builder.user_agent(ua);
+        }
+
+        builder
+            .build()
+            .map_err(|e| format!("Failed to open guest window: {e}"))?;
+        created = true;
     }
+
     let window = state
         .app_handle
         .get_webview_window(label)
-        .ok_or_else(|| "未找到内置浏览器窗口，请先打开哔哩哔哩窗口".to_string())?;
-    if opened {
-        tokio::time::sleep(Duration::from_millis(800)).await;
+        .ok_or_else(|| "未找到内置浏览器窗口，请先打开 BiliBili 页面".to_string())?;
+    if created {
+        tokio::time::sleep(Duration::from_millis(1000)).await;
     }
 
     let mut urls: Vec<String> = vec!["https://live.bilibili.com/"]
@@ -1988,7 +2070,10 @@ async fn get_bilibili_webview_guest_cookies(state: state_type!()) -> Result<Stri
         .collect::<Vec<_>>()
         .join("; ");
     if cookie_str.is_empty() {
-        return Err("未读取到 Cookie，请先在内置浏览器访问哔哩哔哩页面".to_string());
+        return Err("未读取到 Cookie，请先在内置浏览器访问 BiliBili 页面".to_string());
+    }
+    if created {
+        let _ = window.close();
     }
     return Ok(cookie_str);
 }

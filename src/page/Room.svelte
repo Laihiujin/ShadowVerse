@@ -331,7 +331,7 @@
         addErrorMsg = "";
       } else if (needsNumeric && !Number.isInteger(Number(normalizedRoomId))) {
         addValid = false;
-        addErrorMsg = "\u0049\u0044\u683c\u5f0f\u9519\u8bef\uff0c\u8bf7\u68c0\u67e5\u8f93\u5165";
+        addErrorMsg = "ID格式错误，请检查输入";
       } else {
         addValid = true;
         addErrorMsg = "";
@@ -836,7 +836,7 @@
             addValid = true;
             addErrorMsg = "";
           } else {
-            addErrorMsg = "\u0049\u0044\u683c\u5f0f\u9519\u8bef\uff0c\u8bf7\u68c0\u67e5\u8f93\u5165";
+            addErrorMsg = "ID格式错误，请检查输入";
             addValid = false;
           }
         }
@@ -1350,7 +1350,7 @@
                 class="mt-2 text-xs text-blue-600 dark:text-blue-400 hover:underline"
                 on:click={() => applyBatchNormalization()}
               >
-                {"\u4e00\u952e\u53bb\u91cd/\u6821\u9a8c"}
+                {"一键去重/校验"}
               </button>
             {:else}
               <input
