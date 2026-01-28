@@ -279,6 +279,47 @@ impl RecorderManager {
             if let Some(entry) = config
                 .default_accounts
                 .iter()
+                .find(|e| e.platform == platform_str && !e.cookies.trim().is_empty())
+            {
+                let accounts = self.db.get_accounts().await?;
+                if let Some(matched) = accounts.iter().find(|a| {
+                    a.platform == platform_str && a.cookies == entry.cookies
+                }) {
+                    log::info!("[Account] Using manual login account for platform: {}", platform_str);
+                    return Ok(Some(matched.to_account()));
+                }
+            }
+        }
+
+        // 2. 如果没有手动账号或未找到匹配，且开启了访客模式，则尝试使用访客账号 (Guest Account)
+        if config.use_guest_accounts {
+            if let Some(entry) = config
+                .guest_accounts
+                .iter()
+                .find(|e| e.platform == platform_str && !e.cookies.trim().is_empty())
+            {
+                let accounts = self.db.get_accounts().await?;
+                if let Some(matched) = accounts.iter().find(|a| {
+                    a.platform == platform_str && a.cookies == entry.cookies
+                }) {
+                    log::info!("[Account] No login account found, falling back to guest account for platform: {}", platform_str);
+                    return Ok(Some(matched.to_account()));
+                }
+            }
+        }
+
+        // 3. 最后退而求其次（兜底逻辑）
+        match self.db.get_account_by_platform(platform_str).await {
+            Ok(account) => Ok(Some(account.to_account())),
+            Err(DatabaseError::NotFound) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    async fn handle_events(&self) {
+        let mut rx = self.event_tx.subscribe();
+        while let Ok(event) = rx.recv().await {
+            match event {
                 RecorderEvent::LiveStart { recorder } => {
                     let event = events::new_webhook_event(
                         events::LIVE_STARTED,
