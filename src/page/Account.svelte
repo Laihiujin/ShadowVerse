@@ -816,13 +816,6 @@ function platform_avatar(platform: string) {
                     >
                       {webview_cookie_loading ? "导入中..." : "导入 Cookie"}
                     </button>
-                    <button
-                      class="px-3 py-2 bg-red-500 hover:bg-red-600 text-white text-xs font-medium rounded-lg transition-colors"
-                      on:click={close_current_login_window}
-                      title="关闭登录窗口"
-                    >
-                      关闭窗口
-                    </button>
                   </div>
                   <p class="text-xs text-gray-500 dark:text-gray-400">
                     登录完成后点击导入，Cookie 会自动写入输入框
@@ -833,7 +826,13 @@ function platform_avatar(platform: string) {
                 </div>
               {/if}
               <div class="flex justify-end items-center space-x-2">
-                
+                <button
+                  class="px-4 py-2 bg-red-500 hover:bg-red-600 text-white text-sm font-medium rounded-lg transition-colors"
+                  on:click={close_all_windows}
+                  title="关闭所有Webview窗口"
+                >
+                  关闭所有窗口
+                </button>
                 <button
                   class="px-4 py-2 bg-[#0A84FF] hover:bg-[#0A84FF]/90 text-white text-sm font-medium rounded-lg transition-colors"
                   on:click={() => {

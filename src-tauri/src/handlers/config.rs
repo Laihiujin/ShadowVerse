@@ -336,13 +336,32 @@ pub async fn update_use_guest_accounts(
         crate::handlers::account::remove_default_accounts(&state.db, &config_snapshot).await;
         crate::handlers::account::refresh_guest_accounts(state.clone()).await?;
     } else {
-        // Clear guest accounts from config as well
+        // First, get the current guest accounts for deletion BEFORE clearing
+        let config_snapshot = state.config.read().await.clone();
+        
+        // Delete guest accounts from database using the ORIGINAL config (before clearing)
+        crate::handlers::account::remove_guest_accounts(&state.db, &config_snapshot).await;
+        
+        // Now clear guest accounts from config
         let mut config = state.config.write().await;
         config.guest_accounts.clear();
         config.save();
-        let config_snapshot = config.clone();
         drop(config);
-        crate::handlers::account::remove_guest_accounts(&state.db, &config_snapshot).await;
+        
+        // Clear guest account cookies from accounts.toml file (keep the structure)
+        let accounts_path = crate::config::resolve_accounts_file_write_path();
+        if let Some((mut accounts_file, _)) = crate::config::load_accounts_file_or_example() {
+            // Only clear cookies, keep the platform entries
+            for guest_account in &mut accounts_file.guest_accounts {
+                guest_account.cookies.clear();
+                guest_account.extra.clear();
+            }
+            if let Err(e) = crate::config::write_accounts_file(&accounts_path, &accounts_file) {
+                log::error!("Failed to clear guest account cookies from accounts.toml: {}", e);
+            } else {
+                log::info!("Cleared guest account cookies from accounts.toml");
+            }
+        }
     }
     Ok(())
 }

@@ -223,13 +223,8 @@
     await get_default_account_platforms();
 
     if (!setting_model.use_guest_accounts) {
-      const confirmed = await confirm(
-        "访客模式已关闭，访客 Cookie 已清除。为了使配置生效，建议立即重启应用。是否现在重启？",
-        { title: "需要重启", kind: "warning" }
-      );
-      if (confirmed) {
-        await relaunch();
-      }
+      // 关闭访客模式时直接重启应用
+      await relaunch();
     }
   }
 
