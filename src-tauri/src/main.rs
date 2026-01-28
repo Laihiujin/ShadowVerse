@@ -468,14 +468,15 @@ fn get_migrations() -> Vec<Migration> {
             ",
             kind: MigrationKind::Up,
         },
-        Migration {
-            version: 15,
-            description: "add_extra_column_to_accounts",
-            sql: r"
-            ALTER TABLE accounts ADD COLUMN extra TEXT NOT NULL DEFAULT '';
-            ",
-            kind: MigrationKind::Up,
-        },
+        // Migration 15 removed - extra column already exists from Migration 12
+        // Migration {
+        //     version: 15,
+        //     description: "add_extra_column_to_accounts",
+        //     sql: r"
+        //     ALTER TABLE accounts ADD COLUMN extra TEXT NOT NULL DEFAULT '';
+        //     ",
+        //     kind: MigrationKind::Up,
+        // },
     ]
 }
 
