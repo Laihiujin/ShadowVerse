@@ -101,45 +101,45 @@ features = ["protocol-asset", "tray-icon"]
 optional = true
 
 [dependencies.tauri-plugin-single-instance]
-version = "2"
+version = "2.3"
 optional = true
 features = ["deep-link"]
 
 [dependencies.tauri-plugin-dialog]
-version = "2"
+version = "2.3"
 optional = true
 
 [dependencies.tauri-plugin-shell]
-version = "2"
+version = "2.3"
 optional = true
 
 [dependencies.tauri-plugin-fs]
-version = "2"
+version = "2.3"
 optional = true
 
 [dependencies.tauri-plugin-http]
-version = "2"
+version = "2.3"
 optional = true
 
 [dependencies.tauri-plugin-sql]
-version = "2"
+version = "2.3"
 optional = true
 features = ["sqlite"]
 
 [dependencies.tauri-utils]
-version = "2"
+version = "2.3"
 optional = true
 
 [dependencies.tauri-plugin-os]
-version = "2"
+version = "2.3"
 optional = true
 
 [dependencies.tauri-plugin-notification]
-version = "2"
+version = "2.3"
 optional = true
 
 [dependencies.tauri-plugin-deep-link]
-version = "2"
+version = "2.3"
 optional = true
 
 [dependencies.fix-path-env]

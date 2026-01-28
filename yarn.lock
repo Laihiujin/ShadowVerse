@@ -919,14 +919,14 @@
     svelte-hmr "^0.15.3"
     vitefu "^0.2.4"
 
-"@tauri-apps/api@2.6.0":
-  version "2.6.0"
-  resolved "https://registry.npmjs.org/@tauri-apps/api/-/api-2.6.0.tgz"
-  integrity sha512-hRNcdercfgpzgFrMXWwNDBN0B7vNzOzRepy6ZAmhxi5mDLVPNrTpo9MGg2tN/F7JRugj4d2aF7E1rtPXAHaetg==
+"@tauri-apps/api@2.1.1":
+  version "2.1.1"
+  resolved "https://registry.yarnpkg.com/@tauri-apps/api/-/api-2.1.1.tgz#77d4ddb683d31072de4e6a47c8613d9db011652b"
+  integrity sha512-fzUfFFKo4lknXGJq8qrCidkUcKcH2UHhfaaCNt4GzgzGaW2iS26uFOg4tS3H4P8D6ZEeUxtiD5z0nwFF0UN30A==
 
-"@tauri-apps/api@^2.6.0", "@tauri-apps/api@^2.8.0":
+"@tauri-apps/api@^2.0.0", "@tauri-apps/api@^2.6.0", "@tauri-apps/api@^2.8.0":
   version "2.9.1"
-  resolved "https://registry.npmjs.org/@tauri-apps/api/-/api-2.9.1.tgz"
+  resolved "https://registry.yarnpkg.com/@tauri-apps/api/-/api-2.9.1.tgz#e539bfa437e53864fd5e7ed0f28e8217fbc74de1"
   integrity sha512-IGlhP6EivjXHepbBic618GOmiWe4URJiIeZFlB7x3czM0yDHHYviH1Xvoiv4FefdkQtn6v7TuwWCRfOGdnVUGw==
 
 "@tauri-apps/cli-darwin-arm64@2.9.6":
@@ -984,9 +984,9 @@
   resolved "https://registry.yarnpkg.com/@tauri-apps/cli-win32-x64-msvc/-/cli-win32-x64-msvc-2.9.6.tgz#d58c9f8af835b7e4fc30e201e979342c70bea426"
   integrity sha512-ldWuWSSkWbKOPjQMJoYVj9wLHcOniv7diyI5UAJ4XsBdtaFB0pKHQsqw/ItUma0VXGC7vB4E9fZjivmxur60aw==
 
-"@tauri-apps/cli@^2.4.1":
+"@tauri-apps/cli@^2.6.2":
   version "2.9.6"
-  resolved "https://registry.npmjs.org/@tauri-apps/cli/-/cli-2.9.6.tgz"
+  resolved "https://registry.yarnpkg.com/@tauri-apps/cli/-/cli-2.9.6.tgz#f15ae8e03bf48308055c15ab25b439bed9906bc9"
   integrity sha512-3xDdXL5omQ3sPfBfdC8fCtDKcnyV7OqyzQgfyT5P3+zY6lcPqIYKQBvUasNvppi21RSdfhy44ttvJmftb0PCDw==
   optionalDependencies:
     "@tauri-apps/cli-darwin-arm64" "2.9.6"
@@ -1001,12 +1001,12 @@
     "@tauri-apps/cli-win32-ia32-msvc" "2.9.6"
     "@tauri-apps/cli-win32-x64-msvc" "2.9.6"
 
-"@tauri-apps/plugin-deep-link@2.4.1":
-  version "2.4.1"
-  resolved "https://registry.npmjs.org/@tauri-apps/plugin-deep-link/-/plugin-deep-link-2.4.1.tgz"
-  integrity sha512-I8Bo+spcAKGhIIJ1qN/gapp/Ot3mosQL98znxr975Zn2ODAkUZ++BQ9FnTpR7PDwfIl5ANSGdIW/YU01zVTcJw==
+"@tauri-apps/plugin-deep-link@2.3.0":
+  version "2.3.0"
+  resolved "https://registry.yarnpkg.com/@tauri-apps/plugin-deep-link/-/plugin-deep-link-2.3.0.tgz#09ce30d817033c3ab88d66d6f071d0095b925d82"
+  integrity sha512-Jsbu3vfUcD1jR+gx1P8wOe5x/WoXw/K4qp0ALaDjOM2vNIflyLowhQhZ8fUxTHNe1+N+mIBrwvb3hXIWRI5iuw==
   dependencies:
-    "@tauri-apps/api" "^2.6.0"
+    "@tauri-apps/api" "^2.0.0"
 
 "@tauri-apps/plugin-dialog@2.3.0":
   version "2.3.0"
@@ -1015,19 +1015,19 @@
   dependencies:
     "@tauri-apps/api" "^2.6.0"
 
-"@tauri-apps/plugin-fs@2.4.0":
-  version "2.4.0"
-  resolved "https://registry.npmjs.org/@tauri-apps/plugin-fs/-/plugin-fs-2.4.0.tgz"
-  integrity sha512-Sp8AdDcbyXyk6LD6Pmdx44SH3LPeNAvxR2TFfq/8CwqzfO1yOyV+RzT8fov0NNN7d9nvW7O7MtMAptJ42YXA5g==
+"@tauri-apps/plugin-fs@2.3.0":
+  version "2.3.0"
+  resolved "https://registry.yarnpkg.com/@tauri-apps/plugin-fs/-/plugin-fs-2.3.0.tgz#f75258385b61b19bb22d7d94d01f156fc594e20e"
+  integrity sha512-G9gEyYVUaaxhdRJBgQTTLmzAe0vtHYxYyN1oTQzU3zwvb8T+tVLcAqCdFMWHq0qGeGbmynI5whvYpcXo5LvZ1w==
   dependencies:
-    "@tauri-apps/api" "^2.6.0"
+    "@tauri-apps/api" "^2.0.0"
 
-"@tauri-apps/plugin-http@2.5.0":
-  version "2.5.0"
-  resolved "https://registry.npmjs.org/@tauri-apps/plugin-http/-/plugin-http-2.5.0.tgz"
-  integrity sha512-l4M2DUIsOBIMrbj4dJZwrB4mJiB7OA/2Tj3gEbX2fjq5MOpETklJPKfDvzUTDwuq4lIKCKKykz8E8tpOgvi0EQ==
+"@tauri-apps/plugin-http@2.3.0":
+  version "2.3.0"
+  resolved "https://registry.yarnpkg.com/@tauri-apps/plugin-http/-/plugin-http-2.3.0.tgz#9dde58ad5b533669ad9ea81d1f22cae04fe2898e"
+  integrity sha512-pigTvz+zzAqbIhCzRiR1GE98Jw7A03j2V+Eiexr9thBI8VfMiwFQMcbgON51xlwnVaI72LdbYKNajU84im8tlg==
   dependencies:
-    "@tauri-apps/api" "^2.6.0"
+    "@tauri-apps/api" "^2.0.0"
 
 "@tauri-apps/plugin-notification@2.3.0":
   version "2.3.0"
@@ -1043,9 +1043,9 @@
   dependencies:
     "@tauri-apps/api" "^2.6.0"
 
-"@tauri-apps/plugin-process@^2.3.1":
+"@tauri-apps/plugin-process@2.3.1":
   version "2.3.1"
-  resolved "https://registry.npmjs.org/@tauri-apps/plugin-process/-/plugin-process-2.3.1.tgz"
+  resolved "https://registry.yarnpkg.com/@tauri-apps/plugin-process/-/plugin-process-2.3.1.tgz#fff77aa7550c9c5347689c859d581f88287bf7ae"
   integrity sha512-nCa4fGVaDL/B9ai03VyPOjfAHRHSBz5v6F/ObsB73r/dA3MHHhZtldaDMIc0V/pnUw9ehzr2iEG+XkSEyC0JJA==
   dependencies:
     "@tauri-apps/api" "^2.8.0"
