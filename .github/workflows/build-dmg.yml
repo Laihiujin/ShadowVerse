@@ -30,6 +30,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -93,30 +95,24 @@ jobs:
           VERSION=${{ steps.version.outputs.version }}
           
           # Find and rename aarch64 DMG
-          if [ -f "src-tauri/target/aarch64-apple-darwin/release/bundle/macos/rw."*".dmg" ]; then
-            AARCH64_DMG=$(ls src-tauri/target/aarch64-apple-darwin/release/bundle/macos/rw.*.dmg 2>/dev/null | head -1)
-            if [ -n "$AARCH64_DMG" ]; then
-              cp "$AARCH64_DMG" "src-tauri/target/aarch64-apple-darwin/release/bundle/macos/ShadowVerse_${VERSION}_aarch64.dmg"
-              echo "Created: ShadowVerse_${VERSION}_aarch64.dmg"
-            fi
+          AARCH64_DMG=$(find src-tauri/target/aarch64-apple-darwin/release/bundle/macos -name "ShadowVerse*.dmg" | head -1)
+          if [ -n "$AARCH64_DMG" ]; then
+            cp "$AARCH64_DMG" "src-tauri/target/aarch64-apple-darwin/release/bundle/macos/ShadowVerse_${VERSION}_aarch64.dmg"
+            echo "Created: ShadowVerse_${VERSION}_aarch64.dmg"
           fi
           
           # Find and rename x86_64 DMG
-          if [ -f "src-tauri/target/x86_64-apple-darwin/release/bundle/macos/rw."*".dmg" ]; then
-            X86_64_DMG=$(ls src-tauri/target/x86_64-apple-darwin/release/bundle/macos/rw.*.dmg 2>/dev/null | head -1)
-            if [ -n "$X86_64_DMG" ]; then
-              cp "$X86_64_DMG" "src-tauri/target/x86_64-apple-darwin/release/bundle/macos/ShadowVerse_${VERSION}_x86_64.dmg"
-              echo "Created: ShadowVerse_${VERSION}_x86_64.dmg"
-            fi
+          X86_64_DMG=$(find src-tauri/target/x86_64-apple-darwin/release/bundle/macos -name "ShadowVerse*.dmg" | head -1)
+          if [ -n "$X86_64_DMG" ]; then
+            cp "$X86_64_DMG" "src-tauri/target/x86_64-apple-darwin/release/bundle/macos/ShadowVerse_${VERSION}_x86_64.dmg"
+            echo "Created: ShadowVerse_${VERSION}_x86_64.dmg"
           fi
           
           # Find and rename universal DMG
-          if [ -f "src-tauri/target/universal-apple-darwin/release/bundle/macos/rw."*".dmg" ]; then
-            UNIVERSAL_DMG=$(ls src-tauri/target/universal-apple-darwin/release/bundle/macos/rw.*.dmg 2>/dev/null | head -1)
-            if [ -n "$UNIVERSAL_DMG" ]; then
-              cp "$UNIVERSAL_DMG" "src-tauri/target/universal-apple-darwin/release/bundle/macos/ShadowVerse_${VERSION}_universal.dmg"
-              echo "Created: ShadowVerse_${VERSION}_universal.dmg"
-            fi
+          UNIVERSAL_DMG=$(find src-tauri/target/universal-apple-darwin/release/bundle/macos -name "ShadowVerse*.dmg" | head -1)
+          if [ -n "$UNIVERSAL_DMG" ]; then
+            cp "$UNIVERSAL_DMG" "src-tauri/target/universal-apple-darwin/release/bundle/macos/ShadowVerse_${VERSION}_universal.dmg"
+            echo "Created: ShadowVerse_${VERSION}_universal.dmg"
           fi
 
       - name: Upload Apple Silicon DMG
