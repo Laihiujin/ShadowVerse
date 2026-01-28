@@ -158,6 +158,7 @@ windows-sys = { version = "0.52", features = ["Win32_Security_Cryptography", "Wi
 
 [target.'cfg(darwin)'.dependencies.whisper-rs]
 version = "0.15.1"
+default-features = true
 features = ["metal"]
 
 [workspace.dependencies]

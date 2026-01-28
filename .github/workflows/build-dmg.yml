@@ -51,6 +51,9 @@ jobs:
         if: github.event_name == 'push' || github.event.inputs.target == 'aarch64-apple-darwin' || github.event.inputs.target == 'universal'
         env:
           CMAKE_OSX_DEPLOYMENT_TARGET: '13.3'
+          CMAKE_C_FLAGS: '-march=armv8-a'
+          CMAKE_CXX_FLAGS: '-march=armv8-a'
+          GGML_METAL_EMBED_LIBRARY: '1'
         run: |
           yarn tauri build --target aarch64-apple-darwin
 

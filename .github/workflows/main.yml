@@ -103,6 +103,9 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CMAKE_OSX_DEPLOYMENT_TARGET: "13.3"
+          CMAKE_C_FLAGS: ${{ matrix.platform == 'macos-latest' && '-march=armv8-a' || '' }}
+          CMAKE_CXX_FLAGS: ${{ matrix.platform == 'macos-latest' && '-march=armv8-a' || '' }}
+          GGML_METAL_EMBED_LIBRARY: ${{ matrix.platform == 'macos-latest' && '1' || '' }}
           CMAKE_CUDA_ARCHITECTURES: "75"
           WHISPER_BACKEND: ${{ matrix.features }}
         with:
