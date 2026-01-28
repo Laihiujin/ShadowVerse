@@ -474,6 +474,34 @@ function platform_avatar(platform: string) {
     };
     return avatarMap[platform] || "/imgs/bilibili_avatar.png";
   }
+
+  // 关闭当前平台的登录窗口
+  async function close_current_login_window() {
+    const config = webviewLoginPlatforms[selectedPlatform];
+    if (!config) {
+      return;
+    }
+    const label = `${selectedPlatform}-login`;
+    try {
+      await invoke("close_webview_window", { label });
+      webview_cookie_error = "";
+    } catch (e) {
+      // 窗口可能已经关闭，忽略错误
+      console.log("关闭窗口:", e);
+    }
+  }
+
+  // 关闭所有登录窗口
+  async function close_all_windows() {
+    try {
+      const closedWindows = await invoke("close_all_login_windows");
+      console.log("已关闭窗口:", closedWindows);
+      webview_cookie_error = "";
+    } catch (e) {
+      console.error("关闭窗口失败:", e);
+    }
+  }
+
 </script>
 
 <svelte:window
@@ -787,6 +815,13 @@ function platform_avatar(platform: string) {
                       disabled={webview_cookie_loading}
                     >
                       {webview_cookie_loading ? "导入中..." : "导入 Cookie"}
+                    </button>
+                    <button
+                      class="px-3 py-2 bg-red-500 hover:bg-red-600 text-white text-xs font-medium rounded-lg transition-colors"
+                      on:click={close_current_login_window}
+                      title="关闭登录窗口"
+                    >
+                      关闭窗口
                     </button>
                   </div>
                   <p class="text-xs text-gray-500 dark:text-gray-400">

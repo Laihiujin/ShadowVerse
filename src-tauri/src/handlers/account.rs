@@ -1492,7 +1492,7 @@ pub async fn open_bilibili_login_window(
         return Ok(());
     }
 
-    let url = Url::parse("https://passport.bilibili.com/login")
+    let url = Url::parse("https://www.bilibili.com/")
         .map_err(|e| format!("Invalid login URL: {e}"))?;
     let mut builder = WebviewWindowBuilder::new(
         &state.app_handle,
@@ -2491,3 +2491,61 @@ mod tests {
 #[cfg(all(feature = "gui", not(feature = "headless")))]
 use std::collections::HashMap;
 use serde_json::json;
+
+/// 列出所有打开的 webview 窗口
+#[cfg(feature = "gui")]
+#[tauri::command]
+pub async fn list_webview_windows(state: state_type!()) -> Result<Vec<String>, String> {
+    let login_labels = vec![
+        "tiktok-login",
+        "douyin-login",
+        "kuaishou-login",
+        "huya-login",
+        "bilibili-login",
+    ];
+    
+    let mut open_windows = Vec::new();
+    for label in login_labels {
+        if state.app_handle.get_webview_window(label).is_some() {
+            open_windows.push(label.to_string());
+        }
+    }
+    
+    Ok(open_windows)
+}
+
+/// 关闭指定的 webview 窗口
+#[cfg(feature = "gui")]
+#[tauri::command]
+pub async fn close_webview_window(state: state_type!(), label: String) -> Result<(), String> {
+    if let Some(window) = state.app_handle.get_webview_window(&label) {
+        window.close().map_err(|e| format!("关闭窗口失败: {e}"))?;
+        Ok(())
+    } else {
+        Err(format!("未找到窗口: {}", label))
+    }
+}
+
+/// 关闭所有登录窗口
+#[cfg(feature = "gui")]
+#[tauri::command]
+pub async fn close_all_login_windows(state: state_type!()) -> Result<Vec<String>, String> {
+    let login_labels = vec![
+        "tiktok-login",
+        "douyin-login",
+        "kuaishou-login",
+        "huya-login",
+        "bilibili-login",
+    ];
+    
+    let mut closed_windows = Vec::new();
+    for label in login_labels {
+        if let Some(window) = state.app_handle.get_webview_window(label) {
+            if window.close().is_ok() {
+                closed_windows.push(label.to_string());
+            }
+        }
+    }
+    
+    Ok(closed_windows)
+}
