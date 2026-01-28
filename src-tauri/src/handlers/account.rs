@@ -74,8 +74,10 @@ fn normalize_cookie_string_for_compare(cookies: &str) -> String {
         .split(';')
         .map(str::trim)
         .filter(|part| !part.is_empty())
-        .filter_map(|part| part.split_once('='))
-        .map(|(key, value)| format!("{}={}", key.trim(), value.trim()))
+        .filter_map(|part| {
+            let (key, value) = part.split_once('=')?;
+            Some(format!("{}={}", key.trim(), value.trim()))
+        })
         .collect();
     pairs.sort();
     pairs.join("; ")
@@ -944,19 +946,8 @@ pub async fn get_tiktok_webview_cookies(state: state_type!()) -> Result<WebviewC
         .ok_or_else(|| "未找到内置浏览器窗口，请先打开登录窗口".to_string())?;
     let mut urls: Vec<String> = vec![
         "https://www.tiktok.com",
-        "https://tiktok.com",
-        "https://m.tiktok.com",
-        "https://www.tiktok.com/login",
         "https://www.tiktok.com/passport/",
-        "https://www.tiktok.com/live",
-        "https://www.tiktok.com/foryou",
-        "https://www.tiktok.com/@tiktok",
-        "https://www.tiktok.com/@tiktok/live",
         "https://web-va.tiktok.com",
-        "https://login-no1a.www.tiktok.com",
-        "https://us.tiktok.com",
-        "https://mon.tiktokv.com",
-        "https://mcs-sg.tiktokv.com",
     ]
     .into_iter()
     .map(|url| url.to_string())
@@ -1008,25 +999,13 @@ pub async fn get_tiktok_webview_cookies(state: state_type!()) -> Result<WebviewC
 
     let has_login = cookie_map.contains_key("sessionid")
         || cookie_map.contains_key("sessionid_ss")
-        || cookie_map.contains_key("sid_guard")
-        || cookie_map.contains_key("sid_tt")
-        || cookie_map.contains_key("uid_tt")
-        || cookie_map.contains_key("uid_tt_ss")
-        || cookie_map.contains_key("passport_csrf_token")
-        || cookie_map.contains_key("passport_csrf_token_default")
         || cookie_map_lower.contains_key("sessionid")
-        || cookie_map_lower.contains_key("sessionid_ss")
-        || cookie_map_lower.contains_key("sid_guard")
-        || cookie_map_lower.contains_key("sid_tt")
-        || cookie_map_lower.contains_key("uid_tt")
-        || cookie_map_lower.contains_key("uid_tt_ss")
-        || cookie_map_lower.contains_key("passport_csrf_token")
-        || cookie_map_lower.contains_key("passport_csrf_token_default");
+        || cookie_map_lower.contains_key("sessionid_ss");
     if !has_login {
         log::warn!(
-            "[Account] TikTok webview cookies missing login tokens (sessionid/sid_guard/sid_tt)."
+            "[Account] TikTok webview cookies missing core login tokens (sessionid)."
         );
-        return Err("未检测到登录态或 Cookie 已失效，请在内置浏览器重新登录后再导入".to_string());
+        return Err("未检测到 TikTok 登录状态。请在内置浏览器完成登录（出现个人头像）后再导入。".to_string());
     }
 
     let required_keys = [
@@ -1200,27 +1179,13 @@ pub async fn get_douyin_webview_cookies(state: state_type!()) -> Result<WebviewC
 
     let has_login = cookie_map.contains_key("sessionid")
         || cookie_map.contains_key("sessionid_ss")
-        || cookie_map.contains_key("sid_guard")
-        || cookie_map.contains_key("sid_tt")
-        || cookie_map.contains_key("uid_tt")
-        || cookie_map.contains_key("uid_tt_ss")
-        || cookie_map.contains_key("login_token")
-        || cookie_map.contains_key("passport_csrf_token")
-        || cookie_map.contains_key("passport_csrf_token_default")
         || cookie_map_lower.contains_key("sessionid")
-        || cookie_map_lower.contains_key("sessionid_ss")
-        || cookie_map_lower.contains_key("sid_guard")
-        || cookie_map_lower.contains_key("sid_tt")
-        || cookie_map_lower.contains_key("uid_tt")
-        || cookie_map_lower.contains_key("uid_tt_ss")
-        || cookie_map_lower.contains_key("login_token")
-        || cookie_map_lower.contains_key("passport_csrf_token")
-        || cookie_map_lower.contains_key("passport_csrf_token_default");
+        || cookie_map_lower.contains_key("sessionid_ss");
     if !has_login {
         log::warn!(
-            "[Account] Douyin webview cookies missing login tokens (sessionid/sessionid_ss/sid_guard)."
+            "[Account] Douyin webview cookies missing core login tokens (sessionid)."
         );
-        return Err("未检测到登录态或 Cookie 已失效，请在内置浏览器重新登录后再导入".to_string());
+        return Err("未检测到抖音登录状态。请在内置浏览器完成登录后再导入。".to_string());
     }
 
     return build_webview_cookie_result("douyin", cookie_str, cookie_list).await;
@@ -1702,6 +1667,14 @@ async fn get_tiktok_webview_guest_cookies(state: state_type!()) -> Result<String
         }
     }
 
+    // Filter out login tokens for guest mode
+    cookie_map.remove("sessionid");
+    cookie_map.remove("sessionid_ss");
+    cookie_map.remove("sid_tt");
+    cookie_map.remove("sid_guard");
+    cookie_map.remove("uid_tt");
+    cookie_map.remove("uid_tt_ss");
+
     let cookie_str = cookie_map
         .iter()
         .map(|(name, value)| format!("{name}={value}"))
@@ -1801,6 +1774,14 @@ async fn get_douyin_webview_guest_cookies(state: state_type!()) -> Result<String
             cookie_map.insert("sessionid".to_string(), value.clone());
         }
     }
+
+    // Filter out login tokens for guest mode
+    cookie_map.remove("sessionid");
+    cookie_map.remove("sessionid_ss");
+    cookie_map.remove("sid_tt");
+    cookie_map.remove("sid_guard");
+    cookie_map.remove("uid_tt");
+    cookie_map.remove("uid_tt_ss");
 
     let cookie_str = cookie_map
         .iter()

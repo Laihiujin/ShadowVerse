@@ -117,12 +117,12 @@
 
   function qr_help_text(platform: string) {
     const helpMap = {
-      bilibili: "请使用BiliBili App扫描二维码登录",
-      douyin: "请使用抖音App扫描二维码登录",
-      kuaishou: "请使用快手App扫描二维码登录",
-      tiktok: "请使用TikTok App扫描二维码登录"
+      bilibili: "请使用BiliBili App 扫描二维码登录",
+      douyin: "请使用抖音App 扫描二维码登录",
+      kuaishou: "请使用快手App 扫描二维码登录",
+      tiktok: "请使用TikTok App 扫描二维码登录"
     };
-    return helpMap[platform] || "请使用App扫描二维码登录";
+    return helpMap[platform] || "请使用App 扫描二维码登录";
   }
 function toggleDropdown(uid) {
     if (activeDropdown === uid) {
@@ -372,9 +372,6 @@ function toggleDropdown(uid) {
       await invoke(config.open, {
         userAgent: navigator.userAgent,
       });
-      if (selectedPlatform === "tiktok") {
-        start_webview_cookie_poll();
-      }
     } catch (e) {
       webview_cookie_error = String(e || "打开登录窗口失败");
     }
@@ -489,15 +486,20 @@ function platform_avatar(platform: string) {
     <!-- Header -->
     <div class="flex justify-between items-center">
       <div class="flex items-center space-x-4">
-        <h1 class="text-2xl font-semibold text-gray-900 dark:text-white">&#x8d26;&#x53f7;</h1>
+        <h1 class="text-2xl font-semibold text-gray-900 dark:text-white">账号</h1>
 
         <div
           class="flex items-center space-x-2 text-sm text-gray-500 dark:text-gray-400"
         >
-          <span>&#x5171; {account_info.accounts.length} &#x4e2a;</span>
+          <span>共 {account_info.accounts.length} 个</span>
         </div>
       </div>
-      <p>&#x767b;&#x5f55;&#x8d26;&#x53f7;&#x4ee5;&#x652f;&#x6301;&#x83b7;&#x53d6;&#x6700;&#x9ad8;&#x753b;&#x8d28;</p>
+      <div class="text-[11px] text-center text-gray-500 dark:text-gray-400 leading-tight">
+        <p>默认启用访客模式；</p>
+        <p>如需切换专用/手动登录账号，请先在设置中关闭访客模式；</p>
+        <p>登录账号可解锁 4K/蓝光原画质，确保获取平台最高4K画质直播流；</p>
+        <p>「B站/快手」支持直接扫码登录，其余平台请点击手动 Cookie 后使用内置浏览器登录；</p>
+      </div>
       <button
         on:click={() => {
           addModal = true;
@@ -509,7 +511,7 @@ function platform_avatar(platform: string) {
         class="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors flex items-center space-x-2"
       >
         <Plus class="w-5 h-5 icon-white" />
-        <span>&#x6dfb;&#x52a0;&#x8d26;&#x53f7;</span>
+        <span>添加账号</span>
       </button>
     </div>
 

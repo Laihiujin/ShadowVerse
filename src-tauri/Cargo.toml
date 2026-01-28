@@ -4,7 +4,7 @@ resolver = "2"
 
 [package]
 name = "shadowverse"
-version = "2.17.7"
+version = "2.17.9"
 description = "ShadowVerse"
 authors = ["Laihiujin+Xinrea"]
 license = ""
@@ -70,6 +70,7 @@ aes-gcm = "0.10"
 aead = "0.5"
 rusqlite = "0.32"
 anyhow = "1.0"
+tauri-plugin-process = "2.3.1"
 
 [features]
 # this feature is used for production builds or when `devPath` points to the filesystem

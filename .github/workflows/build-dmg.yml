@@ -46,21 +46,21 @@ jobs:
         run: yarn install
 
       - name: Build for Apple Silicon
-        if: github.event.inputs.target == 'aarch64-apple-darwin' || github.event.inputs.target == 'universal'
+        if: github.event_name == 'push' || github.event.inputs.target == 'aarch64-apple-darwin' || github.event.inputs.target == 'universal'
         env:
           CMAKE_OSX_DEPLOYMENT_TARGET: '13.3'
         run: |
           yarn tauri build --target aarch64-apple-darwin
 
       - name: Build for Intel
-        if: github.event.inputs.target == 'x86_64-apple-darwin' || github.event.inputs.target == 'universal'
+        if: github.event_name == 'push' || github.event.inputs.target == 'x86_64-apple-darwin' || github.event.inputs.target == 'universal'
         env:
           CMAKE_OSX_DEPLOYMENT_TARGET: '13.3'
         run: |
           yarn tauri build --target x86_64-apple-darwin
 
       - name: Create Universal Binary (if universal build)
-        if: github.event.inputs.target == 'universal'
+        if: github.event_name == 'push' || github.event.inputs.target == 'universal'
         run: |
           # Create universal app bundle
           mkdir -p src-tauri/target/universal-apple-darwin/release/bundle/macos
@@ -120,7 +120,7 @@ jobs:
           fi
 
       - name: Upload Apple Silicon DMG
-        if: github.event.inputs.target == 'aarch64-apple-darwin' || github.event.inputs.target == 'universal'
+        if: github.event_name == 'push' || github.event.inputs.target == 'aarch64-apple-darwin' || github.event.inputs.target == 'universal'
         uses: actions/upload-artifact@v4
         with:
           name: ShadowVerse-macOS-aarch64
@@ -128,7 +128,7 @@ jobs:
           if-no-files-found: warn
 
       - name: Upload Intel DMG
-        if: github.event.inputs.target == 'x86_64-apple-darwin' || github.event.inputs.target == 'universal'
+        if: github.event_name == 'push' || github.event.inputs.target == 'x86_64-apple-darwin' || github.event.inputs.target == 'universal'
         uses: actions/upload-artifact@v4
         with:
           name: ShadowVerse-macOS-x86_64
@@ -136,7 +136,7 @@ jobs:
           if-no-files-found: warn
 
       - name: Upload Universal DMG
-        if: github.event.inputs.target == 'universal'
+        if: github.event_name == 'push' || github.event.inputs.target == 'universal'
         uses: actions/upload-artifact@v4
         with:
           name: ShadowVerse-macOS-universal

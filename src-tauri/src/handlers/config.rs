@@ -336,6 +336,12 @@ pub async fn update_use_guest_accounts(
         crate::handlers::account::remove_default_accounts(&state.db, &config_snapshot).await;
         crate::handlers::account::refresh_guest_accounts(state.clone()).await?;
     } else {
+        // Clear guest accounts from config as well
+        let mut config = state.config.write().await;
+        config.guest_accounts.clear();
+        config.save();
+        let config_snapshot = config.clone();
+        drop(config);
         crate::handlers::account::remove_guest_accounts(&state.db, &config_snapshot).await;
     }
     Ok(())

@@ -17,6 +17,8 @@
     Globe,
   } from "lucide-svelte";
   import { onMount } from "svelte";
+  import { relaunch } from "@tauri-apps/plugin-process";
+  import { message, confirm } from "@tauri-apps/plugin-dialog";
 
   let setting_model: Config = {
     cache: "",
@@ -219,6 +221,16 @@
       useGuestAccounts: setting_model.use_guest_accounts,
     });
     await get_default_account_platforms();
+
+    if (!setting_model.use_guest_accounts) {
+      const confirmed = await confirm(
+        "访客模式已关闭，访客 Cookie 已清除。为了使配置生效，建议立即重启应用。是否现在重启？",
+        { title: "需要重启", kind: "warning" }
+      );
+      if (confirmed) {
+        await relaunch();
+      }
+    }
   }
 
   async function update_network_config() {
@@ -331,7 +343,8 @@
                     录制协议优先级
                   </h3>
                   <p class="text-sm text-gray-500 dark:text-gray-400">
-                    预览优先 HLS；录制按所选协议并支持回退。
+                    启用登录账号优先选择 HLS 录制协议；
+                    启用访客账号优先选择 FLV 录制协议；
                   </p>
                 </div>
                 <div class="flex items-center space-x-2">
@@ -383,9 +396,9 @@
             <div class="p-4">
               <div class="flex items-center justify-between">
                 <div>
-                  <h3 class="text-sm font-medium text-gray-900 dark:text-white">使用访客 Cookie</h3>
+                  <h3 class="text-sm font-medium text-gray-900 dark:text-white">使用访客模式——打开开关即可自动获取 Cookie</h3>
                   <p class="text-sm text-gray-500 dark:text-gray-400">
-                    启用后自动从内置浏览器更新访客 Cookie
+                    启用后自动更新访客模式，该模式均为「未登录账号」，画质最高720p——高清；
                   </p>
                 </div>
                 <label class="relative inline-block w-11 h-6">
@@ -404,9 +417,9 @@
             <div class="p-4">
               <div class="flex items-center justify-between">
                 <div>
-                  <h3 class="text-sm font-medium text-gray-900 dark:text-white">使用默认账号</h3>
+                  <h3 class="text-sm font-medium text-gray-900 dark:text-white">使用登录账号——推荐使用内置浏览器登录</h3>
                   <p class="text-sm text-gray-500 dark:text-gray-400">
-                    启用后优先使用配置文件中的默认账号
+                    启用后优先使用「已登录账号(手动填写账号Cookie/二维码登录)」，登录账号画质最高4K——超高清；
                   </p>
                 </div>
                 <label class="relative inline-block w-11 h-6">
