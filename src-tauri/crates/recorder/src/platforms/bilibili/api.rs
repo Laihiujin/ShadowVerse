@@ -77,6 +77,7 @@ pub struct BiliStream {
     pub url_info: Vec<UrlInfo>,
     pub drm: bool,
     pub master_url: Option<String>,
+    pub resolution: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -142,8 +143,8 @@ impl fmt::Display for BiliStream {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "type: {:?}, codec: {:?}, base_url: {}, url_info: {:?}, drm: {}, master_url: {:?}",
-            self.format, self.codec, self.base_url, self.url_info, self.drm, self.master_url
+            "type: {:?}, codec: {:?}, base_url: {}, url_info: {:?}, drm: {}, master_url: {:?}, resolution: {:?}",
+            self.format, self.codec, self.base_url, self.url_info, self.drm, self.master_url, self.resolution
         )
     }
 }
@@ -156,6 +157,7 @@ impl BiliStream {
         url_info: Vec<UrlInfo>,
         drm: bool,
         master_url: Option<String>,
+        resolution: Option<String>,
     ) -> BiliStream {
         BiliStream {
             format,
@@ -164,6 +166,7 @@ impl BiliStream {
             url_info,
             drm,
             master_url,
+            resolution,
         }
     }
 
@@ -391,6 +394,48 @@ pub async fn get_room_info(
     })
 }
 
+/// Get anchor info from user id using live API (no WBI sign required)
+/// This is a fallback for guest mode when get_user_info fails with -352
+pub async fn get_anchor_info(
+    client: &Client,
+    account: &Account,
+    user_id: &str,
+) -> Result<UserInfo, RecorderError> {
+    let mut headers = generate_user_agent_header();
+    if let Ok(cookies) = account.cookies.parse() {
+        headers.insert("cookie", cookies);
+    }
+    // Using live API to get anchor info - doesn't require WBI sign
+    let response = client
+        .get(format!(
+            "https://api.live.bilibili.com/live_user/v1/Master/info?uid={user_id}"
+        ))
+        .headers(headers)
+        .send()
+        .await?;
+
+    if !response.status().is_success() {
+        return Err(RecorderError::InvalidResponseStatus {
+            status: response.status(),
+        });
+    }
+
+    let res: serde_json::Value = response.json().await?;
+    let code = res["code"]
+        .as_i64()
+        .ok_or(RecorderError::InvalidResponseJson { resp: res.clone() })?;
+    if code != 0 {
+        return Err(RecorderError::InvalidResponseJson { resp: res.clone() });
+    }
+
+    Ok(UserInfo {
+        user_id: user_id.to_string(),
+        user_name: res["data"]["info"]["uname"].as_str().unwrap_or("").to_string(),
+        user_sign: res["data"]["info"]["sign"].as_str().unwrap_or("").to_string(),
+        user_avatar_url: res["data"]["info"]["face"].as_str().unwrap_or("").to_string(),
+    })
+}
+
 /// Get stream info from room id
 ///
 /// https://socialsisteryi.github.io/bilibili-API-collect/docs/live/info.html#%E8%8E%B7%E5%8F%96%E7%9B%B4%E6%92%AD%E9%97%B4%E4%BF%A1%E6%81%AF-1
@@ -433,7 +478,11 @@ pub async fn get_stream_info(
 
     // Parse the new API response structure
     let playurl_info = &res["data"]["playurl_info"]["playurl"];
+
+    // Parse quality descriptions
     let empty_vec = vec![];
+    let quality_descriptions = res["data"]["playurl_info"]["playurl"]["g_qn_desc"].as_array().unwrap_or(&empty_vec);
+    
     let streams = playurl_info["stream"].as_array().unwrap_or(&empty_vec);
 
     if streams.is_empty() {
@@ -505,6 +554,21 @@ pub async fn get_stream_info(
     let drm = codec_info["drm"].as_bool().unwrap_or(false);
     let base_url = codec_info["base_url"].as_str().unwrap_or("").to_string();
     let master_url = format_info["master_url"].as_str().map(|s| s.to_string());
+    let current_qn = codec_info["current_qn"].as_u64();
+    
+    // Find resolution description
+    let mut resolution = None;
+    if let Some(qn) = current_qn {
+        if let Some(desc) = quality_descriptions
+            .iter()
+            .find(|d| d["qn"].as_u64() == Some(qn))
+        {
+            if let Some(name) = desc["desc"].as_str() {
+                resolution = Some(name.to_string());
+            }
+        }
+    }
+
     let codec = codec_info["codec_name"].as_str().unwrap_or("");
     let codec = match codec {
         "avc" => Codec::Avc,
@@ -523,6 +587,7 @@ pub async fn get_stream_info(
         url_info,
         drm,
         master_url,
+        resolution,
     })
 }
 

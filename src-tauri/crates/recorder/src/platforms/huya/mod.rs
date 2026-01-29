@@ -23,6 +23,13 @@ use crate::platforms::PlatformType;
 
 pub type HuyaRecorder = Recorder<HuyaExtra>;
 
+#[async_trait]
+impl crate::traits::StreamInfoProvider for HuyaExtra {
+    async fn get_resolution(&self) -> Option<String> {
+        self.live_stream.read().await.as_ref().and_then(|info| info.resolution.clone())
+    }
+}
+
 #[derive(Clone)]
 pub struct HuyaExtra {
     live_stream: Arc<RwLock<Option<StreamInfo>>>,

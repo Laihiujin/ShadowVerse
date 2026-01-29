@@ -574,6 +574,8 @@
         ? room.room_info.room_id
         : `@${room.room_info.room_id}`;
       open(`https://www.tiktok.com/${handle}/live`);
+    } else if (room.room_info.platform === "huya") {
+      open("https://www.huya.com/" + room.room_info.room_id);
     }
   }
 
@@ -605,7 +607,7 @@
       {
         platform: "kuaishou",
         re: new RegExp(
-          String.raw`(?:bsr://)?https?://live\.kuaishou\.com/(?:u/)?([A-Za-z0-9]+)`,
+          String.raw`(?:bsr://)?https?://live\.kuaishou\.com/(?:u/)?([A-Za-z0-9_]+)/?(?:\?.*)?$`,
           "i"
         ),
       },
@@ -627,6 +629,21 @@
         platform: "tiktok",
         re: new RegExp(
           String.raw`(?:bsr://)?https?://(?:www\.)?tiktok\.com/@?([^/\?]+)/?$`,
+          "i"
+        ),
+      },
+      // 虎牙直播间URL - 必须匹配到URL结尾
+      {
+        platform: "huya",
+        re: new RegExp(
+          String.raw`(?:bsr://)?https?://(?:www\.)?huya\.com/([A-Za-z0-9]+)/?(?:\?.*)?$`,
+          "i"
+        ),
+      },
+      {
+        platform: "huya",
+        re: new RegExp(
+          String.raw`(?:bsr://)?https?://m\.huya\.com/([A-Za-z0-9]+)/?(?:\?.*)?$`,
           "i"
         ),
       },
@@ -661,7 +678,8 @@
   }
 
   function buildBatchEntries(raw: string, defaultPlatform: string) {
-    const normalizedRaw = raw.replace(/\\r?\\n/g, "\n");
+    // 先将转义的 \n 替换为真实换行符，再按行分割
+    const normalizedRaw = raw.replace(/\\n/g, "\n").replace(/\\r/g, "");
     const lines = normalizedRaw.split(/\r?\n/);
     const entries: { roomId: string; platform: string }[] = [];
     const seen = new Set<string>();
@@ -702,7 +720,7 @@
         ? entry.roomId
         : `${entry.platform} ${entry.roomId}`
     );
-    batchInput = normalizedLines.join("\\n");
+    batchInput = normalizedLines.join("\n");
     batchValidCount = entries.length;
     batchInvalidCount = invalidCount;
   }

@@ -397,6 +397,18 @@ impl RecorderManager {
                     {
                         log::error!("Failed to add record entry into db: {e}");
                     }
+                    
+                    // Save resolution if available
+                    if let Some(resolution) = &recorder.resolution {
+                        if let Err(e) = self
+                            .db
+                            .update_record_resolution(&recorder.live_id, Some(resolution.clone()))
+                            .await
+                        {
+                            log::warn!("Failed to save resolution to db: {e}");
+                        }
+                    }
+                    
                     let event =
                         events::new_webhook_event(events::RECORD_STARTED, Payload::Room(recorder));
                     let _ = self.webhook_poster.post_event(&event).await;
@@ -1429,6 +1441,7 @@ impl RecorderManager {
                         user_name,
                         user_avatar,
                     },
+                    resolution: None,
                 });
             }
         }

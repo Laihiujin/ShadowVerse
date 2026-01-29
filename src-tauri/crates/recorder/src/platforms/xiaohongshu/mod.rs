@@ -27,6 +27,14 @@ pub struct XiaohongshuExtra {
 
 pub type XiaohongshuRecorder = Recorder<XiaohongshuExtra>;
 
+#[async_trait]
+impl crate::traits::StreamInfoProvider for XiaohongshuExtra {
+    async fn get_resolution(&self) -> Option<String> {
+        None
+    }
+}
+
+
 impl XiaohongshuRecorder {
     pub async fn new(
         room_id: &str,

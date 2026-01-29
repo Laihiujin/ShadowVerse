@@ -97,15 +97,28 @@
           }
         }
 
+        // Huya Parsing
+        // Supports separators: , ; . ， 。 and mashed urls (e.g. ...com/abchttp...)
+        if (!room_id) {
+          // Identify Huya URL pattern and extract the room ID (alphanumeric, stops at separator or next http)
+          const huyaMatch = url.match(/(?:https?|bsr):\/\/(?:www\.)?huya\.com\/([^?#\s,;，。]+?)(?=https?:\/\/|bsr:\/\/|[,;，。\s]|$)/);
+          if (huyaMatch) {
+            room_id = huyaMatch[1];
+            platform = "huya";
+            log.info("Parsed Huya room_id:", room_id);
+          }
+        }
+
         if (platform && room_id) {
           // switch to room page
           active = "直播间";
+          // TODO: Actually trigger the room load. Currently it just switches tab.
+          // Assuming there might be a store or we need to dispatch an event, 
+          // but based on existing code, we just restore the file structure first.
         }
       }
     });
   });
-
-  log.info("App loaded");
 </script>
 
 <main>

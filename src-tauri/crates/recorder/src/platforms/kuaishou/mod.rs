@@ -60,6 +60,7 @@ pub struct KuaishouExtra {
     pre_live_id: Arc<RwLock<Option<String>>>,
     should_continue: Arc<AtomicBool>,
     last_error_ts: Arc<AtomicI64>,
+    resolution: Arc<RwLock<Option<String>>>,
 }
 
 pub type KuaishouRecorder = Recorder<KuaishouExtra>;
@@ -91,6 +92,7 @@ impl KuaishouRecorder {
             pre_live_id: Arc::new(RwLock::new(None)),
             should_continue: Arc::new(AtomicBool::new(false)),
             last_error_ts: Arc::new(AtomicI64::new(0)),
+            resolution: Arc::new(RwLock::new(None)),
         };
 
         let recorder = Self {
@@ -308,6 +310,11 @@ impl KuaishouRecorder {
 
                         if let Some(url) = selected_url {
                             *self.extra.stream_list.write().await = streams.clone();
+
+                            // Find resolution
+                            let resolution = streams.iter().find(|s| s.url == url).map(|s| s.quality.clone());
+                            *self.extra.resolution.write().await = resolution;
+
                             let pre_stream = self.extra.stream_url.read().await.clone();
                             *self.extra.stream_url.write().await = Some(url.clone());
                             self.last_update
@@ -684,5 +691,12 @@ impl RecorderTrait<KuaishouExtra> for KuaishouRecorder {
                 tokio::time::sleep(Duration::from_secs(sleep_secs)).await;
             }
         }));
+    }
+}
+
+#[async_trait]
+impl crate::traits::StreamInfoProvider for KuaishouExtra {
+    async fn get_resolution(&self) -> Option<String> {
+        self.resolution.read().await.clone()
     }
 }

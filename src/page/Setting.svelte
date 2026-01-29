@@ -391,9 +391,9 @@
             <div class="p-4">
               <div class="flex items-center justify-between">
                 <div>
-                  <h3 class="text-sm font-medium text-gray-900 dark:text-white">使用访客模式——打开开关即可自动获取 Cookie</h3>
+                  <h3 class="text-sm font-medium text-gray-900 dark:text-white">使用访客模式</h3>
                   <p class="text-sm text-gray-500 dark:text-gray-400">
-                    启用后自动更新访客模式，该模式均为「未登录账号」，画质最高720p——高清；
+                    启用后自动更新「访客账号（不需要登录账号）」
                   </p>
                 </div>
                 <label class="relative inline-block w-11 h-6">
@@ -412,9 +412,9 @@
             <div class="p-4">
               <div class="flex items-center justify-between">
                 <div>
-                  <h3 class="text-sm font-medium text-gray-900 dark:text-white">使用登录账号——推荐使用内置浏览器登录</h3>
+                  <h3 class="text-sm font-medium text-gray-900 dark:text-white">使用登录模式</h3>
                   <p class="text-sm text-gray-500 dark:text-gray-400">
-                    启用后优先使用「已登录账号(手动填写账号Cookie/二维码登录)」，登录账号画质最高4K——超高清；
+                    启用后优先使用「已登录账号(手动填写账号Cookie/二维码登录)」；
                   </p>
                 </div>
                 <label class="relative inline-block w-11 h-6">

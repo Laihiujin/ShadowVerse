@@ -33,6 +33,7 @@ export interface RecordItem {
   size: number;
   created_at: string;
   cover: string;
+  resolution?: string;
 }
 
 export interface AccountInfo {

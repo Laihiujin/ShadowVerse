@@ -27,6 +27,14 @@ pub struct WeiboExtra {
 
 pub type WeiboRecorder = Recorder<WeiboExtra>;
 
+#[async_trait]
+impl crate::traits::StreamInfoProvider for WeiboExtra {
+    async fn get_resolution(&self) -> Option<String> {
+        None
+    }
+}
+
+
 impl WeiboRecorder {
     pub async fn new(
         room_id: &str,

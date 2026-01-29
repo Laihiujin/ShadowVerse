@@ -38,7 +38,12 @@ pub trait RecorderBasicTrait<T> {
 }
 
 #[async_trait]
-pub trait RecorderTrait<T>: RecorderBasicTrait<T> {
+pub trait StreamInfoProvider: Send + Sync {
+    async fn get_resolution(&self) -> Option<String>;
+}
+
+#[async_trait]
+pub trait RecorderTrait<T: StreamInfoProvider>: RecorderBasicTrait<T> {
     async fn run(&self);
     async fn stop(&self) {
         self.quit().store(true, atomic::Ordering::Relaxed);
@@ -66,6 +71,7 @@ pub trait RecorderTrait<T>: RecorderBasicTrait<T> {
         let room_info = self.room_info().read().await.clone();
         let user_info = self.user_info().read().await.clone();
         let is_recording = self.is_recording().load(atomic::Ordering::Relaxed);
+        let resolution = self.extra().get_resolution().await;
         RecorderInfo {
             platform_live_id: self.platform_live_id().read().await.clone(),
             live_id: self.live_id().read().await.clone(),
@@ -83,6 +89,7 @@ pub trait RecorderTrait<T>: RecorderBasicTrait<T> {
                 user_name: user_info.user_name.clone(),
                 user_avatar: user_info.user_avatar.clone(),
             },
+            resolution,
         }
     }
     async fn enable(&self) {

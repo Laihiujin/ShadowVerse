@@ -815,6 +815,10 @@
                 >
                 <th
                   class="px-4 py-3 text-left text-sm font-medium text-gray-500 dark:text-gray-400"
+                  >分辨率</th
+                >
+                <th
+                  class="px-4 py-3 text-left text-sm font-medium text-gray-500 dark:text-gray-400"
                   >时长</th
                 >
                 <th
@@ -905,6 +909,12 @@
                         >{archive.title}</span
                       >
                     </div>
+                  </td>
+
+                  <td class="px-4 py-3">
+                    <span class="text-sm text-gray-600 dark:text-gray-300"
+                      >{archive.resolution || "-"}</span
+                    >
                   </td>
 
                   <td class="px-4 py-3">

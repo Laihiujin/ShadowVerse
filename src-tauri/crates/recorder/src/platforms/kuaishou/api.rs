@@ -1173,7 +1173,7 @@ pub async fn get_stream_urls(
     };
     let fallback_hls = extract_hls_play_url(&html_str).map(|hls_url| StreamInfo {
         url: hls_url,
-        quality: "hls".to_string(),
+        quality: "超清(HLS 自适应)".to_string(),  // HLS adaptive streaming, typically delivers 720p+
         bitrate: None,
     });
     let mut urls = Vec::new();
@@ -1374,7 +1374,7 @@ pub async fn get_stream_urls(
                     0,
                     StreamInfo {
                         url: guessed_hls,
-                        quality: "hls".to_string(),
+                        quality: "超清(HLS 自适应)".to_string(),  // HLS adaptive streaming, typically delivers 720p+
                         bitrate: None,
                     },
                 );

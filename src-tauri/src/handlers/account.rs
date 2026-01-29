@@ -474,12 +474,51 @@ pub async fn remove_default_accounts(db: &Database, config: &Config) {
 
 #[cfg_attr(feature = "headless", allow(dead_code))]
 pub async fn remove_guest_accounts(db: &Database, config: &Config) {
-    if config.guest_accounts.is_empty() {
-        return;
+    // First, remove accounts that match the config's guest_accounts entries
+    if !config.guest_accounts.is_empty() {
+        for entry in &config.guest_accounts {
+            remove_accounts_by_platform_cookies(db, &entry.platform, &entry.cookies).await;
+        }
     }
-
-    for entry in &config.guest_accounts {
-        remove_accounts_by_platform_cookies(db, &entry.platform, &entry.cookies).await;
+    
+    // Additionally, remove ALL accounts that look like guest accounts
+    // This handles cases where guest cookies were auto-generated (e.g., Kuaishou's did=web_...)
+    let accounts = match db.get_accounts().await {
+        Ok(accounts) => accounts,
+        Err(e) => {
+            log::warn!("Failed to load accounts for guest cleanup: {}", e);
+            return;
+        }
+    };
+    
+    for account in accounts.iter() {
+        let is_guest_account = match account.platform.as_str() {
+            "kuaishou" => {
+                // Check if this is an auto-generated guest cookie (did=web_...)
+                account.cookies.contains("did=web_") || account.uid.starts_with("cookie")
+            }
+            "douyin" | "tiktok" => {
+                // UID starts with "cookie" usually means it's a fallback guest account
+                account.uid.starts_with("cookie")
+            }
+            "bilibili" => {
+                // Similar check for other platforms
+                account.uid.starts_with("cookie")
+            }
+            _ => false,
+        };
+        
+        if is_guest_account {
+            log::info!("Removing guest account: {} ({})", account.platform, account.uid);
+            if let Err(e) = db.remove_account(&account.platform, &account.uid).await {
+                log::warn!(
+                    "Failed to remove guest account for {} ({}): {}",
+                    account.platform,
+                    account.uid,
+                    e
+                );
+            }
+        }
     }
 }
 
@@ -1592,8 +1631,13 @@ pub async fn get_bilibili_webview_cookies(state: state_type!()) -> Result<Webvie
     return build_webview_cookie_result("bilibili", cookie_str, cookie_list).await;
 }
 
+
+
+
+
 #[cfg(feature = "gui")]
-async fn get_tiktok_webview_guest_cookies(state: state_type!()) -> Result<String, String> {
+#[allow(dead_code)]
+async fn get_tiktok_webview_guest_cookies(state: &crate::state::State) -> Result<String, String> {
     let label = "tiktok-guest";
     let mut created = false;
     if state.app_handle.get_webview_window(label).is_none() {
@@ -1693,7 +1737,8 @@ async fn get_tiktok_webview_guest_cookies(state: state_type!()) -> Result<String
 }
 
 #[cfg(feature = "gui")]
-async fn get_douyin_webview_guest_cookies(state: state_type!()) -> Result<String, String> {
+#[allow(dead_code)]
+async fn get_douyin_webview_guest_cookies(state: &crate::state::State) -> Result<String, String> {
     let label = "douyin-guest";
     let mut created = false;
     if state.app_handle.get_webview_window(label).is_none() {
@@ -1798,7 +1843,8 @@ async fn get_douyin_webview_guest_cookies(state: state_type!()) -> Result<String
 }
 
 #[cfg(feature = "gui")]
-async fn get_kuaishou_webview_guest_cookies(state: state_type!()) -> Result<String, String> {
+#[allow(dead_code)]
+async fn get_kuaishou_webview_guest_cookies(state: &crate::state::State) -> Result<String, String> {
     let label = "kuaishou-guest";
     let mut created = false;
     if state.app_handle.get_webview_window(label).is_none() {
@@ -1888,7 +1934,8 @@ async fn get_kuaishou_webview_guest_cookies(state: state_type!()) -> Result<Stri
 }
 
 #[cfg(feature = "gui")]
-async fn get_huya_webview_guest_cookies(state: state_type!()) -> Result<String, String> {
+#[allow(dead_code)]
+async fn get_huya_webview_guest_cookies(state: &crate::state::State) -> Result<String, String> {
     let label = "huya-guest";
     let mut created = false;
     if state.app_handle.get_webview_window(label).is_none() {
@@ -1978,9 +2025,9 @@ async fn get_huya_webview_guest_cookies(state: state_type!()) -> Result<String, 
     return Ok(cookie_str);
 }
 
-
 #[cfg(feature = "gui")]
-async fn get_bilibili_webview_guest_cookies(state: state_type!()) -> Result<String, String> {
+#[allow(dead_code)]
+async fn get_bilibili_webview_guest_cookies(state: &crate::state::State) -> Result<String, String> {
     let label = "bilibili-guest";
     let mut created = false;
     if state.app_handle.get_webview_window(label).is_none() {
@@ -2061,101 +2108,172 @@ async fn get_bilibili_webview_guest_cookies(state: state_type!()) -> Result<Stri
 
 
 #[cfg(not(feature = "gui"))]
-async fn get_huya_webview_guest_cookies(_state: state_type!()) -> Result<String, String> {
+async fn get_huya_webview_guest_cookies(_state: &crate::state::State) -> Result<String, String> {
     Err("Guest cookies require GUI mode".to_string())
 }
 
 #[cfg(not(feature = "gui"))]
-async fn get_tiktok_webview_guest_cookies(_state: state_type!()) -> Result<String, String> {
+async fn get_tiktok_webview_guest_cookies(_state: &crate::state::State) -> Result<String, String> {
     Err("Guest cookies require GUI mode".to_string())
 }
 
 #[cfg(not(feature = "gui"))]
-async fn get_douyin_webview_guest_cookies(_state: state_type!()) -> Result<String, String> {
+async fn get_douyin_webview_guest_cookies(_state: &crate::state::State) -> Result<String, String> {
     Err("Guest cookies require GUI mode".to_string())
 }
 
 #[cfg(not(feature = "gui"))]
-async fn get_kuaishou_webview_guest_cookies(_state: state_type!()) -> Result<String, String> {
+async fn get_kuaishou_webview_guest_cookies(_state: &crate::state::State) -> Result<String, String> {
     Err("Guest cookies require GUI mode".to_string())
 }
 
 #[cfg(not(feature = "gui"))]
-async fn get_bilibili_webview_guest_cookies(_state: state_type!()) -> Result<String, String> {
+async fn get_bilibili_webview_guest_cookies(_state: &crate::state::State) -> Result<String, String> {
     Err("Guest cookies require GUI mode".to_string())
 }
 
-pub async fn refresh_guest_accounts(state: state_type!()) -> Result<(), String> {
+/// Internal version for direct state usage (e.g., from background timers)
+
+#[cfg(feature = "gui")]
+async fn refresh_guest_accounts_inner(state: &crate::state::State) -> Result<(), String> {
     let mut updates: Vec<(String, String)> = Vec::new();
-    match get_douyin_webview_guest_cookies(state.clone()).await {
-        Ok(cookies) => {
-            if !cookies.trim().is_empty() {
-                updates.push(("douyin".to_string(), cookies));
+    
+    // Helper function to create or get headless webview for guest mode
+    let ensure_guest_webview = |label: &str, url: &str| -> Result<(), String> {
+        if state.app_handle.get_webview_window(label).is_none() {
+            log::info!("Creating headless guest webview: {} -> {}", label, url);
+            match WebviewWindowBuilder::new(
+                &state.app_handle,
+                label,
+                WebviewUrl::External(Url::parse(url).map_err(|e| e.to_string())?),
+            )
+            .title(format!("Guest - {}", label))
+            .visible(false)  // 无头模式：不可见
+            .skip_taskbar(true)
+            .build()
+            {
+                Ok(_window) => {
+                    log::info!("Successfully created headless webview: {}", label);
+                    Ok(())
+                }
+                Err(e) => {
+                    log::error!("Failed to create headless webview {}: {}", label, e);
+                    Err(format!("Failed to create webview: {}", e))
+                }
             }
+        } else {
+            Ok(())
         }
-        Err(err) => {
-            log::warn!("[Account] Guest cookie refresh failed for douyin: {}", err);
+    };
+    
+    // Ensure webviews for platforms that need real browser cookies
+    // Note: Kuaishou is excluded because it can use generated did/didv directly
+    let guest_platforms = vec![
+        ("douyin-guest", "https://live.douyin.com/"),
+        ("tiktok-guest", "https://www.tiktok.com/"),
+        ("huya-guest", "https://www.huya.com/"),
+        ("bilibili-guest", "https://live.bilibili.com/"),
+    ];
+    
+    for (label, url) in &guest_platforms {
+        if let Err(e) = ensure_guest_webview(label, url) {
+            log::warn!("Cannot ensure webview {}: {}", label, e);
+        } else {
+            log::info!("Webview {} ensured successfully", label);
         }
     }
-    match get_kuaishou_webview_guest_cookies(state.clone()).await {
-        Ok(cookies) => {
-            if !cookies.trim().is_empty() {
-                updates.push(("kuaishou".to_string(), cookies));
+    
+    // Wait longer for webviews to fully load and populate cookies
+    // Headless webviews need time to execute JavaScript and set cookies
+    log::info!("Waiting 5 seconds for guest webviews to load...");
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    log::info!("Starting cookie collection from guest webviews");
+    
+    
+    // Douyin - try to get cookies using existing function
+    {
+        log::info!("Collecting Douyin guest cookies");
+        match get_douyin_webview_guest_cookies(state).await {
+            Ok(cookie_str) if !cookie_str.is_empty() => {
+                log::info!("Douyin guest cookie collected: {} chars", cookie_str.len());
+                updates.push(("douyin".to_string(), cookie_str));
             }
-        }
-        Err(err) => {
-            log::warn!("[Account] Guest cookie refresh failed for kuaishou: {}", err);
+            Ok(_) => log::warn!("Douyin cookie is empty"),
+            Err(e) => log::warn!("Failed to get Douyin guest cookies: {}", e),
         }
     }
-    match get_tiktok_webview_guest_cookies(state.clone()).await {
-        Ok(cookies) => {
-            if !cookies.trim().is_empty() {
-                updates.push(("tiktok".to_string(), cookies));
+    
+    // Kuaishou - Generate guest cookies directly (no webview needed)
+    {
+        log::info!("Generating Kuaishou guest cookie with did and didv");
+        let did = gen_kuaishou_web_did();
+        let didv = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis();
+        let cookie_str = format!("did={}; didv={}", did, didv);
+        updates.push(("kuaishou".to_string(), cookie_str));
+        log::info!("Generated Kuaishou guest cookie: did={}", did);
+    }
+    
+    
+    // TikTok
+    {
+        log::info!("Collecting TikTok guest cookies");
+        match get_tiktok_webview_guest_cookies(state).await {
+            Ok(cookie_str) if !cookie_str.is_empty() => {
+                log::info!("TikTok guest cookie collected: {} chars", cookie_str.len());
+                updates.push(("tiktok".to_string(), cookie_str));
             }
-        }
-        Err(err) => {
-            log::warn!("[Account] Guest cookie refresh failed for tiktok: {}", err);
+            Ok(_) => log::warn!("TikTok cookie is empty"),
+            Err(e) => log::warn!("Failed to get TikTok guest cookies: {}", e),
         }
     }
-    match get_huya_webview_guest_cookies(state.clone()).await {
-        Ok(cookies) => {
-            if !cookies.trim().is_empty() {
-                updates.push(("huya".to_string(), cookies));
+    
+    // Huya
+    {
+        log::info!("Collecting Huya guest cookies");
+        match get_huya_webview_guest_cookies(state).await {
+            Ok(cookie_str) if !cookie_str.is_empty() => {
+                log::info!("Huya guest cookie collected: {} chars", cookie_str.len());
+                updates.push(("huya".to_string(), cookie_str));
             }
-        }
-        Err(err) => {
-            log::warn!("[Account] Guest cookie refresh failed for huya: {}", err);
+            Ok(_) => log::warn!("Huya cookie is empty"),
+            Err(e) => log::warn!("Failed to get Huya guest cookies: {}", e),
         }
     }
-    match get_bilibili_webview_guest_cookies(state.clone()).await {
-        Ok(cookies) => {
-            if !cookies.trim().is_empty() {
-                updates.push(("bilibili".to_string(), cookies));
+    
+    // Bilibili
+    {
+        log::info!("Collecting Bilibili guest cookies");
+        match get_bilibili_webview_guest_cookies(state).await {
+            Ok(cookie_str) if !cookie_str.is_empty() => {
+                log::info!("Bilibili guest cookie collected: {} chars", cookie_str.len());
+                updates.push(("bilibili".to_string(), cookie_str));
             }
-        }
-        Err(err) => {
-            log::warn!("[Account] Guest cookie refresh failed for bilibili: {}", err);
+            Ok(_) => log::warn!("Bilibili cookie is empty"),
+            Err(e) => log::warn!("Failed to get Bilibili guest cookies: {}", e),
         }
     }
+
 
     if updates.is_empty() {
-        return Err("未读取到任何访客 Cookie，请先在内置浏览器访问平台页面".to_string());
+        return Err("未能获取或生成任何访客 Cookie，请检查网络连接".to_string());
     }
+
 
     let updated_entries = {
         let mut config = state.config.write().await;
         let old_entries = config.guest_accounts.clone();
         let mut next = config.guest_accounts.clone();
         for (platform, cookies) in &updates {
-            if let Some(entry) = next.iter_mut().find(|entry| entry.platform == *platform) {
-                entry.cookies = cookies.clone();
-            } else {
-                next.push(DefaultAccountConfig {
-                    platform: platform.clone(),
-                    cookies: cookies.clone(),
-                    extra: String::new(),
-                });
-            }
+            // Remove existing entries to prevent duplicates and ensure single entry per platform
+            next.retain(|entry| entry.platform != *platform);
+            next.push(DefaultAccountConfig {
+                platform: platform.clone(),
+                cookies: cookies.clone(),
+                extra: String::new(),
+            });
         }
         config.guest_accounts = next.clone();
         config.save();
@@ -2183,6 +2301,15 @@ pub async fn refresh_guest_accounts(state: state_type!()) -> Result<(), String> 
     let config_snapshot = state.config.read().await.clone();
     ensure_guest_accounts(&state.db, &config_snapshot).await;
     Ok(())
+}
+
+#[cfg(not(feature = "gui"))]
+async fn refresh_guest_accounts_inner(_state: &crate::state::State) -> Result<(), String> {
+    Err("Guest cookie refresh requires GUI mode".to_string())
+}
+
+pub async fn refresh_guest_accounts(state: state_type!()) -> Result<(), String> {
+    refresh_guest_accounts_inner(&state).await
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]
@@ -2549,3 +2676,45 @@ pub async fn close_all_login_windows(state: state_type!()) -> Result<Vec<String>
     
     Ok(closed_windows)
 }
+
+/// Start a background task that periodically refreshes guest cookies.
+/// This should be called once during app startup in GUI mode.
+/// The timer will check every 30 minutes and refresh cookies if guest mode is enabled.
+#[cfg(feature = "gui")]
+pub fn start_guest_cookie_refresh_timer(state: crate::state::State) {
+    use tokio::time::{interval, Duration};
+    
+    tokio::spawn(async move {
+        // Wait 2 minutes before first refresh to let the app fully initialize
+        tokio::time::sleep(Duration::from_secs(120)).await;
+        
+        let mut interval = interval(Duration::from_secs(30 * 60)); // 30 minutes
+        loop {
+            interval.tick().await;
+            
+            // Check if guest mode is enabled
+            let use_guest = state.config.read().await.use_guest_accounts;
+            if !use_guest {
+                log::debug!("[Account] Guest mode disabled, skipping cookie refresh");
+                continue;
+            }
+            
+            log::info!("[Account] Starting periodic guest cookie refresh...");
+            match refresh_guest_accounts_inner(&state).await {
+                Ok(()) => {
+                    log::info!("[Account] Periodic guest cookie refresh completed successfully");
+                }
+                Err(e) => {
+                    log::warn!("[Account] Periodic guest cookie refresh failed: {}", e);
+                }
+            }
+        }
+    });
+}
+
+#[cfg(not(feature = "gui"))]
+pub fn start_guest_cookie_refresh_timer(_state: crate::state::State) {
+    // Guest cookie refresh requires GUI mode for webview access
+    log::info!("[Account] Guest cookie refresh timer not available in headless mode");
+}
+

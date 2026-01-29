@@ -32,6 +32,9 @@ pub struct RecorderInfo {
     pub live_id: String,
     pub recording: bool,
     pub enabled: bool,
+    /// Current stream resolution (e.g., "1080p", "720p", "蓝光4M")
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolution: Option<String>,
 }
 
 #[derive(serde::Deserialize, serde::Serialize, Clone, Debug, Default)]

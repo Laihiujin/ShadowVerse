@@ -76,6 +76,13 @@ pub struct TikTokExtra {
 
 pub type TikTokRecorder = Recorder<TikTokExtra>;
 
+#[async_trait]
+impl crate::traits::StreamInfoProvider for TikTokExtra {
+    async fn get_resolution(&self) -> Option<String> {
+        self.stream_info.read().await.as_ref().and_then(|info| info.resolution.clone())
+    }
+}
+
 impl TikTokRecorder {
     pub async fn new(
         room_id: &str,

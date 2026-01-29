@@ -30,6 +30,7 @@ pub type DouyinRecorder = Recorder<DouyinExtra>;
 pub struct DouyinExtra {
     sec_user_id: String,
     live_stream: Arc<RwLock<Option<DouyinStream>>>,
+    resolution: Arc<RwLock<Option<String>>>,
 }
 
 fn get_best_stream_url(stream: &DouyinStream) -> Option<String> {
@@ -40,6 +41,13 @@ fn get_best_stream_url(stream: &DouyinStream) -> Option<String> {
     }
 
     Some(stream.data.origin.main.hls.clone())
+}
+
+#[async_trait]
+impl crate::traits::StreamInfoProvider for DouyinExtra {
+    async fn get_resolution(&self) -> Option<String> {
+        self.resolution.read().await.clone()
+    }
 }
 
 impl DouyinRecorder {
@@ -81,6 +89,7 @@ impl DouyinRecorder {
             extra: DouyinExtra {
                 sec_user_id: sec_user_id.to_string(),
                 live_stream: Arc::new(RwLock::new(None)),
+                resolution: Arc::new(RwLock::new(None)),
             },
         })
     }
@@ -189,6 +198,7 @@ impl DouyinRecorder {
 
                     log::info!("New douyin stream URL: {}", new_stream_url.clone());
                     *self.extra.live_stream.write().await = Some(stream);
+                    *self.extra.resolution.write().await = info.resolution;
                     (*self.platform_live_id.write().await).clone_from(&info.room_id_str);
                 }
 

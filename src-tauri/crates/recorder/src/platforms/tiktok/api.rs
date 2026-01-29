@@ -69,6 +69,7 @@ pub struct RoomInfo {
 pub struct StreamInfo {
     pub hls_url: Option<String>,
     pub rtmp_url: Option<String>,
+    pub resolution: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -2155,6 +2156,7 @@ struct StreamCandidate {
     bitrate: i64,
     width: i64,
     height: i64,
+    resolution: String,
 }
 
 fn extract_stream_candidates_from_stream_data(stream_data_raw: &str) -> Vec<StreamCandidate> {
@@ -2219,6 +2221,7 @@ fn extract_stream_candidates_from_stream_data(stream_data_raw: &str) -> Vec<Stre
             bitrate,
             width,
             height,
+            resolution: resolution.to_string(),
         });
     }
 
@@ -2269,6 +2272,7 @@ fn extract_stream_from_live_room(live_room_info: &Value) -> Option<StreamInfo> {
     Some(StreamInfo {
         hls_url: best.hls_url.clone(),
         rtmp_url: best.flv_url.clone(),
+        resolution: Some(best.resolution.clone()),
     })
 }
 
@@ -2387,6 +2391,7 @@ async fn select_accessible_stream(
                 return Some(StreamInfo {
                     hls_url: candidate.hls_url.clone(),
                     rtmp_url: candidate.flv_url.clone(),
+                    resolution: Some(candidate.resolution.clone()),
                 });
             }
         }
@@ -2396,6 +2401,7 @@ async fn select_accessible_stream(
                 return Some(StreamInfo {
                     hls_url: None,
                     rtmp_url: Some(flv_url.to_string()),
+                    resolution: Some(candidate.resolution.clone()),
                 });
             }
         }
@@ -2404,6 +2410,7 @@ async fn select_accessible_stream(
     candidates.first().map(|candidate| StreamInfo {
         hls_url: candidate.hls_url.clone(),
         rtmp_url: candidate.flv_url.clone(),
+        resolution: Some(candidate.resolution.clone()),
     })
 }
 
@@ -3213,6 +3220,7 @@ async fn get_stream_url_from_room_info_api(
     let mut info = StreamInfo {
         hls_url: stream_url.and_then(|v| v.get("hls_pull_url")).and_then(extract_first_string),
         rtmp_url: stream_url.and_then(|v| v.get("rtmp_pull_url")).and_then(extract_first_string),
+        resolution: None,
     };
     if info.rtmp_url.is_none() {
         info.rtmp_url = stream_url
@@ -3562,6 +3570,7 @@ async fn get_stream_url_with_profile(
             let mut info = StreamInfo {
                 hls_url: stream_url.hls_pull_url,
                 rtmp_url: stream_url.rtmp_pull_url,
+                resolution: None,
             };
             if let Some(hls_url) = info.hls_url.as_deref() {
                 if !check_hls_stream_accessible(client, &headers, hls_url).await {
@@ -3582,6 +3591,7 @@ async fn get_stream_url_with_profile(
             return Ok(StreamInfo {
                 hls_url: Some(m3u8_url),
                 rtmp_url: None,
+                resolution: None,
             });
         }
 

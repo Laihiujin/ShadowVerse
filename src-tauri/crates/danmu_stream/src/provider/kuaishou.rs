@@ -67,8 +67,21 @@ impl DanmuProvider for KuaishouDanmu {
             "User-Agent",
             HeaderValue::from_static(KUAISHOU_USER_AGENT),
         );
-        if !cookie.trim().is_empty() {
-            if let Ok(value) = HeaderValue::from_str(cookie) {
+        let mut cookie_string = cookie.to_string();
+        if !cookie_string.contains("did=") {
+            let did = gen_web_did();
+            let didv = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis();
+            if !cookie_string.is_empty() {
+                cookie_string.push_str("; ");
+            }
+            cookie_string.push_str(&format!("did={}; didv={}", did, didv));
+        }
+
+        if !cookie_string.trim().is_empty() {
+            if let Ok(value) = HeaderValue::from_str(&cookie_string) {
                 headers.insert("Cookie", value);
             }
         }
@@ -81,8 +94,8 @@ impl DanmuProvider for KuaishouDanmu {
         Ok(Self {
             client,
             room_id: room_id.to_string(),
-            cookie: cookie.to_string(),
-            kww: extract_kww(cookie),
+            cookie: cookie_string.clone(),
+            kww: extract_kww(&cookie_string),
             stop: Arc::new(RwLock::new(false)),
             write: Arc::new(RwLock::new(None)),
         })
@@ -322,10 +335,36 @@ impl KuaishouDanmu {
 
     async fn room_init(&self) -> Result<KuaishouRoomInit, DanmuStreamError> {
         let referer = format!("https://live.kuaishou.com/u/{}", self.room_id);
+        
+        // Extract did from cookie for签名 generation
+        let did = self.cookie
+            .split(';')
+            .find_map(|pair| {
+                let parts: Vec<_> = pair.trim().split('=').collect();
+                if parts.len() == 2 && parts[0] == "did" {
+                    Some(parts[1].to_string())
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_else(|| gen_web_did());
+        
+        // Build query params for livedetail with signature
+        let query_params = vec![("principalId", self.room_id.as_str())];
+        let query_str = format!("principalId={}", self.room_id);
+        
+        // Generate signature using did
+        let sign = {
+            use crate::kuaishou_sign::KuaishouSign;
+            let signer = KuaishouSign::new(&did);
+            signer.generate_sign(&query_str)
+        };
+        
         let resp = self
             .client
             .get("https://live.kuaishou.com/live_api/liveroom/livedetail")
-            .query(&[("principalId", self.room_id.as_str())])
+            .query(&query_params)
+            .query(&[("sign", sign.as_str())])  // Add signature
             .header("Referer", referer.clone())
             .send()
             .await?;
@@ -364,10 +403,19 @@ impl KuaishouDanmu {
         }
 
         if !self.cookie.is_empty() {
-        let ws_info = self
+            // Build query params for websocketinfo with signature
+            let ws_query_str = format!("caver=2&liveStreamId={}", live_stream_id);
+            let ws_sign = {
+                use crate::kuaishou_sign::KuaishouSign;
+                let signer = KuaishouSign::new(&did);
+                signer.generate_sign(&ws_query_str)
+            };
+            
+            let ws_info = self
                 .client
                 .get("https://live.kuaishou.com/live_api/liveroom/websocketinfo")
                 .query(&[("caver", "2"), ("liveStreamId", live_stream_id.as_str())])
+                .query(&[("sign", ws_sign.as_str())])  // Add signature
                 .header("Referer", referer)
                 .apply_header("Kww", self.kww.as_deref())
                 .send()
@@ -416,7 +464,10 @@ fn parse_response_data(text: &str) -> Result<Value, DanmuStreamError> {
     let data = root.get("data").cloned().unwrap_or(root);
 
     if let Some(result) = data.get("result").and_then(|v| v.as_i64()) {
-        if result != 1 && result != 671 && result != 677 {
+        // result = 1: 正常
+        // result = 2: 访客模式（基础权限）
+        // result = 671/677: 直播间未开播
+        if result != 1 && result != 2 && result != 671 && result != 677 {
             return Err(DanmuStreamError::MessageParseError {
                 err: format!("Kuaishou API error: {result}"),
             });
@@ -486,4 +537,15 @@ impl HeaderApply for reqwest::RequestBuilder {
         }
         self
     }
+}
+
+fn gen_web_did() -> String {
+    let mut rng = rand::rng();
+    let mut bytes = [0u8; 16];
+    rng.fill(&mut bytes);
+    let mut hex = String::with_capacity(32);
+    for byte in bytes {
+        hex.push_str(&format!("{:02x}", byte));
+    }
+    format!("web_{hex}")
 }

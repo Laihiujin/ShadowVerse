@@ -31,6 +31,7 @@ pub struct DouyinBasicRoomInfo {
     pub user_name: String,
     pub user_avatar: String,
     pub sec_user_id: String,
+    pub resolution: Option<String>,
 }
 
 fn generate_a_bogus(params: &str) -> String {
@@ -580,6 +581,10 @@ pub async fn get_room_info(
                     .as_ref()
                     .map(|s| s.live_core_sdk_data.pull_data.stream_data.clone())
                     .unwrap_or_default(),
+                resolution: room
+                    .stream_url
+                    .as_ref()
+                    .map(|s| s.default_resolution.clone()),
             });
         }
         log::error!("Failed to parse room info response: {text}");
@@ -665,6 +670,10 @@ pub async fn get_room_info_h5(
                     .as_ref()
                     .map(|s| s.live_core_sdk_data.pull_data.stream_data.clone())
                     .unwrap_or_default(),
+                resolution: room
+                    .stream_url
+                    .as_ref()
+                    .map(|s| s.default_resolution.clone()),
             });
         }
 

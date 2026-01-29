@@ -271,7 +271,7 @@ fn default_guest_accounts() -> Vec<DefaultAccountConfig> {
 }
 
 fn default_use_guest_accounts() -> bool {
-    false
+    true  // 默认启用访客模式
 }
 
 fn default_douyin_passport() -> DouyinPassportConfig {

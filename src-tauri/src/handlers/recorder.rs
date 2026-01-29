@@ -509,6 +509,7 @@ pub async fn get_room_info(
                 live_id: String::new(),
                 recording: false,
                 enabled: recorder.auto_start,
+                resolution: None,
             }),
             Err(_) => Err("Not found".to_string()),
         }

@@ -468,9 +468,17 @@ fn get_migrations() -> Vec<Migration> {
             ",
             kind: MigrationKind::Up,
         },
-        // Migration 15 removed - extra column already exists from Migration 12
+        Migration {
+            version: 15,
+            description: "add_resolution_column_to_records",
+            sql: r"
+            ALTER TABLE records ADD COLUMN resolution TEXT;
+            ",
+            kind: MigrationKind::Up,
+        },
+        // Migration 16 removed - extra column already exists from Migration 12
         // Migration {
-        //     version: 15,
+        //     version: 16,
         //     description: "add_extra_column_to_accounts",
         //     sql: r"
         //     ALTER TABLE accounts ADD COLUMN extra TEXT NOT NULL DEFAULT '';
@@ -886,7 +894,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     Ok(v) => log::info!("Checked ffmpeg version: {v}"),
                 }
 
-                app.manage(state);
+                app.manage(state.clone());
+                
+                // Start periodic guest cookie refresh timer
+                crate::handlers::account::start_guest_cookie_refresh_timer(state);
+                
                 Ok(())
             })
         })

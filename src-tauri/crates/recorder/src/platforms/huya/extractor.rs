@@ -12,6 +12,7 @@ use crate::UserInfo;
 #[derive(Clone, Debug, Default)]
 pub struct StreamInfo {
     pub hls_url: String,
+    pub resolution: Option<String>,
 }
 
 impl StreamInfo {
@@ -122,24 +123,38 @@ impl LiveStreamExtractor {
         if !room_info.status {
             let stream_info = StreamInfo {
                 hls_url: String::new(),
+                resolution: None,
             };
             return Ok((user_info, room_info, stream_info));
         }
 
-        // roomInfo.tLiveInfo.tLiveStreamInfo.vStreamInfo
-        let live_stream_info = room_info_obj
+        // roomInfo.tLiveInfo.tLiveStreamInfo
+        let t_live_stream_info = room_info_obj
             .get("tLiveInfo")
             .and_then(|v| v.as_object())
             .unwrap()
             .get("tLiveStreamInfo")
             .and_then(|v| v.as_object())
-            .unwrap()
+            .unwrap();
+
+        let live_stream_info = t_live_stream_info
             .get("vStreamInfo")
             .and_then(|v| v.as_object())
             .unwrap()
             .get("value")
             .and_then(|v| v.as_array())
             .unwrap();
+
+        // Extract resolution from first item of vBitRateInfo
+        let resolution = t_live_stream_info
+            .get("vBitRateInfo")
+            .and_then(|v| v.as_object())
+            .and_then(|v| v.get("value"))
+            .and_then(|v| v.as_array())
+            .and_then(|arr| arr.first())
+            .and_then(|v| v.get("sDisplayName"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
 
         // random one from vStreamInfo
         let stream_info = live_stream_info.choose(&mut rand::rng()).unwrap();
@@ -180,7 +195,10 @@ impl LiveStreamExtractor {
             s_hls_anti_code: Some(hls_anti_code),
         };
         let result = UrlBuilder::build_player_url(&player_info).unwrap();
-        let stream_info = StreamInfo { hls_url: result };
+        let stream_info = StreamInfo {
+            hls_url: result,
+            resolution,
+        };
         Ok((user_info, room_info, stream_info))
     }
     /// 更健壮的提取方法，处理嵌套的大括号
@@ -351,7 +369,10 @@ mod tests {
 
     #[test]
     fn test_id() {
-        let stream_info = StreamInfo { hls_url: "https://hs.hls.huya.com/huyalive/156976698-156976698-674209784144068608-314076852-10057-A-0-1.m3u8?ratio=200".to_string() };
+        let stream_info = StreamInfo {
+            hls_url: "https://hs.hls.huya.com/huyalive/156976698-156976698-674209784144068608-314076852-10057-A-0-1.m3u8?ratio=200".to_string(),
+            resolution: None,
+        };
         assert_eq!(
             stream_info.id(),
             "156976698-156976698-674209784144068608-314076852-10057-A-0-1"
