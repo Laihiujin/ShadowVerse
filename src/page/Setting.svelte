@@ -414,7 +414,7 @@
                 <div>
                   <h3 class="text-sm font-medium text-gray-900 dark:text-white">使用登录模式</h3>
                   <p class="text-sm text-gray-500 dark:text-gray-400">
-                    启用后优先使用「已登录账号(手动填写账号Cookie/二维码登录)」；
+                    启用后优先使用「已登录账号(手动填写账号Cookie/二维码登录)」
                   </p>
                 </div>
                 <label class="relative inline-block w-11 h-6">
