@@ -1,26 +1,26 @@
 [[guest_accounts]]
+platform = "tiktok"
+cookies = ""
+extra = ""
+
+[[guest_accounts]]
 platform = "douyin"
-cookies = "__live_version__=%221.1.4.7838%22; ttwid=1%7Ca-07aqrqHBdcS6Xr8ExxADvpuThotUf2ONUl_4warTg%7C1769600138%7Ca41f375274e0d9cb16c0f39e2efa869cdb8f80dcac38931831dc32a33eec3cef; fpk2=940676c3a8a8572fffba9e3881d0fb19; fpk1=U2FsdGVkX1+6/A3ZZUEcJ/bW8rke+LuY/M9Tk5RsfBVBKurKrEKDujVhNtHx40Txg7+jiDM3TeLsWdTpiKmTyA==; device_web_memory_size=8; live_use_vvc=%22false%22; IsDouyinActive=false; device_web_cpu_core=32; isdouyinactive=false; has_avx2=null; hevc_supported=true; csrf_session_id=ebf8c01a638b7846c92214140ae2c7c4; live_can_add_dy_2_desktop=%220%22; webcast_local_quality=null"
+cookies = ""
 extra = ""
 
 [[guest_accounts]]
 platform = "kuaishou"
-cookies = "did=web_c0468587ccf4f58690e6e14442440cb8; didv=1769690402168"
-extra = ""
-
-[[guest_accounts]]
-platform = "tiktok"
-cookies = "tt_csrf_token=Oya5Sm0d-8rmFpkmcAnsvAvW1BA1GCz32-kU; tt_chain_token=Qm7u5U44VNTzztR124MYiA==; mstoken=Rlv1NfK_FKs7jEdw2yKgzk2FvNXQOIreBL0bkrHTxzoc4M-vL2cGxQ6Vm70f_gHAHqqb1tpuSr1EmjaIkZNKukeSpDD7uBycfiEM8Pjg_JoNy_PIui9UxMtIA_L9QWZiuS-9SW0h_yz4OcoYsAuWK78=; msToken=Rlv1NfK_FKs7jEdw2yKgzk2FvNXQOIreBL0bkrHTxzoc4M-vL2cGxQ6Vm70f_gHAHqqb1tpuSr1EmjaIkZNKukeSpDD7uBycfiEM8Pjg_JoNy_PIui9UxMtIA_L9QWZiuS-9SW0h_yz4OcoYsAuWK78=; ttwid=1%7C5-b4uoFLMs_rWadm3hc1OItzhEegKa9MZdwTrInUtwU%7C1769600146%7C5ff200d85c8ad912f657cbafc5a4cf32185c26b1c58b3bb7821d7adddea2a702"
+cookies = ""
 extra = ""
 
 [[guest_accounts]]
 platform = "huya"
-cookies = "_yasids=__rootsid%3DCB872775FB500001DF181E001040BF90; udb_anouid=1470687097344; udb_passdata=3; udb_guiddata=f656ad3e0e364d27a46187edbabd9761; __yamid_new=CB86D16263200001F2E99E67B8FC127A; game_did=sTeWgxPYo1nEqyZiYGWb4THy0jm9UrOgOua; Hm_lpvt_51700b6c722f5bb4cf39906a596ea41f=1769690399; hdid=a5a720002d2bf461f6edbbbbfc443eee148c5764; __yamid_tt1=0.6174943483702738; hm_lpvt_51700b6c722f5bb4cf39906a596ea41f=1769690399; hmaccount=65DD00E943EABB18; SoundValue=0.50; udb_deviceid=w_1068977688379666432; sdid=0UnHUgv0_qmfD4KAKlwzhqdmBY3_1ibBbhBpKsrAAcIMwUZTgOox56gzuBS7i9bIr81cYV8Z9gOImMZBO95tL1qGmQVYb7mK-PTSibjicy0_WVkn9LtfFJw_Qo4kgKr8OZHDqNnuwg612sGyflFn1ds6fZXmjrC7vhp2jkzEbfsPMg246unshAoT9ZJjy4Gap; rep_cnt=1; _qimei_fingerprint=20ca1a2497dab3b9413ce76f120173c6; soundvalue=0.50; udb_anobiztoken=AQBEe_0vXVWp9YwLUFT30gwjT7J4cVXoOq1_acTTBvoqzV2cjLSBoju75s8XC85tMiGhlGZDEZ_qYLZwOo7Ah2qhgg-Q-a7TtizQP12OOvbPeZ-t4Dq-0Ro4IxUzZjYN8Zq5jF9CFymh-Qb2DmKYAR4nXzCqR_CUxV86jmIgeh1M6kTHe5BM4HLToKEvfpfyrW1r0cEu9KYFU-GfkAyBxqSqaJfKbzH_LncfpB_lIkUyTowRioM-CLoBuhUiuMUn2D8TF5uo9_BYA3EqyTRNbKSxg3Bq9iTkYwBNrWu8rO7e5jzhNAPuvxTf4a6LdB5Sh1Bsj4gAHMz02siHtkgfjtph; guid=0a7d0c4e8df479693301ac62ad6272b9; __yasmid=0.6174943483702738; _qimei_uuid42=1a11c132329100292c8e616e701160329b447d79bb; _rep_cnt=2; huya_flash_rep_cnt=3; huya_web_rep_cnt=16; _qimei_h38=59a910a72c8e616e701160320200000811a11c; hm_lvt_51700b6c722f5bb4cf39906a596ea41f=1769601685,1769604108,1769655437,1769690399; Hm_lvt_51700b6c722f5bb4cf39906a596ea41f=1769601685,1769604108,1769655437,1769690399; HMACCOUNT=65DD00E943EABB18; huya_ua=webh5&0.0.1&activity"
+cookies = ""
 extra = ""
 
 [[guest_accounts]]
 platform = "bilibili"
-cookies = "b_lsid=06091088_19C09C482C3; home_feed_column=4; theme_style=light; buvid4=44A2AC79-38AA-8FD9-1228-6120FA41F29G43788-026012819-ASmm1gi1ciNrff04UzPUoQ%3D%3D; PVID=6; buvid3=583C250B-89C3-18A4-54FD-085E21227E0643788infoc; bili_ticket=eyJhbGciOiJIUzI1NiIsImtpZCI6InMwMyIsInR5cCI6IkpXVCJ9.eyJleHAiOjE3Njk4NjAxMzYsImlhdCI6MTc2OTYwMDg3NiwicGx0IjotMX0.KR6DSxhbNO2tSmw3XXCeGZaSn3UAvp-GqdIATmC5Cmg; bili_ticket_expires=1769860076; LIVE_BUVID=AUTO5417696001435219; browser_resolution=1100-800; b_nut=1769600143; _uuid=E3AE75104-DB88-85C7-1032D-92D6F1077729643010infoc; buvid_fp=75cbbdb2c4fb035d580088c1059c99f5"
+cookies = ""
 extra = ""
 
 [[default_accounts]]

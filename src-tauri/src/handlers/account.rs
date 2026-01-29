@@ -1842,96 +1842,7 @@ async fn get_douyin_webview_guest_cookies(state: &crate::state::State) -> Result
     return Ok(cookie_str);
 }
 
-#[cfg(feature = "gui")]
-#[allow(dead_code)]
-async fn get_kuaishou_webview_guest_cookies(state: &crate::state::State) -> Result<String, String> {
-    let label = "kuaishou-guest";
-    let mut created = false;
-    if state.app_handle.get_webview_window(label).is_none() {
-        let url = Url::parse("https://live.kuaishou.com/")
-            .map_err(|e| format!("Invalid guest URL: {e}"))?;
-        let mut builder = WebviewWindowBuilder::new(
-            &state.app_handle,
-            label,
-            WebviewUrl::External(url),
-        )
-        .title("Kuaishou Guest")
-        .inner_size(900.0, 700.0)
-        .visible(false);
 
-        let fallback_ua = std::env::var("KUAISHOU_WEBVIEW_USER_AGENT")
-            .or_else(|_| std::env::var("KUAISHOU_USER_AGENT"))
-            .unwrap_or_default();
-        let ua = fallback_ua.trim();
-        if !ua.is_empty() {
-            builder = builder.user_agent(ua);
-        }
-
-        builder
-            .build()
-            .map_err(|e| format!("Failed to open guest window: {e}"))?;
-        created = true;
-    }
-
-    let window = state
-        .app_handle
-        .get_webview_window(label)
-        .ok_or_else(|| "未找到内置浏览器窗口，请先打开快手页面".to_string())?;
-    if created {
-        tokio::time::sleep(Duration::from_millis(1000)).await;
-    }
-
-    let mut urls: Vec<String> = vec!["https://live.kuaishou.com/"]
-        .into_iter()
-        .map(|url| url.to_string())
-        .collect();
-    if let Ok(extra) = std::env::var("KUAISHOU_WEBVIEW_COOKIE_URLS") {
-        for raw in extra.split(',') {
-            let trimmed = raw.trim();
-            if !trimmed.is_empty() {
-                urls.push(trimmed.to_string());
-            }
-        }
-    }
-
-    let mut cookie_map: HashMap<String, String> = HashMap::new();
-    let mut cookie_map_lower: HashMap<String, String> = HashMap::new();
-    for raw in urls {
-        let url = Url::parse(&raw).map_err(|e| format!("Invalid cookie URL: {e}"))?;
-        let cookies = window
-            .cookies_for_url(url)
-            .map_err(|e| format!("读取 Cookie 失败: {e}"))?;
-        for cookie in cookies {
-            let value = cookie.value();
-            if value.is_empty() {
-                continue;
-            }
-            let name = cookie.name().to_string();
-            let lower = name.to_ascii_lowercase();
-            cookie_map.insert(name, value.to_string());
-            cookie_map_lower.insert(lower, value.to_string());
-        }
-    }
-    for (name, value) in cookie_map_lower.iter() {
-        if !cookie_map.contains_key(name) {
-            cookie_map.insert(name.clone(), value.clone());
-        }
-    }
-    ensure_kuaishou_base_cookies(&mut cookie_map);
-
-    let cookie_str = cookie_map
-        .iter()
-        .map(|(name, value)| format!("{name}={value}"))
-        .collect::<Vec<_>>()
-        .join("; ");
-    if cookie_str.is_empty() {
-        return Err("未读取到 Cookie，请先在内置浏览器访问快手页面".to_string());
-    }
-    if created {
-        let _ = window.close();
-    }
-    return Ok(cookie_str);
-}
 
 #[cfg(feature = "gui")]
 #[allow(dead_code)]
@@ -2106,6 +2017,117 @@ async fn get_bilibili_webview_guest_cookies(state: &crate::state::State) -> Resu
     return Ok(cookie_str);
 }
 
+#[cfg(feature = "gui")]
+#[allow(dead_code)]
+async fn get_kuaishou_webview_guest_cookies(state: &crate::state::State) -> Result<String, String> {
+    let label = "kuaishou-guest";
+    let mut created = false;
+    if state.app_handle.get_webview_window(label).is_none() {
+        let url = Url::parse("https://live.kuaishou.com/")
+            .map_err(|e| format!("Invalid guest URL: {e}"))?;
+        let mut builder = WebviewWindowBuilder::new(
+            &state.app_handle,
+            label,
+            WebviewUrl::External(url),
+        )
+        .title("Kuaishou Guest")
+        .inner_size(900.0, 700.0)
+        .visible(false);
+
+        let fallback_ua = std::env::var("KUAISHOU_WEBVIEW_USER_AGENT")
+            .or_else(|_| std::env::var("KUAISHOU_USER_AGENT"))
+            .unwrap_or_default();
+        let ua = fallback_ua.trim();
+        if !ua.is_empty() {
+            builder = builder.user_agent(ua);
+        }
+
+        builder
+            .build()
+            .map_err(|e| format!("Failed to open guest window: {e}"))?;
+        created = true;
+    }
+
+    let window = state
+        .app_handle
+        .get_webview_window(label)
+        .ok_or_else(|| "未找到内置浏览器窗口，请先打开 Kuaishou 页面".to_string())?;
+    
+    if created {
+        tokio::time::sleep(Duration::from_millis(3000)).await;
+    }
+
+    let mut urls: Vec<String> = vec![
+        "https://live.kuaishou.com/".to_string(),
+        "https://www.kuaishou.com/".to_string(),
+        "https://kuaishou.com/".to_string(),
+    ];
+    
+    if let Ok(extra) = std::env::var("KUAISHOU_WEBVIEW_COOKIE_URLS") {
+        for raw in extra.split(',') {
+            let trimmed = raw.trim();
+            if !trimmed.is_empty() {
+                urls.push(trimmed.to_string());
+            }
+        }
+    }
+
+    let mut cookie_map: HashMap<String, String> = HashMap::new();
+    for raw in &urls {
+        if let Ok(url) = Url::parse(&raw) {
+            if let Ok(cookies) = window.cookies_for_url(url) {
+                for cookie in cookies {
+                    let value = cookie.value();
+                    if value.is_empty() {
+                        continue;
+                    }
+                    cookie_map.insert(cookie.name().to_string(), value.to_string());
+                }
+            }
+        }
+    }
+
+    // Check for did
+    if !cookie_map.contains_key("did") {
+         if created {
+             log::warn!("[Kuaishou] 'did' cookie missing, waiting more...");
+             tokio::time::sleep(Duration::from_millis(2000)).await;
+             
+             // Retry fetching logic simplified, just re-read
+             for raw in &urls {
+                if let Ok(url) = Url::parse(raw) {
+                    if let Ok(cookies) = window.cookies_for_url(url) {
+                        for cookie in cookies {
+                             let value = cookie.value();
+                             if !value.is_empty() {
+                                cookie_map.insert(cookie.name().to_string(), value.to_string());
+                             }
+                        }
+                    }
+                }
+            }
+         }
+    }
+
+    let cookie_str = cookie_map
+        .iter()
+        .map(|(name, value)| format!("{name}={value}"))
+        .collect::<Vec<_>>()
+        .join("; ");
+        
+    if cookie_str.is_empty() {
+        if created {
+             let _ = window.close();
+        }
+        return Err("未读取到 Kuaishou Cookie".to_string());
+    }
+    
+    if created {
+        let _ = window.close();
+    }
+    return Ok(cookie_str);
+}
+
 
 #[cfg(not(feature = "gui"))]
 async fn get_huya_webview_guest_cookies(_state: &crate::state::State) -> Result<String, String> {
@@ -2173,6 +2195,7 @@ async fn refresh_guest_accounts_inner(state: &crate::state::State) -> Result<(),
         ("tiktok-guest", "https://www.tiktok.com/"),
         ("huya-guest", "https://www.huya.com/"),
         ("bilibili-guest", "https://live.bilibili.com/"),
+        ("kuaishou-guest", "https://live.kuaishou.com/"),
     ];
     
     for (label, url) in &guest_platforms {
@@ -2203,17 +2226,21 @@ async fn refresh_guest_accounts_inner(state: &crate::state::State) -> Result<(),
         }
     }
     
-    // Kuaishou - Generate guest cookies directly (no webview needed)
+    // Kuaishou - Use headless webview
     {
-        log::info!("Generating Kuaishou guest cookie with did and didv");
-        let did = gen_kuaishou_web_did();
-        let didv = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_millis();
-        let cookie_str = format!("did={}; didv={}", did, didv);
-        updates.push(("kuaishou".to_string(), cookie_str));
-        log::info!("Generated Kuaishou guest cookie: did={}", did);
+        log::info!("Collecting Kuaishou guest cookies");
+        match get_kuaishou_webview_guest_cookies(state).await {
+            Ok(cookie_str) if !cookie_str.is_empty() => {
+                log::info!("Kuaishou guest cookie collected: {} chars", cookie_str.len());
+                // Validate did exists
+                if !cookie_str.contains("did=") {
+                    log::warn!("Collected Kuaishou cookies missing 'did', might be invalid");
+                }
+                updates.push(("kuaishou".to_string(), cookie_str));
+            }
+            Ok(_) => log::warn!("Kuaishou cookie is empty"),
+            Err(e) => log::warn!("Failed to get Kuaishou guest cookies: {}", e),
+        }
     }
     
     

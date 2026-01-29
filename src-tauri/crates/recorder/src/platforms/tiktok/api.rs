@@ -1680,15 +1680,44 @@ pub async fn get_qr_login(client: &Client) -> Result<TikTokQrInfo, RecorderError
     // Load overrides defaults
     let overrides = crate::reverse_generate::tiktok_web::fetch_tiktok_overrides().unwrap_or_default();
     
-    let device_id = overrides.get("device_id").filter(|v| !v.is_empty())
+    let mut device_id = overrides.get("device_id").filter(|v| !v.is_empty())
         .map(|v| v.to_string())
-        .unwrap_or_else(gen_device_id);
-    let verify_fp = overrides.get("verify_fp").filter(|v| !v.is_empty())
+        .unwrap_or_default();
+    let mut verify_fp = overrides.get("verify_fp").filter(|v| !v.is_empty())
         .map(|v| v.to_string())
-        .unwrap_or_else(crate::platforms::douyin::params::gen_verify_fp);
+        .unwrap_or_default();
+    let mut ttwid_ticket = overrides.get("ttwid_migration_ticket").filter(|v| !v.is_empty())
+        .map(|v| v.to_string())
+        .unwrap_or_default();
+        
+    // If critical parameters are missing, scrape them from guest state
+    if device_id.is_empty() || verify_fp.is_empty() || ttwid_ticket.is_empty() {
+        if let Ok(state) = fetch_guest_state(&request_client, &Account::default()).await {
+             if device_id.is_empty() { device_id = state.device_id.clone(); }
+             if verify_fp.is_empty() { verify_fp = state.verify_fp.clone(); }
+             if ttwid_ticket.is_empty() { ttwid_ticket = state.ttwid.clone(); }
+             
+             // Persist discovered values
+             let _ = crate::reverse_generate::qr_login::update_tiktok_config(
+                 Some(&device_id),
+                 Some(&verify_fp),
+                 Some(&ttwid_ticket),
+                 true
+             );
+        }
+    }
     
-    // Initial cookies bootstrap
-    let mut cookies = bootstrap_tiktok_cookies(&request_client, &verify_fp, None).await;
+    // Fallbacks if scrape failed
+    if device_id.is_empty() { device_id = gen_device_id(); }
+    if verify_fp.is_empty() { verify_fp = crate::platforms::douyin::params::gen_verify_fp(); }
+
+    
+    // Initial cookies bootstrap (using what we have)
+    let mut cookies = HashMap::new();
+    if !ttwid_ticket.is_empty() {
+        cookies.insert("ttwid".to_string(), ttwid_ticket.clone());
+    }
+    cookies.insert("s_v_web_id".to_string(), verify_fp.clone());
     
     // Check if ms_token is overridden
     if let Some(token) = overrides.get("ms_token").filter(|v| !v.is_empty()) {
@@ -1760,11 +1789,81 @@ pub async fn get_qr_login(client: &Client) -> Result<TikTokQrInfo, RecorderError
         oauth_key.push('|');
         oauth_key.push_str(ticket);
     }
+    
+    // Attempt to persist if we got a new ttwid
+    let migration_ticket = overrides
+        .get("ttwid_migration_ticket")
+        .map(|v| v.as_str())
+        .unwrap_or("");
+        
+    if !ttwid_ticket.is_empty() && migration_ticket.is_empty() {
+             let _ = crate::reverse_generate::qr_login::update_tiktok_config(
+                None,
+                None,
+                Some(&ttwid_ticket),
+                true
+            );
+    }
 
     Ok(TikTokQrInfo {
         oauth_key,
         url,
         image,
+    })
+}
+
+#[derive(Clone, Debug)]
+pub struct TikTokGuestState {
+    pub ttwid: String,
+    pub ssid: String,
+    pub device_id: String,
+    pub verify_fp: String,
+}
+
+pub async fn fetch_guest_state(
+    client: &Client,
+    _account: &Account,
+) -> Result<TikTokGuestState, RecorderError> {
+    log::info!("[TikTok] Fetching guest state from homepage...");
+    let url = "https://www.tiktok.com/";
+    let headers = build_page_headers(url, USER_AGENT, false);
+    let response = client.get(url).headers(headers).send().await?;
+    
+    if !response.status().is_success() {
+         log::warn!("[TikTok] Failed to fetch homepage: status {}", response.status());
+    }
+    
+    let cookies = collect_cookie_map(response.headers());
+    let ttwid = cookies.get("ttwid").cloned().unwrap_or_default();
+    let ssid = cookies.get("ssid").cloned().unwrap_or_default();
+    let verify_fp = cookies.get("s_v_web_id").cloned().unwrap_or_default();
+    
+    let html = response.text().await.unwrap_or_default();
+    
+    // Attempt to extract device_id from SIGI_STATE or cookie
+    let mut device_id = String::new();
+    
+    if let Some(state_value) = extract_state_value(&html) {
+         // Try to find device_id in typical locations within SIGI_STATE
+         if let Some(did) = state_value.get("AppContext").and_then(|v| v.get("wid")).and_then(|v| v.as_str()) {
+             device_id = did.to_string();
+         } else if let Some(did) = state_value.get("device_id").and_then(|v| v.as_str()) {
+             device_id = did.to_string();
+         }
+    }
+    
+    if device_id.is_empty() {
+         // Fallback to random if server didn't provide one
+        device_id = gen_device_id();
+    }
+    
+    log::info!("[TikTok] Guest state: ttwid={}, verify_fp={}, did={}", ttwid, verify_fp, device_id);
+
+    Ok(TikTokGuestState {
+        ttwid,
+        ssid,
+        device_id,
+        verify_fp,
     })
 }
 

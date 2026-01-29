@@ -362,7 +362,15 @@ impl KuaishouRecorder {
     }
 
     async fn danmu(&self) -> Result<(), RecorderError> {
-        let cookies = self.account.cookies.clone();
+        let mut cookies = self.account.cookies.clone();
+        if !cookies.contains("did=") {
+             let did = crate::reverse_generate::qr_login::get_or_create_kuaishou_did();
+             let didv = chrono::Utc::now().timestamp_millis();
+             if !cookies.is_empty() {
+                 cookies.push_str("; ");
+             }
+             cookies.push_str(&format!("did={did}; didv={didv}"));
+        }
         let room_id = self.room_id.clone();
         let danmu_stream = DanmuStream::new(ProviderType::Kuaishou, &cookies, &room_id).await;
         let danmu_stream = match danmu_stream {
@@ -477,8 +485,26 @@ impl KuaishouRecorder {
             headers.insert("Origin", "https://live.kuaishou.com".parse().unwrap());
             headers.insert("User-Agent", KUAISHOU_USER_AGENT.parse().unwrap());
         }
-        if !self.account.cookies.is_empty() {
-            headers.insert("Cookie", self.account.cookies.parse().unwrap());
+        // Try to find the exact cookie used for this stream
+        let selected_stream = stream_list.iter().find(|s| s.url == stream_url);
+        let stream_cookie = selected_stream.and_then(|s| s.cookie.clone());
+
+        let mut cookies = if let Some(cookie) = stream_cookie {
+            cookie
+        } else {
+            self.account.cookies.clone()
+        };
+
+        if !cookies.contains("did=") {
+             let did = crate::reverse_generate::qr_login::get_or_create_kuaishou_did();
+             let didv = chrono::Utc::now().timestamp_millis();
+             if !cookies.is_empty() {
+                 cookies.push_str("; ");
+             }
+             cookies.push_str(&format!("did={}; didv={}", did, didv));
+        }
+        if !cookies.is_empty() {
+            headers.insert("Cookie", cookies.parse().unwrap());
         }
 
         if stream_url.starts_with("rtmp://") || stream_url.starts_with("rtmps://") {

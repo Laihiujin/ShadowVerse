@@ -765,6 +765,7 @@ pub struct StreamInfo {
     pub url: String,
     pub quality: String,
     pub bitrate: Option<i64>,
+    pub cookie: Option<String>,
 }
 
 /// QR code status for polling
@@ -865,6 +866,8 @@ pub async fn get_room_info(
     account: &Account,
     url: &str,
 ) -> Result<RoomInfo, RecorderError> {
+    let account_obj = ensure_guest_cookie(account);
+    let account = &account_obj;
     let (html_str, _final_url) = match fetch_web_html(client, account, url).await {
         Ok(result) => result,
         Err(e) => {
@@ -1081,6 +1084,7 @@ async fn get_mobile_stream_data(
                              url,
                              quality: quality.clone(),
                              bitrate: Some(quality_rank(&quality)), // Estimate bitrate from quality name
+                             cookie: Some(account.cookies.clone()),
                          });
                      }
                  }
@@ -1095,6 +1099,7 @@ async fn get_mobile_stream_data(
                              url,
                              quality: quality.clone(),
                              bitrate: Some(quality_rank(&quality)),
+                             cookie: Some(account.cookies.clone()),
                          });
                      }
                  }
@@ -1108,6 +1113,7 @@ async fn get_mobile_stream_data(
                          url: item.url,
                          quality: quality.clone(),
                          bitrate: Some(quality_rank(&quality)),
+                         cookie: Some(account.cookies.clone()),
                      });
                  }
             }
@@ -1118,6 +1124,7 @@ async fn get_mobile_stream_data(
                          url: hls,
                          quality: "sd".to_string(),
                          bitrate: None,
+                         cookie: Some(account.cookies.clone()),
                      });
                  }
             }
@@ -1147,6 +1154,8 @@ pub async fn get_stream_urls(
     account: &Account,
     url: &str,
 ) -> Result<Vec<StreamInfo>, RecorderError> {
+    let account_obj = ensure_guest_cookie(account);
+    let account = &account_obj;
     // Prefer web first to reduce mobile rate limits; only try mobile if no m3u8 is found.
     let (html_str, _final_url) = match fetch_web_html(client, account, url).await {
         Ok(result) => result,
@@ -1175,6 +1184,7 @@ pub async fn get_stream_urls(
         url: hls_url,
         quality: "超清(HLS 自适应)".to_string(),  // HLS adaptive streaming, typically delivers 720p+
         bitrate: None,
+        cookie: Some(account.cookies.clone()),
     });
     let mut urls = Vec::new();
 
@@ -1318,6 +1328,7 @@ pub async fn get_stream_urls(
                 .or(rep.quality_type)
                 .unwrap_or_default(),
             bitrate: rep.bitrate,
+            cookie: Some(account.cookies.clone()),
         })
     }));
 
@@ -1376,6 +1387,7 @@ pub async fn get_stream_urls(
                         url: guessed_hls,
                         quality: "超清(HLS 自适应)".to_string(),  // HLS adaptive streaming, typically delivers 720p+
                         bitrate: None,
+                        cookie: Some(account.cookies.clone()),
                     },
                 );
             }
@@ -1399,6 +1411,19 @@ pub async fn get_stream_urls(
     }
 
     Ok(urls)
+}
+
+fn ensure_guest_cookie(account: &crate::account::Account) -> crate::account::Account {
+    let mut account = account.clone();
+    if !account.cookies.contains("did=") {
+        let did = crate::reverse_generate::qr_login::get_or_create_kuaishou_did();
+        let didv = chrono::Utc::now().timestamp_millis();
+        if !account.cookies.is_empty() {
+             account.cookies.push_str("; ");
+        }
+        account.cookies.push_str(&format!("did={}; didv={}", did, didv));
+    }
+    account
 }
 
 /// Get stream URL from mobile API (fallback method)
@@ -1500,6 +1525,34 @@ pub async fn get_stream_url_mobile(
     })
 }
 
+pub async fn fetch_guest_state(client: &Client) -> Result<String, RecorderError> {
+    log::info!("[Kuaishou] Fetching guest state from homepage...");
+    let url = "https://live.kuaishou.com/";
+    let mut headers = reqwest::header::HeaderMap::new();
+    headers.insert("User-Agent", USER_AGENT.parse().unwrap());
+    
+    // Attempt fetch
+    let response = client.get(url).headers(headers).send().await?;
+    
+    let mut map = HashMap::new();
+    for value in response.headers().get_all(reqwest::header::SET_COOKIE).iter() {
+        if let Ok(raw) = value.to_str() {
+            if let Some((pair, _)) = raw.split_once(';') {
+                if let Some((name, val)) = pair.split_once('=') {
+                     map.insert(name.trim().to_string(), val.trim().to_string());
+                }
+            }
+        }
+    }
+    
+    if let Some(did) = map.get("did") {
+        log::info!("[Kuaishou] Found device_id: {}", did);
+        return Ok(did.to_string());
+    }
+    
+    Ok(String::new())
+}
+
 /// Get QR code for login
 pub async fn get_qr(client: &Client) -> Result<QrInfo, RecorderError> {
     // Check overrides
@@ -1517,11 +1570,31 @@ pub async fn get_qr(client: &Client) -> Result<QrInfo, RecorderError> {
     );
     headers.insert("Referer", "https://live.kuaishou.com/".parse().unwrap());
     
+    // Handle device_id (did)
+    let mut did = overrides.get("device_id").filter(|v| !v.is_empty())
+        .map(|v| v.to_string())
+        .unwrap_or_default();
+        
+    if did.is_empty() {
+        if let Ok(real_did) = fetch_guest_state(client).await {
+            if !real_did.is_empty() {
+                did = real_did;
+                let _ = crate::reverse_generate::qr_login::update_kuaishou_config(Some(&did), None, true);
+            }
+        }
+    }
+    // Fallback to random if still empty
+    if did.is_empty() {
+        did = gen_web_did();
+    }
+    
     // Check custom cookie in overrides
     let mut qr_cookie = if let Some(cookie) = overrides.get("cookie").filter(|v| !v.is_empty()) {
         cookie.clone()
     } else {
-        build_qr_cookie()
+        // Build cookie using did
+        let didv = Utc::now().timestamp_millis();
+        format!("did={did}; didv={didv}; kwpsecproductname=PCLive")
     };
     
     headers.insert("Cookie", qr_cookie.parse().unwrap());
