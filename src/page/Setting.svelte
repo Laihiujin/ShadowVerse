@@ -50,7 +50,7 @@
       opacity: 0.8,
     },
     use_guest_accounts: false,
-    use_default_accounts: false,
+    use_login_accounts: false,
     http_proxy: "127.0.0.1:7890",
     https_proxy: "",
   };
@@ -59,7 +59,7 @@
   let endpoint = localStorage.getItem("endpoint") || "";
   let endpointValue = endpoint;
   let darkMode = localStorage.getItem("theme") === "dark";
-  let defaultAccountPlatforms: string[] = [];
+  let loginAccountPlatforms: string[] = [];
   let proxyEnabled = true;
   let proxyHost = "127.0.0.1";
   let proxyPort = "7890";
@@ -101,8 +101,8 @@
     console.log(config);
   }
 
-  async function get_default_account_platforms() {
-    defaultAccountPlatforms = await invoke("get_default_account_platforms");
+  async function get_login_account_platforms() {
+    loginAccountPlatforms = await invoke("get_login_account_platforms");
   }
 
   async function browse_folder() {
@@ -203,24 +203,24 @@
     });
   }
 
-  async function update_use_default_accounts() {
-    if (setting_model.use_default_accounts) {
+  async function update_use_login_accounts() {
+    if (setting_model.use_login_accounts) {
       setting_model.use_guest_accounts = false;
     }
-    await invoke("update_use_default_accounts", {
-      useDefaultAccounts: setting_model.use_default_accounts,
+    await invoke("update_use_login_accounts", {
+      useLoginAccounts: setting_model.use_login_accounts,
     });
-    await get_default_account_platforms();
+    await get_login_account_platforms();
   }
 
   async function update_use_guest_accounts() {
     if (setting_model.use_guest_accounts) {
-      setting_model.use_default_accounts = false;
+      setting_model.use_login_accounts = false;
     }
     await invoke("update_use_guest_accounts", {
       useGuestAccounts: setting_model.use_guest_accounts,
     });
-    await get_default_account_platforms();
+    await get_login_account_platforms();
 
     if (!setting_model.use_guest_accounts) {
       // 关闭访客模式时直接重启应用
@@ -252,7 +252,7 @@
 
   onMount(async () => {
     await get_config();
-    await get_default_account_platforms();
+    await get_login_account_platforms();
   });
 </script>
 
@@ -421,8 +421,8 @@
                   <input
                     type="checkbox"
                     class="peer opacity-0 w-0 h-0"
-                    bind:checked={setting_model.use_default_accounts}
-                    on:change={update_use_default_accounts}
+                    bind:checked={setting_model.use_login_accounts}
+                    on:change={update_use_login_accounts}
                   />
                   <span
                     class="switch-slider absolute cursor-pointer top-0 left-0 right-0 bottom-0 bg-gray-300 dark:bg-gray-600 rounded-full transition-all duration-300 before:absolute before:h-4 before:w-4 before:left-1 before:bottom-1 before:bg-white before:rounded-full before:transition-all before:duration-300 peer-checked:bg-blue-500 peer-checked:before:translate-x-5"

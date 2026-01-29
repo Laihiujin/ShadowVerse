@@ -29,10 +29,42 @@ use url::Url;
 
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn get_accounts(state: state_type!()) -> Result<super::AccountInfo, String> {
+    let (accounts_file, _) = crate::config::load_accounts_file_or_example()
+        .unwrap_or_else(|| (crate::config::AccountsFile::default(), crate::config::resolve_accounts_file_write_path()));
+
     let account_info = super::AccountInfo {
         accounts: state.db.get_accounts().await?,
+        kuaishou_danmu_cookie: if !accounts_file.kuaishou_danmu_cookie.is_empty() {
+             Some(accounts_file.kuaishou_danmu_cookie)
+        } else {
+             None
+        },
     };
     Ok(account_info)
+}
+
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn set_kuaishou_danmu_cookie(_state: state_type!(), cookie: String) -> Result<(), String> {
+    let (mut accounts, path) = crate::config::load_accounts_file_or_example()
+        .unwrap_or_else(|| (crate::config::AccountsFile::default(), crate::config::resolve_accounts_file_write_path()));
+    
+    accounts.kuaishou_danmu_cookie = cookie.clone();
+    
+    if !cookie.is_empty() {
+        std::env::set_var("KUAISHOU_DANMU_COOKIE", &cookie);
+    } else {
+        std::env::remove_var("KUAISHOU_DANMU_COOKIE");
+    }
+
+    crate::config::write_accounts_file(&path, &accounts).map_err(|e| e.to_string())?;
+    
+    {
+        // Also update in-memory config if we track it there, but we mainly track it in Env Var for recorder
+        // Trigger a reload or ensure ensure_guest_accounts picks it up if needed? 
+        // Actually recorder reads env var directly in danmu(), so env var update is sufficient for next call.
+    }
+
+    Ok(())
 }
 
 fn get_item_from_cookies(name: &str, cookies: &str) -> Result<String, String> {
@@ -192,6 +224,16 @@ fn extract_douyin_uid(cookies: &str) -> Option<String> {
 }
 
 fn fallback_uid_from_cookies(cookies: &str) -> String {
+    // Try to extract known user ID keys
+    let keys = ["userId", "user_id", "uid", "sec_uid", "yyuid"];
+    for key in keys {
+        if let Ok(val) = get_item_from_cookies(key, cookies) {
+            if !val.trim().is_empty() {
+                return val;
+            }
+        }
+    }
+    // Fallback to MD5 hash if no known key found
     format!("cookie_{:x}", md5::compute(cookies))
 }
 
@@ -263,7 +305,7 @@ async fn build_webview_cookie_result(
     cookie_str: String,
     cookie_list: Vec<CookieItem>,
 ) -> Result<WebviewCookieResult, String> {
-    let account = build_account_row(platform, &cookie_str, None).await?;
+    let account = build_account_row(platform, &cookie_str, None, None).await?;
     let user_info = UserInfo {
         user_id: account.uid.clone(),
         user_name: account.name.clone(),
@@ -289,13 +331,13 @@ pub async fn add_account(
     cookies: &str,
     extra: Option<String>,
 ) -> Result<(), String> {
-    let account = build_account_row(&platform, cookies, extra).await?;
+    let account = build_account_row(&platform, cookies, extra, Some("manual")).await?;
     state.db.add_account(&account).await?;
     Ok(())
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]
-pub async fn update_default_account(
+pub async fn update_login_account(
     state: state_type!(),
     platform: String,
     cookies: String,
@@ -304,12 +346,12 @@ pub async fn update_default_account(
     if cookies.trim().is_empty() {
         return Err("Empty cookies".to_string());
     }
-    let _ = build_account_row(&platform, &cookies, None).await?;
+    let _ = build_account_row(&platform, &cookies, None, None).await?;
     let mut old_cookies: Option<String> = None;
     {
         let mut config = state.config.write().await;
         if let Some(entry) = config
-            .default_accounts
+            .login_accounts
             .iter_mut()
             .find(|entry| entry.platform == platform)
         {
@@ -321,7 +363,7 @@ pub async fn update_default_account(
                 entry.extra = extra.clone();
             }
         } else {
-            config.default_accounts.push(DefaultAccountConfig {
+            config.login_accounts.push(DefaultAccountConfig {
                 platform: platform.clone(),
                 cookies: cookies.clone(),
                 extra: extra.clone().unwrap_or_default(),
@@ -333,7 +375,7 @@ pub async fn update_default_account(
         let (mut accounts, _) =
             load_accounts_file_or_example().unwrap_or_else(|| (AccountsFile::default(), resolve_accounts_file_write_path()));
         if let Some(entry) = accounts
-            .default_accounts
+            .login_accounts
             .iter_mut()
             .find(|entry| entry.platform == platform)
         {
@@ -342,7 +384,7 @@ pub async fn update_default_account(
                 entry.extra = extra.clone();
             }
         } else {
-            accounts.default_accounts.push(DefaultAccountConfig {
+            accounts.login_accounts.push(DefaultAccountConfig {
                 platform: platform.clone(),
                 cookies: cookies.clone(),
                 extra: extra.clone().unwrap_or_default(),
@@ -363,15 +405,15 @@ pub async fn update_default_account(
     Ok(())
 }
 
-pub async fn ensure_default_accounts(db: &Database, config: &Config) {
-    if !config.use_default_accounts {
+pub async fn ensure_login_accounts(db: &Database, config: &Config) {
+    if !config.use_login_accounts {
         return;
     }
-    if config.default_accounts.is_empty() {
+    if config.login_accounts.is_empty() {
         return;
     }
 
-    for entry in &config.default_accounts {
+    for entry in &config.login_accounts {
         let cookies = entry.cookies.trim();
         if cookies.is_empty() {
             continue;
@@ -394,9 +436,9 @@ pub async fn ensure_default_accounts(db: &Database, config: &Config) {
             account.platform == platform.as_str() && account.cookies == cookies
         });
         if let Some(existing) = existing {
-            if let Err(e) = build_account_row(platform.as_str(), cookies, None).await {
+            if let Err(e) = build_account_row(platform.as_str(), cookies, None, Some("login")).await {
                 log::warn!(
-                    "Default account invalid for {}: {}, reimporting",
+                    "Login account invalid for {}: {}, reimporting",
                     platform.as_str(),
                     e
                 );
@@ -411,11 +453,11 @@ pub async fn ensure_default_accounts(db: &Database, config: &Config) {
                 continue;
             }
         }
-        match build_account_row(platform.as_str(), cookies, None).await {
+        match build_account_row(platform.as_str(), cookies, None, Some("login")).await {
             Ok(account) => {
                 if let Err(e) = db.add_account(&account).await {
                     log::warn!(
-                        "Failed to add default account for {}: {}",
+                        "Failed to add login account for {}: {}",
                         platform.as_str(),
                         e
                     );
@@ -423,7 +465,7 @@ pub async fn ensure_default_accounts(db: &Database, config: &Config) {
             }
             Err(e) => {
                 log::warn!(
-                    "Failed to build default account for {}: {}",
+                    "Failed to build login account for {}: {}",
                     platform.as_str(),
                     e
                 );
@@ -440,9 +482,9 @@ pub async fn sync_tiktok_webview_cookies(db: &Database, config: &Config) {
             .iter()
             .find(|entry| entry.platform == "tiktok" && !entry.cookies.trim().is_empty())
             .map(|entry| entry.cookies.clone());
-    } else if config.use_default_accounts {
+    } else if config.use_login_accounts {
         cookies = config
-            .default_accounts
+            .login_accounts
             .iter()
             .find(|entry| entry.platform == "tiktok" && !entry.cookies.trim().is_empty())
             .map(|entry| entry.cookies.clone());
@@ -462,12 +504,12 @@ pub async fn sync_tiktok_webview_cookies(db: &Database, config: &Config) {
 }
 
 #[cfg_attr(feature = "headless", allow(dead_code))]
-pub async fn remove_default_accounts(db: &Database, config: &Config) {
-    if config.default_accounts.is_empty() {
+pub async fn remove_login_accounts(db: &Database, config: &Config) {
+    if config.login_accounts.is_empty() {
         return;
     }
 
-    for entry in &config.default_accounts {
+    for entry in &config.login_accounts {
         remove_accounts_by_platform_cookies(db, &entry.platform, &entry.cookies).await;
     }
 }
@@ -553,7 +595,12 @@ async fn remove_accounts_by_platform_cookies(db: &Database, platform: &str, cook
     }
 }
 
-async fn build_account_row(platform: &str, cookies: &str, extra: Option<String>) -> Result<AccountRow, String> {
+async fn build_account_row(
+    platform: &str,
+    cookies: &str,
+    extra: Option<String>,
+    uid_prefix: Option<&str>,
+) -> Result<AccountRow, String> {
     let cookies = sanitize_cookie_header(cookies)
         .map_err(|e| format!("Invalid cookies: {e}"))?;
 
@@ -837,9 +884,14 @@ async fn build_account_row(platform: &str, cookies: &str, extra: Option<String>)
         build_account_extra_json(cookie_list_from_header(&cookies), &user_info)
     });
 
+    let mut uid = user_info.user_id;
+    if let Some(prefix) = uid_prefix {
+        uid = format!("{}:{}", prefix, uid);
+    }
+
     Ok(AccountRow {
         platform: platform.as_str().to_string(),
-        uid: user_info.user_id,
+        uid,
         name: user_info.user_name,
         avatar: user_info.user_avatar,
         csrf: csrf.unwrap_or_default(),
@@ -1674,7 +1726,7 @@ async fn get_tiktok_webview_guest_cookies(state: &crate::state::State) -> Result
         tokio::time::sleep(Duration::from_millis(1000)).await;
     }
 
-    let mut urls: Vec<String> = vec!["https://live.tiktok.com/"]
+    let mut urls: Vec<String> = vec!["https://live.tiktok.com/", "https://www.tiktok.com/"]
         .into_iter()
         .map(|url| url.to_string())
         .collect();
@@ -1820,13 +1872,14 @@ async fn get_douyin_webview_guest_cookies(state: &crate::state::State) -> Result
         }
     }
 
-    // Filter out login tokens for guest mode
+    // Filter out login tokens and device IDs for guest mode
     cookie_map.remove("sessionid");
     cookie_map.remove("sessionid_ss");
     cookie_map.remove("sid_tt");
     cookie_map.remove("sid_guard");
     cookie_map.remove("uid_tt");
     cookie_map.remove("uid_tt_ss");
+    cookie_map.remove("s_v_web_id");
 
     let cookie_str = cookie_map
         .iter()
@@ -1919,6 +1972,9 @@ async fn get_huya_webview_guest_cookies(state: &crate::state::State) -> Result<S
             cookie_map.insert(name.clone(), value.clone());
         }
     }
+
+    // Filter out device IDs for guest mode
+    cookie_map.remove("guid");
 
     let cookie_str = cookie_map
         .iter()
@@ -2109,6 +2165,11 @@ async fn get_kuaishou_webview_guest_cookies(state: &crate::state::State) -> Resu
          }
     }
 
+    // Filter out device IDs for guest mode
+    cookie_map.remove("did");
+    cookie_map.remove("didv");
+    cookie_map.remove("kwpsecproductname");
+
     let cookie_str = cookie_map
         .iter()
         .map(|(name, value)| format!("{name}={value}"))
@@ -2192,7 +2253,7 @@ async fn refresh_guest_accounts_inner(state: &crate::state::State) -> Result<(),
     // Note: Kuaishou is excluded because it can use generated did/didv directly
     let guest_platforms = vec![
         ("douyin-guest", "https://live.douyin.com/"),
-        ("tiktok-guest", "https://www.tiktok.com/"),
+        ("tiktok-guest", "https://live.tiktok.com/"),
         ("huya-guest", "https://www.huya.com/"),
         ("bilibili-guest", "https://live.bilibili.com/"),
         ("kuaishou-guest", "https://live.kuaishou.com/"),
@@ -2232,10 +2293,6 @@ async fn refresh_guest_accounts_inner(state: &crate::state::State) -> Result<(),
         match get_kuaishou_webview_guest_cookies(state).await {
             Ok(cookie_str) if !cookie_str.is_empty() => {
                 log::info!("Kuaishou guest cookie collected: {} chars", cookie_str.len());
-                // Validate did exists
-                if !cookie_str.contains("did=") {
-                    log::warn!("Collected Kuaishou cookies missing 'did', might be invalid");
-                }
                 updates.push(("kuaishou".to_string(), cookie_str));
             }
             Ok(_) => log::warn!("Kuaishou cookie is empty"),
@@ -2451,7 +2508,7 @@ pub async fn ensure_guest_accounts(db: &Database, config: &Config) {
             account.platform == platform.as_str() && account.cookies == cookies
         });
         if let Some(existing) = existing {
-            if let Err(e) = build_account_row(platform.as_str(), cookies, None).await {
+            if let Err(e) = build_account_row(platform.as_str(), cookies, None, Some("guest")).await {
                 log::warn!(
                     "Guest account invalid for {}: {}, reimporting",
                     platform.as_str(),
@@ -2468,7 +2525,7 @@ pub async fn ensure_guest_accounts(db: &Database, config: &Config) {
                 continue;
             }
         }
-        match build_account_row(platform.as_str(), cookies, None).await {
+        match build_account_row(platform.as_str(), cookies, None, Some("guest")).await {
             Ok(account) => {
                 if let Err(e) = db.add_account(&account).await {
                     log::warn!(

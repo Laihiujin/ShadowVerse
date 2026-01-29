@@ -1,49 +1,36 @@
-[[guest_accounts]]
-platform = "tiktok"
-cookies = ""
-extra = ""
+kuaishou_danmu_cookie = ""
 
 [[guest_accounts]]
 platform = "douyin"
-cookies = ""
+cookies = "device_web_cpu_core=8; csrf_session_id=e810709572b41c3cc8679e3761a18bc3; fpk2=dd4ef7731a6a60c4d92a8eb6910ca180; device_web_memory_size=-1; fpk1=U2FsdGVkX19E9IM40y5GLerBA4bwEtKuzszVvoSbhT63ym9H+VJSzPZN+nvcauWqbiafiHqFy/yU1LzFKuhSAQ==; has_avx2=null"
 extra = ""
 
 [[guest_accounts]]
 platform = "kuaishou"
-cookies = ""
+cookies = "kuaishou.server.webday7_ph=d4d78bd3ae03a059c58d46d7b1d72fca4689; kuaishou.server.webday7_st=ChprdWFpc2hvdS5zZXJ2ZXIud2ViZGF5Ny5zdBKwAbresMjLjKWmGpxo2474_JxPxtK3xU9TlfPRj1dnYqn8XT8F08hYUcchGvScijL0TBJTB2FsV2oihzI3PIfytgLaOx-DKo7p2r-EKd6Z1a-U-dyZ8LwWFFEE1CqEuAUjzmCK8h-aCK_H8wfwUHixh75WFQPFZgcL_wVJHx2I5noqe-CE1L3yQaQHadW_zVlZI_U-GTmhxnSUzMqjKSMF0BUMylnxwSk5DQRG1P_2q0G2GhI5Nsn9KZ0YHUglnTL0rRQUJE4iIHvgCFRithHXGBod7on-0Gb1sP0DX31d8WuzodsOYuPlKAUwAQ; clientid=3; client_key=65890b29; kwfv1=PnGU+9+Y8008S+nH0U+0mjPf8fP08f+98f+nLlwnrIP9P9G98YPf8jPBQSweS0+nr9G0mD8B+fP/L98/qlPe4f8eGU80q7PfpY8/qAG/4j80HI804Y8BGI8eG7P/DA+9Hh+AWUw/qF8f+0P9PFPAmf+fzDPAWA+0PUP/qF8BHAP/q=; kwssectoken=ts5Pai7N+abHQ8n8gQI9p90XFC4fQJLArHCUZnk15jpXqW79M+H3NUWDXZjPN+JvYfRiyxF11WlgdlmHV0mJig==; kwscode=47ab2e018ffd9a5082f18bdb7573fdbd8685d52802237835ce948df0fea3c848; kpf=PC_WEB; kpn=KUAISHOU_VISION; kuaishou.live.bfb1s=ac5f27b3b62895859c4c1622f49856a4"
+extra = ""
+
+[[guest_accounts]]
+platform = "tiktok"
+cookies = "msToken=ZMFG-Xv4xrSS5R8vcUc6-QTZI8nzzl_jMQKqFChxDiThRiW9k-v4c5dwHChTAgww1XXRmA6JuogAvqPVnxTZtdL6hqif_Li1ofXBdENm-4UNdvmnZ49M9k1p7FzhIK8Ou1RcDgKi5JIOJEZGD1Kkze4V; tiktok_webapp_theme_source=dark; delay_guest_mode_vid=5; tiktok_webapp_theme=dark; mstoken=ZMFG-Xv4xrSS5R8vcUc6-QTZI8nzzl_jMQKqFChxDiThRiW9k-v4c5dwHChTAgww1XXRmA6JuogAvqPVnxTZtdL6hqif_Li1ofXBdENm-4UNdvmnZ49M9k1p7FzhIK8Ou1RcDgKi5JIOJEZGD1Kkze4V; perf_feed_cache={%22expireTimestamp%22:1769536800000%2C%22itemIds%22:[%227576251058603707666%22%2C%227592963673631526152%22%2C%227580732719852702983%22]}; last_login_method=QRcode"
 extra = ""
 
 [[guest_accounts]]
 platform = "huya"
-cookies = ""
+cookies = "huya_ua=webh5&0.0.1&activity"
 extra = ""
 
 [[guest_accounts]]
 platform = "bilibili"
-cookies = ""
+cookies = "theme_style=light"
 extra = ""
 
-[[default_accounts]]
+[[login_accounts]]
 platform = "douyin"
 cookies = ""
 extra = ""
 
-[[default_accounts]]
+[[login_accounts]]
 platform = "kuaishou"
-cookies = "kuaishou.live.web.at=ChRrdWFpc2hvdS5saXZlLndlYi5hdBLAAS44OTGrVdU0-eJicdeVMhc9YSgvV4Tmnky3nra8DIoiX5IHY8c6itXPRtkhCd_FS-AMdhWItOCWpnAnmQ7B7MgeetHNJQOb3MsINBXvl82bEQUtTAzJOZ6a3TLogePIw8G5fIxxX8ccD8Y5VW3nLHd1KIS9JCCWM0cRfL5i26fRByWGtUJLSxRIdPsI2iR5oQOpBXxoMUZrGCxHYEVRxMTmmlZI5fkgVtEO2dILI4LtW-2J7RZAQQ0TLB-e1xco2BoSYmomjf85R1SJoamPyh2T7LajIiC_Irg30-vBKX6WMWn_hZEYyOluN9t3qaiZEf7mXvwFQygFMAE; kuaishou.live.web_st=ChRrdWFpc2hvdS5saXZlLndlYi5zdBKgAQpwr-wjncJG1i9Bzbb8ERSInEWbfFV3YyzeXUeumaqvHx3y6dKo6izzgAbWBy-laf6394E_RaVieF6pF5ZXi55Kh4tFTonIlqsjlkjP_a4_UutlnpSD2oz9P8iq5Z2QsOpfOn465xR4MDUfRufnhrTAUCZkpQ13MjF0kRJ3z76YHdZsJOutcTpph8kkDb8XHDlP2pfLu_jIbEhpawIB6UAaEvsuz1ia_EwztqTXeP7HMv4rLSIgg2vFghIhGZu8XNl9PVHaPL1HkvQCMAmvpGsctg3obk8oBTAB; passToken=ChNwYXNzcG9ydC5wYXNzLXRva2VuErAB9dndpZJREioEq9C7F3q1V6M2bATIkhLkljXg1_4LHHncK9iAHEWo5yUYJUiIM6xXdQLqUMYJt_ugQBzGn0fyjIVVbSIv9mfH0LbzJ65cd-mUrWV-8cr6ocRKUN6SYv1uBSg-SpdD9u7INl_mW22VuSzKL2GuhmrzDD1wyJ9SUQkTHhgmuJttkK-5NW5Dcbk60KvWohbMtRegMTULC5xQ4lGS0n2_dEWxanyX01JND6AaEgkFF-v-qk7Oq0WzNNyIan9OdiIg2qegXGNiarrA6ufp9w_zOx7z7LcFzhqkiv9sQPsuV6YoBTAB; ssecurity=E/RRLUcklee57WAfekNkTQ==; userId=2381639357"
-extra = ""
-
-[[default_accounts]]
-platform = "tiktok"
-cookies = ""
-extra = ""
-
-[[default_accounts]]
-platform = "bilibili"
-cookies = ""
-extra = ""
-
-[[default_accounts]]
-platform = "huya"
-cookies = ""
+cookies = "kuaishou.live.web.at=ChRrdWFpc2hvdS5saXZlLndlYi5hdBKwAdaKi93buwzY2VSAF2C1gpPy5ZE4u_n2Ri1wYzum8o8o-_tVQqwz99ndpVBt2IL-PP0GM0_8r9n3IH3cWpaUcRFu8QP5gnUXWW0UNKT_8816XE3J_a-qjw7PVoyhM3JJowivzFA2ocViQrysXq5jyPxzsdIlfQXh7bNpF_qEVmmNU17NpVxsS-04OkjBC0DqkCYKp03IihSwEDeVn-QN91RwHuJdcDnIPSweRURa5ReYGhI5ErTaeSRA2L6xef98MF293IUiINWlFmFb3_vw7ajPpY8dhv29jTFSjiA7ApAuW0CfvliVKAUwAQ; kuaishou.live.web_st=ChRrdWFpc2hvdS5saXZlLndlYi5zdBKgAWcXjaOX1LCrPrAb4vLPzZIbcZSlcXqkz5Bxb7A_HEXJkhO4V_FKJhDxoBLKTe_Hx3-q8S3jsuXSNKwYnYGR00LiSrDR9uVa9oVtD1H1ufNNKmAhW6SsbmWbD4QosrB1_y9W1LFyXYgJDf4hP3YwTfYY9mhu3PNK_LlIpc00TOJkAELgGxPVG5EkuGcd1fZNPSGN4H05AE7NqKHYVfomFRAaEgCrAu8bFEUPixNgRvVq1Nb0ZSIg5zYC7HL2mKXMC6ntlh6MxIi2WGqhMWyWRvSC3Yy5B3IoBTAB; passToken=ChNwYXNzcG9ydC5wYXNzLXRva2VuErABOs_Ttv1yaW4JTHOG7cVxMvoMAjuVA5oJeWlLfasKLFPOquIFM4ybdb9LrHzPb2HMPDBATMA-oIgd-WpIhy6VZZJ9DoCwSxSb0WJ8zL4lJ-fhbzCi0WlyAp-B1lSnEYOJIRuhuagF-yFbApkZanvc0SpOT9dVgrB3-alJ-ZeELkZhweXeDOjPV7R8lVdO0elojIrpPTh_VsQ86ZPZzzIVCmrmsddirMtgMj6viC75d5oaEr-S0PEk4EJpsk2D1RO3r2BzOyIgE8q2Pg6sxdbv5MaqeMRxDDPcEiO3EbpyfjGvhdoEVzIoBTAB; ssecurity=I4Sv0ih0zzdYIg048Z/Z/w==; userId=2376346635"
 extra = ""

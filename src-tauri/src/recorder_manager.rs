@@ -275,9 +275,9 @@ impl RecorderManager {
         let platform_str = platform.as_str();
 
         // 1. 优先尝试使用手动录入的默认账号 (Login Account)
-        if config.use_default_accounts {
+        if config.use_login_accounts {
             if let Some(entry) = config
-                .default_accounts
+                .login_accounts
                 .iter()
                 .find(|e| e.platform == platform_str && !e.cookies.trim().is_empty())
             {

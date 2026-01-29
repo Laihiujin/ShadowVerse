@@ -2,8 +2,6 @@ use recorder::account::Account;
 
 use super::Database;
 use super::DatabaseError;
-use rand::seq::SliceRandom;
-use std::collections::HashMap;
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, sqlx::FromRow)]
 pub struct AccountRow {
@@ -108,39 +106,16 @@ impl Database {
         if accounts.is_empty() {
             return Err(DatabaseError::NotFound);
         }
-        if should_merge_accounts(platform) {
-            let best = accounts
-                .iter()
-                .max_by_key(|account| account_profile_score(account))
-                .unwrap();
-            let merged = merge_accounts(best, &accounts);
-            if merged.name != best.name
-                || merged.avatar != best.avatar
-                || merged.csrf != best.csrf
-                || merged.cookies != best.cookies
-            {
-                let _ = self.add_account(&merged).await;
-                let merged_cookie_key = normalize_cookie_string(&merged.cookies);
-                for account in accounts.iter() {
-                    if account.uid == merged.uid {
-                        continue;
-                    }
-                    if normalize_cookie_string(&account.cookies) == merged_cookie_key {
-                        let _ = self.remove_account(&account.platform, &account.uid).await;
-                    }
-                }
-            }
-            return Ok(merged);
-        }
 
-        // randomly select one account
-        let account = accounts.choose(&mut rand::thread_rng()).unwrap();
-        Ok(account.clone())
+        // Return the "best" account (highest profile score)
+        // We no longer automatically merge accounts to ensure that Guest and Real identities remain distinct.
+        let best = accounts
+            .iter()
+            .max_by_key(|account| account_profile_score(account))
+            .ok_or(DatabaseError::NotFound)?;
+            
+        Ok(best.clone())
     }
-}
-
-fn should_merge_accounts(platform: &str) -> bool {
-    matches!(platform, "tiktok" | "douyin" | "kuaishou" | "huya")
 }
 
 fn account_profile_score(account: &AccountRow) -> usize {
@@ -171,80 +146,4 @@ fn cookie_kv_count(cookies: &str) -> usize {
         .map(str::trim)
         .filter(|pair| pair.contains('='))
         .count()
-}
-
-fn cookie_kv_map(cookies: &str) -> HashMap<String, String> {
-    let mut map = HashMap::new();
-    for part in cookies.split(';').map(str::trim) {
-        if part.is_empty() {
-            continue;
-        }
-        let Some((key, value)) = part.split_once('=') else {
-            continue;
-        };
-        let key = key.trim();
-        if key.is_empty() {
-            continue;
-        }
-        map.insert(key.to_string(), value.trim().to_string());
-    }
-    map
-}
-
-fn normalize_cookie_string(cookies: &str) -> String {
-    let mut pairs: Vec<String> = cookie_kv_map(cookies)
-        .into_iter()
-        .map(|(key, value)| format!("{key}={value}"))
-        .collect();
-    pairs.sort();
-    pairs.join("; ")
-}
-
-fn merge_accounts(base: &AccountRow, accounts: &[AccountRow]) -> AccountRow {
-    let mut merged = base.clone();
-    let mut cookies = cookie_kv_map(&merged.cookies);
-
-    for account in accounts {
-        if merged.name.trim().is_empty() && !account.name.trim().is_empty() {
-            merged.name = account.name.clone();
-        }
-        if merged.avatar.trim().is_empty() && !account.avatar.trim().is_empty() {
-            merged.avatar = account.avatar.clone();
-        }
-        if merged.csrf.trim().is_empty() && !account.csrf.trim().is_empty() {
-            merged.csrf = account.csrf.clone();
-        }
-        if merged.extra.trim().is_empty() && !account.extra.trim().is_empty() {
-            merged.extra = account.extra.clone();
-        }
-
-        let extra = cookie_kv_map(&account.cookies);
-        for (key, value) in extra {
-            match cookies.get(&key) {
-                Some(existing) => {
-                    let existing = existing.trim();
-                    let incoming = value.trim();
-                    if existing.is_empty()
-                        || (incoming.len() > existing.len() && !incoming.is_empty())
-                    {
-                        cookies.insert(key, value);
-                    }
-                }
-                _ => {
-                    if !value.trim().is_empty() {
-                        cookies.insert(key, value);
-                    }
-                }
-            }
-        }
-    }
-
-    merged.cookies = normalize_cookie_string(
-        &cookies
-            .iter()
-            .map(|(key, value)| format!("{key}={value}"))
-            .collect::<Vec<_>>()
-            .join("; "),
-    );
-    merged
 }

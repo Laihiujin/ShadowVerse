@@ -12,4 +12,5 @@ use crate::database::account::AccountRow;
 #[derive(serde::Serialize)]
 pub struct AccountInfo {
     pub accounts: Vec<AccountRow>,
+    pub kuaishou_danmu_cookie: Option<String>,
 }

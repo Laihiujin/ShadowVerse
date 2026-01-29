@@ -665,7 +665,7 @@ async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::
     db_clone.set(sqlite_pool.unwrap().clone()).await;
     db_clone.finish_pending_tasks().await?;
     let config_snapshot = config.read().await.clone();
-    crate::handlers::account::ensure_default_accounts(&db, &config_snapshot).await;
+    crate::handlers::account::ensure_login_accounts(&db, &config_snapshot).await;
     crate::handlers::account::ensure_guest_accounts(&db, &config_snapshot).await;
     let webhook_poster =
         webhook::poster::create_webhook_poster(&config.read().await.webhook_url, None).unwrap();
@@ -754,7 +754,7 @@ fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
     builder.invoke_handler(tauri::generate_handler![
         crate::handlers::account::get_accounts,
         crate::handlers::account::add_account,
-        crate::handlers::account::update_default_account,
+        crate::handlers::account::update_login_account,
         crate::handlers::account::remove_account,
         crate::handlers::account::get_browser_cookies,
         crate::handlers::account::open_tiktok_login_window,
@@ -774,7 +774,9 @@ fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
         crate::handlers::account::check_tiktok_cookie,
         crate::handlers::account::list_webview_windows,
         crate::handlers::account::close_webview_window,
+        crate::handlers::account::close_webview_window,
         crate::handlers::account::close_all_login_windows,
+        crate::handlers::account::set_kuaishou_danmu_cookie,
         crate::handlers::config::get_config,
         crate::handlers::config::get_static_port,
         crate::handlers::config::set_cache_path,
@@ -790,7 +792,7 @@ fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
         crate::handlers::config::update_network_config,
         crate::handlers::config::update_record_protocol_preference,
         crate::handlers::config::update_auto_generate,
-        crate::handlers::config::update_use_default_accounts,
+        crate::handlers::config::update_use_login_accounts,
         crate::handlers::config::update_use_guest_accounts,
         crate::handlers::config::update_status_check_interval,
         crate::handlers::config::update_whisper_language,
@@ -798,7 +800,7 @@ fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
         crate::handlers::config::update_danmu_ass_options,
         crate::handlers::config::clear_webview_data,
         crate::handlers::config::update_powerlive_key,
-        crate::handlers::config::get_default_account_platforms,
+        crate::handlers::config::get_login_account_platforms,
         crate::handlers::message::get_messages,
         crate::handlers::message::read_message,
         crate::handlers::message::delete_message,

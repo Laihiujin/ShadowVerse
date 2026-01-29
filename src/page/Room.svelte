@@ -44,6 +44,7 @@
       room.room_info.room_id.toString().includes(query)
     );
   });
+  let isUpdating = false;
   let multiSelect = false;
   let selectedRoomKeys: string[] = [];
   $: selectedRoomCount = selectedRoomKeys.length;
@@ -243,7 +244,10 @@
   }
 
   async function update_summary() {
-    let new_summary = (await invoke("get_recorder_list")) as RecorderList;
+    if (isUpdating) return;
+    isUpdating = true;
+    try {
+      let new_summary = (await invoke("get_recorder_list")) as RecorderList;
     room_count = new_summary.count;
     room_active = new_summary.recorders.filter(
       (room) => room.room_info.status
@@ -259,13 +263,11 @@
       return 0;
     });
 
-    // process room cover
-    for (const room of new_summary.recorders) {
+    // process room covers in parallel
+    const avatar_promises = new_summary.recorders.map(async (room) => {
       if (room.user_info.user_avatar != "") {
-        cleanup_avatar_cache(
-          room.room_info.room_id,
-          build_avatar_cache_key(room.room_info.room_id, room.user_info.user_avatar)
-        );
+        const next_key = build_avatar_cache_key(room.room_info.room_id, room.user_info.user_avatar);
+        cleanup_avatar_cache(room.room_info.room_id, next_key);
         room.user_info.user_avatar = await get_avatar_url(
           room.room_info.room_id,
           room.user_info.user_avatar
@@ -273,12 +275,12 @@
       } else {
         room.user_info.user_avatar = default_avatar(room.room_info.platform);
       }
+    });
 
+    const cover_promises = new_summary.recorders.map(async (room) => {
       if (room.room_info.room_cover != "") {
-        cleanup_cover_cache(
-          room.room_info.room_id,
-          build_cover_cache_key(room.room_info.room_id, room.room_info.room_cover)
-        );
+        const next_key = build_cover_cache_key(room.room_info.room_id, room.room_info.room_cover);
+        cleanup_cover_cache(room.room_info.room_id, next_key);
         room.room_info.room_cover = await get_image_url(
           room.room_info.room_id,
           room.room_info.room_cover
@@ -288,11 +290,16 @@
       } else {
         room.room_info.room_cover = default_cover(room.room_info.platform);
       }
-    }
+    });
 
-    summary = new_summary;
-    const validKeys = new Set(new_summary.recorders.map((room) => roomKey(room)));
-    selectedRoomKeys = selectedRoomKeys.filter((key) => validKeys.has(key));
+    await Promise.all([...avatar_promises, ...cover_promises]);
+
+      summary = new_summary;
+      const validKeys = new Set(new_summary.recorders.map((room) => roomKey(room)));
+      selectedRoomKeys = selectedRoomKeys.filter((key) => validKeys.has(key));
+    } finally {
+      isUpdating = false;
+    }
   }
   update_summary();
   setInterval(update_summary, 5000);
@@ -607,7 +614,7 @@
       {
         platform: "kuaishou",
         re: new RegExp(
-          String.raw`(?:bsr://)?https?://live\.kuaishou\.com/(?:u/)?([A-Za-z0-9_]+)/?(?:\?.*)?$`,
+          String.raw`(?:bsr://)?https?://live\.kuaishou\.com/(?:u/)?([A-Za-z0-9_]+)/?(?:\?.*)?`,
           "i"
         ),
       },
@@ -636,14 +643,14 @@
       {
         platform: "huya",
         re: new RegExp(
-          String.raw`(?:bsr://)?https?://(?:www\.)?huya\.com/([A-Za-z0-9]+)/?(?:\?.*)?$`,
+          String.raw`(?:bsr://)?https?://(?:www\.)?huya\.com/([A-Za-z0-9]+)/?(?:\?.*)?`,
           "i"
         ),
       },
       {
         platform: "huya",
         re: new RegExp(
-          String.raw`(?:bsr://)?https?://m\.huya\.com/([A-Za-z0-9]+)/?(?:\?.*)?$`,
+          String.raw`(?:bsr://)?https?://m\.huya\.com/([A-Za-z0-9]+)/?(?:\?.*)?`,
           "i"
         ),
       },
@@ -680,13 +687,14 @@
   function buildBatchEntries(raw: string, defaultPlatform: string) {
     // 先将转义的 \n 替换为真实换行符，再按行分割
     const normalizedRaw = raw.replace(/\\n/g, "\n").replace(/\\r/g, "");
-    const lines = normalizedRaw.split(/\r?\n/);
+    // 同时支持 换行、逗号、分号、空格 作为分隔符
+    const lines = normalizedRaw.split(/[\n\r,; \t]+/);
     const entries: { roomId: string; platform: string }[] = [];
     const seen = new Set<string>();
     let invalidCount = 0;
 
     for (const line of lines) {
-      const trimmed = line.trim();
+      const trimmed = line.trim().replace(/[，,；; \t]+$/, "").replace(/^[，,；; \t]+/, "");
       if (!trimmed) continue;
       const normalized = normalizeBatchInput(trimmed, defaultPlatform);
       if (!normalized.roomId) {
@@ -1020,11 +1028,12 @@
               </div>
             {/if}
             <button
+              id={`menu-${room.room_info.platform}-${room.room_info.room_id.toString().replace(/[^a-zA-Z0-9]/g, '_')}`}
               class="absolute top-2 right-2 p-1.5 rounded-lg bg-gray-900/50 hover:bg-gray-900/70 transition-colors"
             >
               <Ellipsis class="w-5 h-5 icon-white" />
             </button>
-            <Dropdown class="whitespace-nowrap">
+            <Dropdown class="whitespace-nowrap" triggeredBy={`#menu-${room.room_info.platform}-${room.room_info.room_id.toString().replace(/[^a-zA-Z0-9]/g, '_')}`}>
               <button
                 class="px-4 py-2 flex items-center justify-between hover:bg-gray-100 dark:hover:bg-gray-700 cursor-pointer"
                 on:click={() => toggleEnabled(room)}

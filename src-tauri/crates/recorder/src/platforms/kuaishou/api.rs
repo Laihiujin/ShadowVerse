@@ -190,7 +190,7 @@ fn extract_metadata_from_html(html_str: &str) -> (Option<String>, Option<String>
     for p in title_patterns {
         if let Some(m) = Regex::new(p).ok().and_then(|re| re.captures(html_str)).and_then(|c| c.get(1)) {
             let t = m.as_str().replace(" - 蹇墜鐩存挱", "").trim().to_string();
-            if !t.is_empty() {
+            if !t.is_empty() && !t.contains("错误代码") && !t.contains("Error Code") {
                 title = Some(t);
                 break;
             }
@@ -788,11 +788,7 @@ fn gen_web_did() -> String {
     format!("web_{hex}")
 }
 
-fn build_qr_cookie() -> String {
-    let did = gen_web_did();
-    let didv = Utc::now().timestamp_millis();
-    format!("did={did}; didv={didv}; kwpsecproductname=PCLive")
-}
+
 
 fn extract_qr_message(value: &Value) -> Option<String> {
     match value {
@@ -1414,16 +1410,7 @@ pub async fn get_stream_urls(
 }
 
 fn ensure_guest_cookie(account: &crate::account::Account) -> crate::account::Account {
-    let mut account = account.clone();
-    if !account.cookies.contains("did=") {
-        let did = crate::reverse_generate::qr_login::get_or_create_kuaishou_did();
-        let didv = chrono::Utc::now().timestamp_millis();
-        if !account.cookies.is_empty() {
-             account.cookies.push_str("; ");
-        }
-        account.cookies.push_str(&format!("did={}; didv={}", did, didv));
-    }
-    account
+    account.clone()
 }
 
 /// Get stream URL from mobile API (fallback method)
@@ -1646,6 +1633,26 @@ pub async fn get_qr(client: &Client) -> Result<QrInfo, RecorderError> {
         qr_cookie,
     })
 }
+pub fn get_kuaishou_cookie_item(cookies: &str, key: &str) -> Option<String> {
+    for cookie in cookies.split(';').map(str::trim) {
+        if let Some((name, value)) = cookie.split_once('=') {
+            if name.trim() == key {
+                let value = value.trim();
+                if !value.is_empty() {
+                    return Some(value.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+pub fn extract_kuaishou_id(cookies: &str) -> Option<String> {
+    get_kuaishou_cookie_item(cookies, "userId")
+        .or_else(|| get_kuaishou_cookie_item(cookies, "userIdStr"))
+        .or_else(|| get_kuaishou_cookie_item(cookies, "user_id"))
+        .or_else(|| get_kuaishou_cookie_item(cookies, "uid"))
+}
 
 fn get_string_field(map: &Map<String, Value>, keys: &[&str]) -> Option<String> {
     for key in keys {
@@ -1664,6 +1671,9 @@ fn user_info_from_map(map: &Map<String, Value>) -> Option<crate::UserInfo> {
     let user_id = get_string_field(map, &["user_id", "userId", "userIdStr", "uid"]);
     let user_name = get_string_field(map, &["user_name", "userName", "nickname", "nickName"]);
     if let (Some(user_id), Some(user_name)) = (user_id, user_name) {
+        if user_id == "1" || user_name == "英雄联盟" {
+            return None;
+        }
         let user_avatar = get_string_field(
             map,
             &["headurl", "headUrl", "avatar", "avatarUrl", "portrait", "profilePic"],
@@ -1679,6 +1689,9 @@ fn user_info_from_map(map: &Map<String, Value>) -> Option<crate::UserInfo> {
     let user_id = get_string_field(map, &["id"]);
     let user_name = get_string_field(map, &["name"]);
     if let (Some(user_id), Some(user_name)) = (user_id, user_name) {
+        if user_id == "1" || user_name == "英雄联盟" {
+            return None;
+        }
         let user_avatar = get_string_field(
             map,
             &["headurl", "headUrl", "avatar", "avatarUrl", "portrait", "profilePic"],

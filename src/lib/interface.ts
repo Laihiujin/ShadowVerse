@@ -154,7 +154,7 @@ export interface Config {
   danmu_ass_options: Danmu2AssOptions;
   powerlive_key: string;
   use_guest_accounts: boolean;
-  use_default_accounts: boolean;
+  use_login_accounts: boolean;
   http_proxy?: string;
   https_proxy?: string;
 }
@@ -249,15 +249,12 @@ export function parseSubtitleStyle(style: SubtitleStyle): string {
     return `&H${b}${g}${r}`;
   }
 
-  return `FontName=${style.fontName},FontSize=${
-    style.fontSize
-  },PrimaryColour=${hexToAssColor(
-    style.fontColor
-  )},OutlineColour=${hexToAssColor(style.outlineColor)},Outline=${
-    style.outlineWidth
-  },Alignment=${style.alignment},MarginV=${style.marginV},MarginL=${
-    style.marginL
-  },MarginR=${style.marginR}`;
+  return `FontName=${style.fontName},FontSize=${style.fontSize
+    },PrimaryColour=${hexToAssColor(
+      style.fontColor
+    )},OutlineColour=${hexToAssColor(style.outlineColor)},Outline=${style.outlineWidth
+    },Alignment=${style.alignment},MarginV=${style.marginV},MarginL=${style.marginL
+    },MarginR=${style.marginR}`;
 }
 
 export interface Range {

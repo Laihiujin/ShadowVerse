@@ -64,10 +64,10 @@ pub struct Config {
     pub guest_accounts: Vec<DefaultAccountConfig>,
     #[serde(default = "default_use_guest_accounts")]
     pub use_guest_accounts: bool,
-    #[serde(skip_serializing, skip_deserializing, default = "default_default_accounts")]
-    pub default_accounts: Vec<DefaultAccountConfig>,
-    #[serde(default = "default_use_default_accounts")]
-    pub use_default_accounts: bool,
+    #[serde(skip_serializing, skip_deserializing, default = "default_login_accounts")]
+    pub login_accounts: Vec<DefaultAccountConfig>,
+    #[serde(default = "default_use_login_accounts")]
+    pub use_login_accounts: bool,
     #[serde(skip_serializing, skip_deserializing, default = "default_tiktok_feed")]
     pub tiktok_feed: TikTokFeedConfig,
 }
@@ -200,7 +200,9 @@ pub struct AccountsFile {
     #[serde(default)]
     pub guest_accounts: Vec<DefaultAccountConfig>,
     #[serde(default)]
-    pub default_accounts: Vec<DefaultAccountConfig>,
+    pub login_accounts: Vec<DefaultAccountConfig>,
+    #[serde(default)]
+    pub kuaishou_danmu_cookie: String,
 }
 
 fn default_danmu_ass_options() -> Danmu2AssOptions {
@@ -321,12 +323,12 @@ fn default_douyin_passport() -> DouyinPassportConfig {
     }
 }
 
-fn default_default_accounts() -> Vec<DefaultAccountConfig> {
+fn default_login_accounts() -> Vec<DefaultAccountConfig> {
     Vec::new()
 }
 
-fn default_use_default_accounts() -> bool {
-    false
+fn default_use_login_accounts() -> bool {
+    true
 }
 
 fn locate_accounts_file(name: &str) -> Option<PathBuf> {
@@ -556,18 +558,21 @@ impl Config {
         }
     }
 
-    fn apply_default_account_override(&mut self) -> bool {
+    fn apply_login_account_override(&mut self) -> bool {
         let Some((accounts, _path)) = load_accounts_file_or_example() else {
             return false;
         };
         let mut changed = false;
         if self.guest_accounts != accounts.guest_accounts {
-            self.guest_accounts = accounts.guest_accounts;
+            self.guest_accounts = accounts.guest_accounts.clone();
             changed = true;
         }
-        if self.default_accounts != accounts.default_accounts {
-            self.default_accounts = accounts.default_accounts;
+        if self.login_accounts != accounts.login_accounts {
+            self.login_accounts = accounts.login_accounts.clone();
             changed = true;
+        }
+        if !accounts.kuaishou_danmu_cookie.is_empty() {
+             std::env::set_var("KUAISHOU_DANMU_COOKIE", &accounts.kuaishou_danmu_cookie);
         }
         changed
     }
@@ -741,7 +746,7 @@ impl Config {
                 if config.normalize_storage_paths(default_cache, default_output) {
                     needs_save = true;
                 }
-                if config.apply_default_account_override() {
+                if config.apply_login_account_override() {
                     needs_save = true;
                 }
                 if config.normalize_account_switches() {
@@ -796,8 +801,8 @@ impl Config {
             douyin_passport: default_douyin_passport(),
             guest_accounts: default_guest_accounts(),
             use_guest_accounts: default_use_guest_accounts(),
-            default_accounts: default_default_accounts(),
-            use_default_accounts: default_use_default_accounts(),
+            login_accounts: default_login_accounts(),
+            use_login_accounts: default_use_login_accounts(),
             tiktok_feed: default_tiktok_feed(),
         };
 

@@ -14,7 +14,7 @@ pub async fn get_config(state: state_type!()) -> Result<Config, ()> {
     for entry in &mut config.guest_accounts {
         entry.cookies = String::new();
     }
-    for entry in &mut config.default_accounts {
+    for entry in &mut config.login_accounts {
         entry.cookies = String::new();
     }
     Ok(config)
@@ -297,23 +297,23 @@ pub async fn update_auto_generate(
 
 #[cfg_attr(feature = "gui", tauri::command)]
 #[cfg_attr(feature = "headless", allow(dead_code))]
-pub async fn update_use_default_accounts(
+pub async fn update_use_login_accounts(
     state: state_type!(),
-    use_default_accounts: bool,
+    use_login_accounts: bool,
 ) -> Result<(), ()> {
     let mut config = state.config.write().await;
-    config.use_default_accounts = use_default_accounts;
-    if use_default_accounts {
+    config.use_login_accounts = use_login_accounts;
+    if use_login_accounts {
         config.use_guest_accounts = false;
     }
     config.save();
     let config_snapshot = config.clone();
     drop(config);
-    if use_default_accounts {
-        crate::handlers::account::ensure_default_accounts(&state.db, &config_snapshot).await;
+    if use_login_accounts {
+        crate::handlers::account::ensure_login_accounts(&state.db, &config_snapshot).await;
         crate::handlers::account::remove_guest_accounts(&state.db, &config_snapshot).await;
     } else {
-        crate::handlers::account::remove_default_accounts(&state.db, &config_snapshot).await;
+        crate::handlers::account::remove_login_accounts(&state.db, &config_snapshot).await;
     }
     Ok(())
 }
@@ -327,13 +327,13 @@ pub async fn update_use_guest_accounts(
     let mut config = state.config.write().await;
     config.use_guest_accounts = use_guest_accounts;
     if use_guest_accounts {
-        config.use_default_accounts = false;
+        config.use_login_accounts = false;
     }
     config.save();
     let config_snapshot = config.clone();
     drop(config);
     if use_guest_accounts {
-        crate::handlers::account::remove_default_accounts(&state.db, &config_snapshot).await;
+        crate::handlers::account::remove_login_accounts(&state.db, &config_snapshot).await;
         crate::handlers::account::refresh_guest_accounts(state.clone()).await?;
     } else {
         // First, get the current guest accounts for deletion BEFORE clearing
@@ -368,10 +368,10 @@ pub async fn update_use_guest_accounts(
 
 #[cfg_attr(feature = "gui", tauri::command)]
 #[cfg_attr(feature = "headless", allow(dead_code))]
-pub async fn get_default_account_platforms(state: state_type!()) -> Result<Vec<String>, ()> {
+pub async fn get_login_account_platforms(state: state_type!()) -> Result<Vec<String>, ()> {
     let config = state.config.read().await;
     let mut platforms = Vec::new();
-    for entry in &config.default_accounts {
+    for entry in &config.login_accounts {
         if entry.cookies.trim().is_empty() {
             continue;
         }
