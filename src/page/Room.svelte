@@ -332,13 +332,21 @@
           ? parsed.roomId
           : trimmed;
       const needsNumeric =
-        selectedPlatform === "bilibili" || selectedPlatform === "douyin";
+        selectedPlatform === "bilibili" || selectedPlatform === "douyin" || selectedPlatform === "huya";
+      const needsAlphanumeric = selectedPlatform === "kuaishou";
+
       if (!normalizedRoomId) {
         addValid = false;
         addErrorMsg = "";
-      } else if (needsNumeric && !Number.isInteger(Number(normalizedRoomId))) {
+      } else if (needsNumeric && !/^\d+$/.test(normalizedRoomId)) {
         addValid = false;
-        addErrorMsg = "ID格式错误，请检查输入";
+        addErrorMsg = "ID格式错误，请检查输入（仅限数字）";
+      } else if (needsAlphanumeric && !/^[a-z0-9]+$/i.test(normalizedRoomId)) {
+        addValid = false;
+        addErrorMsg = "ID格式错误，请检查输入（英文加数字）";
+      } else if (/[\u4e00-\u9fa5]/.test(normalizedRoomId)) {
+        addValid = false;
+        addErrorMsg = "ID包含非法字符（请勿输入汉字）";
       } else {
         addValid = true;
         addErrorMsg = "";
@@ -614,7 +622,7 @@
       {
         platform: "kuaishou",
         re: new RegExp(
-          String.raw`(?:bsr://)?https?://live\.kuaishou\.com/(?:u/)?([A-Za-z0-9_\-\.]+)/?(?:\?.*)?`,
+          String.raw`(?:bsr://)?https?://live\.kuaishou\.com/(?:u/)?([A-Za-z0-9]+)/?(?:\?.*)?`,
           "i"
         ),
       },
@@ -643,14 +651,14 @@
       {
         platform: "huya",
         re: new RegExp(
-          String.raw`(?:bsr://)?https?://(?:www\.)?huya\.com/([A-Za-z0-9]+)/?(?:\?.*)?`,
+          String.raw`(?:bsr://)?https?://(?:www\.)?huya\.com/(\d+)/?(?:\?.*)?`,
           "i"
         ),
       },
       {
         platform: "huya",
         re: new RegExp(
-          String.raw`(?:bsr://)?https?://m\.huya\.com/([A-Za-z0-9]+)/?(?:\?.*)?`,
+          String.raw`(?:bsr://)?https?://m\.huya\.com/(\d+)/?(?:\?.*)?`,
           "i"
         ),
       },
@@ -702,8 +710,27 @@
         continue;
       }
       const needsNumeric =
-        normalized.platform === "bilibili" || normalized.platform === "douyin";
-      if (needsNumeric && !Number.isInteger(Number(normalized.roomId))) {
+        normalized.platform === "bilibili" || normalized.platform === "douyin" || normalized.platform === "huya";
+      const needsAlphanumeric = normalized.platform === "kuaishou";
+      
+      // Strict validation for room IDs
+      if (needsNumeric && !/^\d+$/.test(normalized.roomId)) {
+        invalidCount += 1;
+        continue;
+      }
+      if (needsAlphanumeric && !/^[a-z0-9]+$/i.test(normalized.roomId)) {
+        invalidCount += 1;
+        continue;
+      }
+      
+      // Ignore anything that looks like a title or sentence (contains Chinese characters)
+      if (/[\u4e00-\u9fa5]/.test(normalized.roomId)) {
+        invalidCount += 1;
+        continue;
+      }
+
+      // Ignore very short strings that are just punctuation or symbols
+      if (normalized.roomId.length < 2 && !/^[a-z0-9]$/i.test(normalized.roomId)) {
         invalidCount += 1;
         continue;
       }

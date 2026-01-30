@@ -27,3 +27,23 @@ extra = ""
 platform = "douyin"
 cookies = ""
 extra = ""
+
+[[login_accounts]]
+platform = "kuaishou"
+cookies = ""
+extra = ""
+
+[[login_accounts]]
+platform = "tiktok"
+cookies = ""
+extra = ""
+
+[[login_accounts]]
+platform = "bilibili"
+cookies = ""
+extra = ""
+
+[[login_accounts]]
+platform = "huya"
+cookies = ""
+extra = ""

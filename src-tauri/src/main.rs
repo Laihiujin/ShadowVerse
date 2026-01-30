@@ -1,8 +1,4 @@
-// Prevents additional console window on Windows for release builds.
-#![cfg_attr(
-    all(not(debug_assertions), not(feature = "headless"), target_os = "windows"),
-    windows_subsystem = "windows"
-)]
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod config;
 mod constants;

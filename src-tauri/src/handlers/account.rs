@@ -2400,12 +2400,34 @@ async fn refresh_guest_accounts_inner(state: &crate::state::State) -> Result<(),
             .skip_taskbar(true)
             .initialization_script(r#"
                 (function() {
-                    function mute() {
-                        const media = document.querySelectorAll('video, audio');
-                        media.forEach(m => { m.muted = true; m.pause(); });
+                    // Mute audio context if possible
+                    if (window.AudioContext || window.webkitAudioContext) {
+                        try {
+                            const AudioContext = window.AudioContext || window.webkitAudioContext;
+                            const ctx = new AudioContext();
+                            ctx.suspend();
+                        } catch (e) {}
                     }
-                    window.addEventListener('load', mute);
-                    setInterval(mute, 500);
+                    
+                    // Mute all media elements periodically
+                    const muteAll = () => {
+                        document.querySelectorAll('video, audio').forEach(el => {
+                            el.muted = true;
+                            el.pause();
+                            el.volume = 0;
+                        });
+                    };
+                    
+                    setInterval(muteAll, 500);
+                    document.addEventListener('DOMContentLoaded', muteAll);
+                    window.addEventListener('load', muteAll);
+                    
+                    // Override media play
+                    const originalPlay = HTMLMediaElement.prototype.play;
+                    HTMLMediaElement.prototype.play = function() {
+                        this.muted = true;
+                        return Promise.resolve();
+                    };
                 })();
             "#)
             .build()
