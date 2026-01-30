@@ -1,6 +1,6 @@
 // Prevents additional console window on Windows for release builds.
 #![cfg_attr(
-    all(not(debug_assertions), target_os = "windows"),
+    all(not(debug_assertions), not(feature = "headless"), target_os = "windows"),
     windows_subsystem = "windows"
 )]
 

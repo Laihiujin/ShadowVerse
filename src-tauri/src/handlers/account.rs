@@ -2398,6 +2398,16 @@ async fn refresh_guest_accounts_inner(state: &crate::state::State) -> Result<(),
             .title(format!("Guest - {}", label))
             .visible(false)  // 无头模式：不可见
             .skip_taskbar(true)
+            .initialization_script(r#"
+                (function() {
+                    function mute() {
+                        const media = document.querySelectorAll('video, audio');
+                        media.forEach(m => { m.muted = true; m.pause(); });
+                    }
+                    window.addEventListener('load', mute);
+                    setInterval(mute, 500);
+                })();
+            "#)
             .build()
             {
                 Ok(_window) => {
@@ -2434,8 +2444,8 @@ async fn refresh_guest_accounts_inner(state: &crate::state::State) -> Result<(),
     
     // Wait longer for webviews to fully load and populate cookies
     // Headless webviews need time to execute JavaScript and set cookies
-    log::info!("Waiting 5 seconds for guest webviews to load...");
-    tokio::time::sleep(Duration::from_secs(5)).await;
+    log::info!("Waiting 2 seconds for guest webviews to load...");
+    tokio::time::sleep(Duration::from_secs(2)).await;
     log::info!("Starting cookie collection from guest webviews");
     
     
@@ -2549,6 +2559,35 @@ async fn refresh_guest_accounts_inner(state: &crate::state::State) -> Result<(),
 
     let config_snapshot = state.config.read().await.clone();
     ensure_guest_accounts(&state.db, &config_snapshot).await;
+    
+    // Close all guest webviews
+    // Manually iterating the list to ensure all created windows are targeted
+    for (label, _) in &guest_platforms {
+        if let Some(window) = state.app_handle.get_webview_window(label) {
+            if let Err(e) = window.close() {
+                 log::warn!("Failed to close guest webview {}: {}", label, e);
+            } else {
+                 log::info!("Closed guest webview: {}", label);
+            }
+        } else {
+             // In case it was already closed or not created
+             log::debug!("Guest webview {} not found (already closed?)", label);
+        }
+    }
+    
+    // Double check: Iterate all active windows and close if label ends with "-guest"
+    // This ensures that even if a window was created but missed by the list, it gets closed.
+    let active_windows = state.app_handle.webview_windows();
+    for (label, window) in active_windows {
+        if label.ends_with("-guest") {
+            if window.is_visible().unwrap_or(false) || window.is_minimized().unwrap_or(false) || true {
+               // Just try to close it if it matches the pattern
+               log::info!("Force closing stray guest window: {}", label);
+               let _ = window.close();
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -3014,9 +3053,10 @@ pub fn start_guest_cookie_refresh_timer(state: crate::state::State) {
             }
             
             log::info!("[Account] Starting periodic guest cookie refresh...");
+            let start = std::time::Instant::now();
             match refresh_guest_accounts_inner(&state).await {
                 Ok(()) => {
-                    log::info!("[Account] Periodic guest cookie refresh completed successfully");
+                    log::info!("[Account] Periodic guest cookie refresh completed successfully in {:?}", start.elapsed());
                 }
                 Err(e) => {
                     log::warn!("[Account] Periodic guest cookie refresh failed: {}", e);
