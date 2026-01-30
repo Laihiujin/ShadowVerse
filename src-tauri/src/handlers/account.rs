@@ -2719,17 +2719,34 @@ pub async fn ensure_guest_accounts(db: &Database, config: &Config) {
         .map(|entry| (entry.platform.clone(), entry.cookies.trim().to_string()))
         .collect();
 
+    // Track which (platform, cookie) pairs we have already seen in the DB to remove duplicates
+    let mut seen_valid_guests = std::collections::HashSet::new();
+
     for account in all_accounts {
-        // Only target guest accounts (uid starts with "guest:")
-        if account.uid.starts_with("guest:") {
-            let is_valid = valid_guest_cookies.iter().any(|(p, c)| {
+        // Only target guest accounts (uid starts with "guest:" or legacy "cookie_")
+        // Also strictly treat auto-generated-looking cookies as guests if necessary
+        let is_guest_marker = account.uid.starts_with("guest:") || account.uid.starts_with("cookie_");
+        
+        if is_guest_marker {
+            let matches_config = valid_guest_cookies.iter().any(|(p, c)| {
                 *p == account.platform && *c == account.cookies.trim()
             });
 
-            if !is_valid {
+            if !matches_config {
                 log::info!("Removing outdated guest account: {} ({})", account.platform, account.uid);
                 if let Err(e) = db.remove_account(&account.platform, &account.uid).await {
                     log::warn!("Failed to remove outdated guest account: {}", e);
+                }
+            } else {
+                // It matches config, but is it a duplicate in the DB?
+                let key = (account.platform.clone(), account.cookies.trim().to_string());
+                if seen_valid_guests.contains(&key) {
+                    log::info!("Removing duplicate guest account: {} ({})", account.platform, account.uid);
+                    if let Err(e) = db.remove_account(&account.platform, &account.uid).await {
+                        log::warn!("Failed to remove duplicate guest account: {}", e);
+                    }
+                } else {
+                    seen_valid_guests.insert(key);
                 }
             }
         }
@@ -2755,10 +2772,19 @@ pub async fn ensure_guest_accounts(db: &Database, config: &Config) {
             }
         };
         let existing = accounts.iter().find(|account| {
-            account.platform == platform.as_str() && account.cookies == cookies
+            account.platform == platform.as_str() && account.cookies.trim() == cookies
         });
 
         if let Some(existing) = existing {
+            // Update cookies if they differ only by whitespace to keep DB clean
+            if existing.cookies != cookies {
+                 let mut updated = existing.clone();
+                 updated.cookies = cookies.to_string();
+                 if let Err(e) = db.add_account(&updated).await {
+                     log::warn!("Failed to update guest account cookies: {}", e);
+                 }
+            }
+
             let expected_name = match platform {
                 PlatformType::BiliBili => "Bilibili",
                 PlatformType::Douyin => "Douyin",
