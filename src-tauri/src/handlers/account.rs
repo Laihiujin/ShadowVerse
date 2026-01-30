@@ -17,6 +17,7 @@ use recorder::platforms::{
 };
 use recorder::UserInfo;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 
 use hyper::header::HeaderValue;
 use reqwest::header::{HeaderMap, USER_AGENT};
@@ -32,37 +33,82 @@ pub async fn get_accounts(state: state_type!()) -> Result<super::AccountInfo, St
     let (accounts_file, _) = crate::config::load_accounts_file_or_example()
         .unwrap_or_else(|| (crate::config::AccountsFile::default(), crate::config::resolve_accounts_file_write_path()));
 
+    // Check legacy field first
+    let mut danmu_cookie = if !accounts_file.kuaishou_danmu_cookie.is_empty() {
+         Some(accounts_file.kuaishou_danmu_cookie.clone())
+    } else {
+         None
+    };
+
+    // If empty, check login_accounts with is_danmu flag
+    if danmu_cookie.is_none() {
+        for entry in &accounts_file.login_accounts {
+            if entry.platform == "kuaishou" {
+                if let Ok(extra) = serde_json::from_str::<serde_json::Value>(&entry.extra) {
+                    if extra.get("is_danmu").and_then(|v| v.as_bool()).unwrap_or(false) {
+                        danmu_cookie = Some(entry.cookies.clone());
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
     let account_info = super::AccountInfo {
         accounts: state.db.get_accounts().await?,
-        kuaishou_danmu_cookie: if !accounts_file.kuaishou_danmu_cookie.is_empty() {
-             Some(accounts_file.kuaishou_danmu_cookie)
-        } else {
-             None
-        },
+        kuaishou_danmu_cookie: danmu_cookie,
     };
     Ok(account_info)
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]
-pub async fn set_kuaishou_danmu_cookie(_state: state_type!(), cookie: String) -> Result<(), String> {
+pub async fn set_kuaishou_danmu_cookie(state: state_type!(), cookie: String) -> Result<(), String> {
     let (mut accounts, path) = crate::config::load_accounts_file_or_example()
         .unwrap_or_else(|| (crate::config::AccountsFile::default(), crate::config::resolve_accounts_file_write_path()));
     
-    accounts.kuaishou_danmu_cookie = cookie.clone();
+    // Clear legacy field to migrate to new system
+    accounts.kuaishou_danmu_cookie = String::new();
+    
+    let mut _found_in_login = false;
+    
+    // Update login_accounts flags
+    for entry in &mut accounts.login_accounts {
+        if entry.platform == "kuaishou" {
+            let mut extra_json: serde_json::Value = serde_json::from_str(&entry.extra).unwrap_or(json!({}));
+            
+            if !cookie.is_empty() && entry.cookies.trim() == cookie.trim() {
+                extra_json["is_danmu"] = serde_json::Value::Bool(true);
+                _found_in_login = true;
+                // Also update DB
+                if let Ok(mut acc) = state.db.get_account_by_platform_cookies("kuaishou", &entry.cookies).await {
+                     acc.extra = extra_json.to_string();
+                     let _ = state.db.add_account(&acc).await;
+                }
+            } else {
+                // Unset others
+                if let Some(obj) = extra_json.as_object_mut() {
+                    obj.remove("is_danmu");
+                }
+                // Also update DB
+                if let Ok(mut acc) = state.db.get_account_by_platform_cookies("kuaishou", &entry.cookies).await {
+                     acc.extra = extra_json.to_string();
+                     let _ = state.db.add_account(&acc).await;
+                }
+            }
+            entry.extra = extra_json.to_string();
+        }
+    }
     
     if !cookie.is_empty() {
         std::env::set_var("KUAISHOU_DANMU_COOKIE", &cookie);
+        // If it wasn't in login_accounts, maybe it was a raw cookie set? 
+        // For now, if the user provides a cookie that isn't in login accounts, we can't flag it.
+        // But the UI only allows selecting from existing accounts, so this is fine.
     } else {
         std::env::remove_var("KUAISHOU_DANMU_COOKIE");
     }
 
     crate::config::write_accounts_file(&path, &accounts).map_err(|e| e.to_string())?;
-    
-    {
-        // Also update in-memory config if we track it there, but we mainly track it in Env Var for recorder
-        // Trigger a reload or ensure ensure_guest_accounts picks it up if needed? 
-        // Actually recorder reads env var directly in danmu(), so env var update is sufficient for next call.
-    }
 
     Ok(())
 }
@@ -472,6 +518,54 @@ pub async fn ensure_login_accounts(db: &Database, config: &Config) {
             }
         }
     }
+
+    // Ensure Kuaishou Danmu Cookie is loaded into env and visible in DB
+    if let Some((accounts_file, _)) = load_accounts_file_or_example() {
+        let danmu_cookie = accounts_file.kuaishou_danmu_cookie.trim();
+        if !danmu_cookie.is_empty() {
+            // 1. Set environment variable
+            std::env::set_var("KUAISHOU_DANMU_COOKIE", danmu_cookie);
+            log::info!("Loaded KUAISHOU_DANMU_COOKIE from accounts file");
+
+            // 2. Ensure it exists in the database so the user can verify/manage it
+            let accounts = match db.get_accounts().await {
+                Ok(acc) => acc,
+                Err(_) => Vec::new(),
+            };
+            
+            let exists = accounts.iter().any(|acc| acc.platform == "kuaishou" && acc.cookies.trim() == danmu_cookie);
+            if !exists {
+                log::info!("Adding invisible danmu account to database for visibility");
+                match build_account_row("kuaishou", danmu_cookie, None, Some("login")).await {
+                    Ok(account) => {
+                        if let Err(e) = db.add_account(&account).await {
+                            log::warn!("Failed to add danmu account to db: {}", e);
+                        }
+                    }
+                    Err(e) => {
+                         // Fallback: Manually create the row if build fails (e.g. API error)
+                         log::warn!("Failed to build danmu account row via API: {}, using manual fallback", e);
+                         let uid = fallback_uid_from_cookies(danmu_cookie);
+                         if !uid.is_empty() {
+                             let fallback_account = AccountRow {
+                                 platform: "kuaishou".to_string(),
+                                 uid,
+                                 name: "快手弹幕号".to_string(), // Explicit name so user knows
+                                 avatar: "".to_string(),
+                                 csrf: "".to_string(),
+                                 cookies: danmu_cookie.to_string(),
+                                 extra: "".to_string(),
+                                 created_at: Utc::now().to_rfc3339(),
+                             };
+                             if let Err(db_err) = db.add_account(&fallback_account).await {
+                                 log::warn!("Failed to add fallback danmu account: {}", db_err);
+                             }
+                         }
+                    }
+                }
+            }
+        }
+    }
 }
 
 pub async fn sync_tiktok_webview_cookies(db: &Database, config: &Config) {
@@ -622,7 +716,7 @@ async fn build_account_row(
     };
 
     let client = crate::utils::http::no_proxy_client();
-    let user_info = match platform {
+    let mut user_info = match platform {
         PlatformType::BiliBili => {
             let uid = get_item_from_cookies("DedeUserID", &cookies)
                 .unwrap_or_else(|_| fallback_uid_from_cookies(&cookies));
@@ -887,6 +981,19 @@ async fn build_account_row(
     let mut uid = user_info.user_id;
     if let Some(prefix) = uid_prefix {
         uid = format!("{}:{}", prefix, uid);
+        if prefix == "guest" {
+            user_info.user_name = match platform {
+                PlatformType::BiliBili => "Bilibili",
+                PlatformType::Douyin => "Douyin",
+                PlatformType::Huya => "Huya",
+                PlatformType::Kuaishou => "Kuaishou",
+                PlatformType::Xiaohongshu => "Xiaohongshu",
+                PlatformType::TikTok => "TikTok",
+                PlatformType::Weibo => "Weibo",
+                PlatformType::Youtube => "Youtube",
+            }.to_string();
+            user_info.user_avatar = String::new();
+        }
     }
 
     Ok(AccountRow {
@@ -1702,7 +1809,40 @@ async fn get_tiktok_webview_guest_cookies(state: &crate::state::State) -> Result
         )
         .title("TikTok Guest")
         .inner_size(900.0, 700.0)
-        .visible(false);
+        .visible(false)
+        .skip_taskbar(true)
+        .initialization_script(r#"
+            (function() {
+                // Mute audio context if possible
+                if (window.AudioContext || window.webkitAudioContext) {
+                    try {
+                        const AudioContext = window.AudioContext || window.webkitAudioContext;
+                        const ctx = new AudioContext();
+                        ctx.suspend();
+                    } catch (e) {}
+                }
+                
+                // Mute all media elements periodically
+                const muteAll = () => {
+                    document.querySelectorAll('video, audio').forEach(el => {
+                        el.muted = true;
+                        el.pause();
+                        el.volume = 0;
+                    });
+                };
+                
+                setInterval(muteAll, 500);
+                document.addEventListener('DOMContentLoaded', muteAll);
+                window.addEventListener('load', muteAll);
+                
+                // Override media play
+                const originalPlay = HTMLMediaElement.prototype.play;
+                HTMLMediaElement.prototype.play = function() {
+                    this.muted = true;
+                    return Promise.resolve(); // Fake success or originalPlay.apply(this, arguments);
+                };
+            })();
+        "#);
 
         let fallback_ua = std::env::var("TIKTOK_WEBVIEW_USER_AGENT")
             .or_else(|_| std::env::var("TIKTOK_USER_AGENT"))
@@ -1777,6 +1917,9 @@ async fn get_tiktok_webview_guest_cookies(state: &crate::state::State) -> Result
         .collect::<Vec<_>>()
         .join("; ");
     if cookie_str.is_empty() {
+        if created {
+            let _ = window.close();
+        }
         return Err("未读取到 Cookie，请先在内置浏览器访问 TikTok 页面".to_string());
     }
     if cookie_map.is_empty() && !cookie_map_lower.is_empty() {
@@ -1803,7 +1946,40 @@ async fn get_douyin_webview_guest_cookies(state: &crate::state::State) -> Result
         )
         .title("Douyin Guest")
         .inner_size(900.0, 700.0)
-        .visible(false);
+        .visible(false)
+        .skip_taskbar(true)
+        .initialization_script(r#"
+            (function() {
+                // Mute audio context if possible
+                if (window.AudioContext || window.webkitAudioContext) {
+                    try {
+                        const AudioContext = window.AudioContext || window.webkitAudioContext;
+                        const ctx = new AudioContext();
+                        ctx.suspend();
+                    } catch (e) {}
+                }
+                
+                // Mute all media elements periodically
+                const muteAll = () => {
+                    document.querySelectorAll('video, audio').forEach(el => {
+                        el.muted = true;
+                        el.pause();
+                        el.volume = 0;
+                    });
+                };
+                
+                setInterval(muteAll, 500);
+                document.addEventListener('DOMContentLoaded', muteAll);
+                window.addEventListener('load', muteAll);
+                
+                // Override media play
+                const originalPlay = HTMLMediaElement.prototype.play;
+                HTMLMediaElement.prototype.play = function() {
+                    this.muted = true;
+                    return Promise.resolve(); // Fake success or originalPlay.apply(this, arguments);
+                };
+            })();
+        "#);
 
         let fallback_ua = std::env::var("DOUYIN_WEBVIEW_USER_AGENT")
             .or_else(|_| std::env::var("DOUYIN_PASSPORT_USER_AGENT"))
@@ -1887,6 +2063,9 @@ async fn get_douyin_webview_guest_cookies(state: &crate::state::State) -> Result
         .collect::<Vec<_>>()
         .join("; ");
     if cookie_str.is_empty() {
+        if created {
+            let _ = window.close();
+        }
         return Err("未读取到 Cookie，请先在内置浏览器访问抖音页面".to_string());
     }
     if created {
@@ -1982,6 +2161,9 @@ async fn get_huya_webview_guest_cookies(state: &crate::state::State) -> Result<S
         .collect::<Vec<_>>()
         .join("; ");
     if cookie_str.is_empty() {
+        if created {
+            let _ = window.close();
+        }
         return Err("未读取到 Cookie，请先在内置浏览器访问虎牙页面".to_string());
     }
 
@@ -2065,6 +2247,9 @@ async fn get_bilibili_webview_guest_cookies(state: &crate::state::State) -> Resu
         .collect::<Vec<_>>()
         .join("; ");
     if cookie_str.is_empty() {
+        if created {
+            let _ = window.close();
+        }
         return Err("未读取到 Cookie，请先在内置浏览器访问 BiliBili 页面".to_string());
     }
     if created {
@@ -2088,7 +2273,40 @@ async fn get_kuaishou_webview_guest_cookies(state: &crate::state::State) -> Resu
         )
         .title("Kuaishou Guest")
         .inner_size(900.0, 700.0)
-        .visible(false);
+        .visible(false)
+        .skip_taskbar(true)
+        .initialization_script(r#"
+            (function() {
+                // Mute audio context if possible
+                if (window.AudioContext || window.webkitAudioContext) {
+                    try {
+                        const AudioContext = window.AudioContext || window.webkitAudioContext;
+                        const ctx = new AudioContext();
+                        ctx.suspend();
+                    } catch (e) {}
+                }
+                
+                // Mute all media elements periodically
+                const muteAll = () => {
+                    document.querySelectorAll('video, audio').forEach(el => {
+                        el.muted = true;
+                        el.pause();
+                        el.volume = 0;
+                    });
+                };
+                
+                setInterval(muteAll, 500);
+                document.addEventListener('DOMContentLoaded', muteAll);
+                window.addEventListener('load', muteAll);
+                
+                // Override media play
+                const originalPlay = HTMLMediaElement.prototype.play;
+                HTMLMediaElement.prototype.play = function() {
+                    this.muted = true;
+                    return Promise.resolve(); // Fake success or originalPlay.apply(this, arguments);
+                };
+            })();
+        "#);
 
         let fallback_ua = std::env::var("KUAISHOU_WEBVIEW_USER_AGENT")
             .or_else(|_| std::env::var("KUAISHOU_USER_AGENT"))
@@ -2098,16 +2316,17 @@ async fn get_kuaishou_webview_guest_cookies(state: &crate::state::State) -> Resu
             builder = builder.user_agent(ua);
         }
 
-        builder
-            .build()
-            .map_err(|e| format!("Failed to open guest window: {e}"))?;
+        if let Err(e) = builder.build() {
+            return Err(format!("Failed to open guest window: {e}"));
+        }
         created = true;
     }
 
-    let window = state
-        .app_handle
-        .get_webview_window(label)
-        .ok_or_else(|| "未找到内置浏览器窗口，请先打开 Kuaishou 页面".to_string())?;
+    let window = state.app_handle.get_webview_window(label);
+    if window.is_none() {
+         return Err("未找到内置浏览器窗口".to_string());
+    }
+    let window = window.unwrap();
     
     if created {
         tokio::time::sleep(Duration::from_millis(3000)).await;
@@ -2485,6 +2704,37 @@ pub async fn ensure_guest_accounts(db: &Database, config: &Config) {
         return;
     }
 
+    // First, clean up any old guest accounts that are not in the current config
+    let all_accounts = match db.get_accounts().await {
+        Ok(acc) => acc,
+        Err(e) => {
+            log::warn!("Failed to load accounts for cleanup: {}", e);
+            Vec::new()
+        }
+    };
+    
+    // Identify accounts to keep (those present in config)
+    let valid_guest_cookies: Vec<(String, String)> = config.guest_accounts
+        .iter()
+        .map(|entry| (entry.platform.clone(), entry.cookies.trim().to_string()))
+        .collect();
+
+    for account in all_accounts {
+        // Only target guest accounts (uid starts with "guest:")
+        if account.uid.starts_with("guest:") {
+            let is_valid = valid_guest_cookies.iter().any(|(p, c)| {
+                *p == account.platform && *c == account.cookies.trim()
+            });
+
+            if !is_valid {
+                log::info!("Removing outdated guest account: {} ({})", account.platform, account.uid);
+                if let Err(e) = db.remove_account(&account.platform, &account.uid).await {
+                    log::warn!("Failed to remove outdated guest account: {}", e);
+                }
+            }
+        }
+    }
+
     for entry in &config.guest_accounts {
         let cookies = entry.cookies.trim();
         if cookies.is_empty() {
@@ -2507,24 +2757,23 @@ pub async fn ensure_guest_accounts(db: &Database, config: &Config) {
         let existing = accounts.iter().find(|account| {
             account.platform == platform.as_str() && account.cookies == cookies
         });
+
         if let Some(existing) = existing {
-            if let Err(e) = build_account_row(platform.as_str(), cookies, None, Some("guest")).await {
-                log::warn!(
-                    "Guest account invalid for {}: {}, reimporting",
-                    platform.as_str(),
-                    e
-                );
-                if let Err(e) = db.remove_account(platform.as_str(), &existing.uid).await {
-                    log::warn!(
-                        "Failed to remove invalid guest account for {}: {}",
-                        platform.as_str(),
-                        e
-                    );
-                }
-            } else {
+            let expected_name = match platform {
+                PlatformType::BiliBili => "Bilibili",
+                PlatformType::Douyin => "Douyin",
+                PlatformType::Huya => "Huya",
+                PlatformType::Kuaishou => "Kuaishou",
+                PlatformType::Xiaohongshu => "Xiaohongshu",
+                PlatformType::TikTok => "TikTok",
+                PlatformType::Weibo => "Weibo",
+                PlatformType::Youtube => "Youtube",
+            };
+            if existing.name == expected_name && existing.avatar.is_empty() {
                 continue;
             }
         }
+
         match build_account_row(platform.as_str(), cookies, None, Some("guest")).await {
             Ok(account) => {
                 if let Err(e) = db.add_account(&account).await {
@@ -2541,6 +2790,15 @@ pub async fn ensure_guest_accounts(db: &Database, config: &Config) {
                     platform.as_str(),
                     e
                 );
+                if let Some(existing) = existing {
+                    if let Err(e) = db.remove_account(platform.as_str(), &existing.uid).await {
+                        log::warn!(
+                            "Failed to remove invalid guest account for {}: {}",
+                            platform.as_str(),
+                            e
+                        );
+                    }
+                }
             }
         }
     }
@@ -2701,7 +2959,7 @@ mod tests {
 }
 #[cfg(all(feature = "gui", not(feature = "headless")))]
 use std::collections::HashMap;
-use serde_json::json;
+
 
 /// 列出所有打开的 webview 窗口
 #[cfg(feature = "gui")]

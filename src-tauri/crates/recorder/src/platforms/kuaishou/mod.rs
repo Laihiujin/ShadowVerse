@@ -223,7 +223,8 @@ impl KuaishouRecorder {
             format!("https://live.kuaishou.com/u/{}", self.room_id)
         };
 
-        let mut account = self.account.clone();
+        let account = self.account.clone();
+        /*
         if let Ok(danmu_cookie) = std::env::var("KUAISHOU_DANMU_COOKIE") {
             if let Some(danmu_id) = api::extract_kuaishou_id(&danmu_cookie) {
                 if let Some(account_id) = api::extract_kuaishou_id(&account.cookies) {
@@ -234,6 +235,7 @@ impl KuaishouRecorder {
                 }
             }
         }
+        */
 
         match api::get_room_info(&self.client, &account, &url).await {
             Ok(room_info) => {
@@ -394,8 +396,29 @@ impl KuaishouRecorder {
         }
 
         let room_id = self.room_id.clone();
-        let danmu_stream = DanmuStream::new(ProviderType::Kuaishou, &cookies, &room_id).await;
-        let danmu_stream = match danmu_stream {
+        let mut danmu_stream_res = DanmuStream::new(ProviderType::Kuaishou, &cookies, &room_id).await;
+        
+        // Fallback logic: if dedicated cookie failed, try account cookie
+        if danmu_stream_res.is_err() {
+            let account_cookies = self.account.cookies.clone();
+            // simple check to see if we are using a different cookie
+            // (Note: comparing raw strings might be flaky if formatted differently, but good enough for exact match check)
+            if cookies != account_cookies && !account_cookies.is_empty() {
+                self.log_info("Dedicated Danmu cookie failed to initialize stream, falling back to main account cookies.");
+                cookies = account_cookies;
+                if !cookies.contains("did=") {
+                    let did = crate::reverse_generate::qr_login::get_or_create_kuaishou_did();
+                    let didv = chrono::Utc::now().timestamp_millis();
+                    if !cookies.is_empty() {
+                        cookies.push_str("; ");
+                    }
+                    cookies.push_str(&format!("did={did}; didv={didv}"));
+                }
+                danmu_stream_res = DanmuStream::new(ProviderType::Kuaishou, &cookies, &room_id).await;
+            }
+        }
+
+        let danmu_stream = match danmu_stream_res {
             Ok(stream) => stream,
             Err(err) => {
                 self.log_error(&format!("Failed to create danmu stream: {err}"));
@@ -511,12 +534,13 @@ impl KuaishouRecorder {
         let selected_stream = stream_list.iter().find(|s| s.url == stream_url);
         let stream_cookie = selected_stream.and_then(|s| s.cookie.clone());
 
-        let mut cookies = if let Some(cookie) = stream_cookie {
+        let cookies = if let Some(cookie) = stream_cookie {
             cookie
         } else {
             self.account.cookies.clone()
         };
 
+        /*
         // If the current account cookie matches the dedicated Danmu cookie, 
         // we should NOT use it for stream recording (user wants separation).
         // Fallback to guest (empty cookie which triggers DID generation below).
@@ -530,6 +554,7 @@ impl KuaishouRecorder {
                 }
             }
         }
+        */
 
         if !cookies.is_empty() {
             headers.insert("Cookie", cookies.parse().unwrap());

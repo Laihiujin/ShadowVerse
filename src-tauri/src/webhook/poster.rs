@@ -3,12 +3,8 @@
 //! This module provides functionality for posting webhook events to external URLs.
 //! It includes retry logic, custom headers support, and proper error handling.
 //!
-//! # Examples
-//!
-//! ## Basic Usage
-//! ```rust,no_run
 //! use std::collections::HashMap;
-//! use bili_shadowreplay::webhook::poster::create_webhook_poster_with_headers;
+//! use ShadowVerse::webhook::poster::create_webhook_poster_with_headers;
 //!
 //! # async fn example() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 //! let mut headers = HashMap::new();
@@ -18,17 +14,9 @@
 //! // Use the poster...
 //! # Ok(())
 //! # }
-//! ```
 //!
 //! ## Custom Configuration
-//! ```rust,no_run
-//! use std::time::Duration;
-//! use bili_shadowreplay::webhook::poster::{WebhookPoster, WebhookConfig};
-//!
-//! # async fn example() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-//! let config = WebhookConfig {
-//!     url: "https://your-webhook-url.com/endpoint".to_string(),
-//!     timeout: Duration::from_secs(60),
+//! 
 //!     retry_attempts: 5,
 //!     retry_delay: Duration::from_secs(2),
 //!     headers: None,

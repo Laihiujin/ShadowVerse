@@ -2,7 +2,7 @@
 //   -H "Authorization: Bearer xxxxxx" \
 //   -F "format=opus" \
 //   -F "sentence_max_length=10" \
-//   -F "file=@/Users/xinreasuper/Desktop/shadowreplay-test/output2/[27628030][1762873698516][生日月和轴一前辈的夜夜夜谈][2025-11-11_23-35-01].opus"
+//   -F "file=@/Users/[2025-11-11_23-35-01].opus"
 use async_trait::async_trait;
 use reqwest::{
     multipart::{Form, Part},

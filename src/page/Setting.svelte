@@ -49,7 +49,7 @@
       font_size: 36,
       opacity: 0.8,
     },
-    use_guest_accounts: false,
+    use_guest_accounts: true,
     use_login_accounts: false,
     http_proxy: "127.0.0.1:7890",
     https_proxy: "",
@@ -224,7 +224,7 @@
 
     if (!setting_model.use_guest_accounts) {
       // 关闭访客模式时直接重启应用
-      await relaunch();
+      // await relaunch();
     }
   }
 

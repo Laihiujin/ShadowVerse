@@ -1178,7 +1178,7 @@ pub async fn get_stream_urls(
     };
     let fallback_hls = extract_hls_play_url(&html_str).map(|hls_url| StreamInfo {
         url: hls_url,
-        quality: "超清(HLS 自适应)".to_string(),  // HLS adaptive streaming, typically delivers 720p+
+        quality: "超清".to_string(),  // HLS adaptive streaming, typically delivers 720p+
         bitrate: None,
         cookie: Some(account.cookies.clone()),
     });
@@ -1381,7 +1381,7 @@ pub async fn get_stream_urls(
                     0,
                     StreamInfo {
                         url: guessed_hls,
-                        quality: "超清(HLS 自适应)".to_string(),  // HLS adaptive streaming, typically delivers 720p+
+                        quality: "超清".to_string(),  // HLS adaptive streaming, typically delivers 720p+
                         bitrate: None,
                         cookie: Some(account.cookies.clone()),
                     },

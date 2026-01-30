@@ -614,7 +614,7 @@
       {
         platform: "kuaishou",
         re: new RegExp(
-          String.raw`(?:bsr://)?https?://live\.kuaishou\.com/(?:u/)?([A-Za-z0-9_]+)/?(?:\?.*)?`,
+          String.raw`(?:bsr://)?https?://live\.kuaishou\.com/(?:u/)?([A-Za-z0-9_\-\.]+)/?(?:\?.*)?`,
           "i"
         ),
       },
@@ -687,8 +687,8 @@
   function buildBatchEntries(raw: string, defaultPlatform: string) {
     // 先将转义的 \n 替换为真实换行符，再按行分割
     const normalizedRaw = raw.replace(/\\n/g, "\n").replace(/\\r/g, "");
-    // 同时支持 换行、逗号、分号、空格 作为分隔符
-    const lines = normalizedRaw.split(/[\n\r,; \t]+/);
+    // 同时支持 换行、逗号、分号、空格、中文逗号、中文分号 作为分隔符
+    const lines = normalizedRaw.split(/[\n\r,; \t，；]+/);
     const entries: { roomId: string; platform: string }[] = [];
     const seen = new Set<string>();
     let invalidCount = 0;

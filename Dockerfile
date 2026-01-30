@@ -77,10 +77,10 @@ ENV PATH="/app:${PATH}"
 COPY --from=frontend-builder /app/dist ./dist
 
 # Copy built Rust binary
-COPY --from=rust-builder /app/src-tauri/target/release/bili-shadowreplay .
+COPY --from=rust-builder /app/src-tauri/target/release/ShadowVerse .
 
 # Expose port
 EXPOSE 3000
 
 # Run the application
-CMD ["sh", "-c", "nscd && ./bili-shadowreplay"]
+CMD ["sh", "-c", "nscd && ./ShadowVerse"]

@@ -7,7 +7,7 @@
   let releases = [];
 
   // get releases from github api
-  fetch("https://api.github.com/repos/Xinrea/bili-shadowreplay/releases")
+  fetch("https://api.github.com/repos/laihiujin/ShadowVerse/releases")
     .then((response) => response.json())
     .then((data) => {
       // Filter out prerelease versions

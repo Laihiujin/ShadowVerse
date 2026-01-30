@@ -466,13 +466,13 @@ function toggleDropdown(uid) {
   }
 function platform_avatar(platform: string) {
     const avatarMap = {
-      bilibili: "/imgs/bilibili_avatar.png",
-      douyin: "/imgs/douyin.svg",
-      huya: "/imgs/huya_avatar.png",
+      bilibili: "/imgs/bilibili.svg",
+      douyin: "/imgs/Tiktok_avatar.svg",
+      huya: "/imgs/huya.png",
       kuaishou: "/imgs/kuaishou.svg",
-      tiktok: "/imgs/Tiktok.svg"
+      tiktok: "/imgs/TikTok-Wordmark.svg"
     };
-    return avatarMap[platform] || "/imgs/bilibili_avatar.png";
+    return avatarMap[platform] || "/imgs/bili.svg";
   }
 
   // 关闭当前平台的登录窗口
@@ -523,9 +523,9 @@ function platform_avatar(platform: string) {
         </div>
       </div>
       <div class="text-[11px] text-center text-gray-500 dark:text-gray-400 leading-tight">
-        <p>默认启用访客模式；</p>
-        <p>如需切换专用/手动登录账号，请先在设置中关闭访客模式；</p>
-        <p>登录账号可解锁 4K/蓝光原画质，确保获取平台最高4K画质直播流；</p>
+        <p>启用访客模式，无需登录账号即可录制各平台直播；</p>
+        <p>如需使用手动登录账号，请先在设置中关闭访客模式；</p>
+        <p>登录账号可解锁 4K或蓝光原画质直播，但容易风控；</p>
         <p>「B站/快手」支持直接扫码登录，其余平台请点击手动 Cookie 后使用内置浏览器登录；</p>
       </div>
       <button
