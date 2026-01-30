@@ -38,7 +38,6 @@ export interface RecordItem {
 
 export interface AccountInfo {
   accounts: AccountItem[];
-  kuaishou_danmu_cookie?: string;
 }
 
 export interface TaskRow {

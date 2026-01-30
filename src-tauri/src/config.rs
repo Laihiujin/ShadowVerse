@@ -201,8 +201,6 @@ pub struct AccountsFile {
     pub guest_accounts: Vec<DefaultAccountConfig>,
     #[serde(default)]
     pub login_accounts: Vec<DefaultAccountConfig>,
-    #[serde(default)]
-    pub kuaishou_danmu_cookie: String,
 }
 
 fn default_danmu_ass_options() -> Danmu2AssOptions {
@@ -570,9 +568,6 @@ impl Config {
         if self.login_accounts != accounts.login_accounts {
             self.login_accounts = accounts.login_accounts.clone();
             changed = true;
-        }
-        if !accounts.kuaishou_danmu_cookie.is_empty() {
-             std::env::set_var("KUAISHOU_DANMU_COOKIE", &accounts.kuaishou_danmu_cookie);
         }
         changed
     }

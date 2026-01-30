@@ -30,87 +30,10 @@ use url::Url;
 
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn get_accounts(state: state_type!()) -> Result<super::AccountInfo, String> {
-    let (accounts_file, _) = crate::config::load_accounts_file_or_example()
-        .unwrap_or_else(|| (crate::config::AccountsFile::default(), crate::config::resolve_accounts_file_write_path()));
-
-    // Check legacy field first
-    let mut danmu_cookie = if !accounts_file.kuaishou_danmu_cookie.is_empty() {
-         Some(accounts_file.kuaishou_danmu_cookie.clone())
-    } else {
-         None
-    };
-
-    // If empty, check login_accounts with is_danmu flag
-    if danmu_cookie.is_none() {
-        for entry in &accounts_file.login_accounts {
-            if entry.platform == "kuaishou" {
-                if let Ok(extra) = serde_json::from_str::<serde_json::Value>(&entry.extra) {
-                    if extra.get("is_danmu").and_then(|v| v.as_bool()).unwrap_or(false) {
-                        danmu_cookie = Some(entry.cookies.clone());
-                        break;
-                    }
-                }
-            }
-        }
-    }
-
     let account_info = super::AccountInfo {
         accounts: state.db.get_accounts().await?,
-        kuaishou_danmu_cookie: danmu_cookie,
     };
     Ok(account_info)
-}
-
-#[cfg_attr(feature = "gui", tauri::command)]
-pub async fn set_kuaishou_danmu_cookie(state: state_type!(), cookie: String) -> Result<(), String> {
-    let (mut accounts, path) = crate::config::load_accounts_file_or_example()
-        .unwrap_or_else(|| (crate::config::AccountsFile::default(), crate::config::resolve_accounts_file_write_path()));
-    
-    // Clear legacy field to migrate to new system
-    accounts.kuaishou_danmu_cookie = String::new();
-    
-    let mut _found_in_login = false;
-    
-    // Update login_accounts flags
-    for entry in &mut accounts.login_accounts {
-        if entry.platform == "kuaishou" {
-            let mut extra_json: serde_json::Value = serde_json::from_str(&entry.extra).unwrap_or(json!({}));
-            
-            if !cookie.is_empty() && entry.cookies.trim() == cookie.trim() {
-                extra_json["is_danmu"] = serde_json::Value::Bool(true);
-                _found_in_login = true;
-                // Also update DB
-                if let Ok(mut acc) = state.db.get_account_by_platform_cookies("kuaishou", &entry.cookies).await {
-                     acc.extra = extra_json.to_string();
-                     let _ = state.db.add_account(&acc).await;
-                }
-            } else {
-                // Unset others
-                if let Some(obj) = extra_json.as_object_mut() {
-                    obj.remove("is_danmu");
-                }
-                // Also update DB
-                if let Ok(mut acc) = state.db.get_account_by_platform_cookies("kuaishou", &entry.cookies).await {
-                     acc.extra = extra_json.to_string();
-                     let _ = state.db.add_account(&acc).await;
-                }
-            }
-            entry.extra = extra_json.to_string();
-        }
-    }
-    
-    if !cookie.is_empty() {
-        std::env::set_var("KUAISHOU_DANMU_COOKIE", &cookie);
-        // If it wasn't in login_accounts, maybe it was a raw cookie set? 
-        // For now, if the user provides a cookie that isn't in login accounts, we can't flag it.
-        // But the UI only allows selecting from existing accounts, so this is fine.
-    } else {
-        std::env::remove_var("KUAISHOU_DANMU_COOKIE");
-    }
-
-    crate::config::write_accounts_file(&path, &accounts).map_err(|e| e.to_string())?;
-
-    Ok(())
 }
 
 fn get_item_from_cookies(name: &str, cookies: &str) -> Result<String, String> {
@@ -520,52 +443,7 @@ pub async fn ensure_login_accounts(db: &Database, config: &Config) {
     }
 
     // Ensure Kuaishou Danmu Cookie is loaded into env and visible in DB
-    if let Some((accounts_file, _)) = load_accounts_file_or_example() {
-        let danmu_cookie = accounts_file.kuaishou_danmu_cookie.trim();
-        if !danmu_cookie.is_empty() {
-            // 1. Set environment variable
-            std::env::set_var("KUAISHOU_DANMU_COOKIE", danmu_cookie);
-            log::info!("Loaded KUAISHOU_DANMU_COOKIE from accounts file");
-
-            // 2. Ensure it exists in the database so the user can verify/manage it
-            let accounts = match db.get_accounts().await {
-                Ok(acc) => acc,
-                Err(_) => Vec::new(),
-            };
-            
-            let exists = accounts.iter().any(|acc| acc.platform == "kuaishou" && acc.cookies.trim() == danmu_cookie);
-            if !exists {
-                log::info!("Adding invisible danmu account to database for visibility");
-                match build_account_row("kuaishou", danmu_cookie, None, Some("login")).await {
-                    Ok(account) => {
-                        if let Err(e) = db.add_account(&account).await {
-                            log::warn!("Failed to add danmu account to db: {}", e);
-                        }
-                    }
-                    Err(e) => {
-                         // Fallback: Manually create the row if build fails (e.g. API error)
-                         log::warn!("Failed to build danmu account row via API: {}, using manual fallback", e);
-                         let uid = fallback_uid_from_cookies(danmu_cookie);
-                         if !uid.is_empty() {
-                             let fallback_account = AccountRow {
-                                 platform: "kuaishou".to_string(),
-                                 uid,
-                                 name: "快手弹幕号".to_string(), // Explicit name so user knows
-                                 avatar: "".to_string(),
-                                 csrf: "".to_string(),
-                                 cookies: danmu_cookie.to_string(),
-                                 extra: "".to_string(),
-                                 created_at: Utc::now().to_rfc3339(),
-                             };
-                             if let Err(db_err) = db.add_account(&fallback_account).await {
-                                 log::warn!("Failed to add fallback danmu account: {}", db_err);
-                             }
-                         }
-                    }
-                }
-            }
-        }
-    }
+    /* Kuaishou Danmu Cookie logic removed */
 }
 
 pub async fn sync_tiktok_webview_cookies(db: &Database, config: &Config) {

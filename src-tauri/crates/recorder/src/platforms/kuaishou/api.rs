@@ -548,37 +548,84 @@ fn find_image_url(value: &Value, keys: &[&str]) -> Option<String> {
 }
 
 fn quality_rank(label: &str) -> i64 {
-    let lower = label.to_ascii_lowercase();
+    let lower = label.trim().to_ascii_lowercase();
+    
+    // Explicit resolutions
     if lower.contains("4k") || lower.contains("2160") || lower.contains("uhd") {
-        return 4000;
+        return 20000;
     }
     if lower.contains("2k") || lower.contains("1440") || lower.contains("qhd") {
+        return 15000;
+    }
+
+    // Kuaishou specific high quality
+    if lower.contains("质臻") {
+        return 12000; // Premium 1080p+ / High bitrate
+    }
+    
+    // Source / Original
+    if lower.contains("original") || lower.contains("source") || lower.contains("原画") {
+        return 30000; // Highest priority
+    }
+
+    // Blu-ray variants
+    if lower.contains("蓝光") || lower.contains("blue") {
+        if lower.contains("8m") {
+            return 8500;
+        }
+        if lower.contains("4m") {
+            return 4500;
+        }
+        return 4200; // Default Blu-ray (slightly above standard 1080p)
+    }
+
+    if lower.contains("1080") || lower.contains("fhd") {
+        return 4000;
+    }
+
+    if lower.contains("超清") {
+        return 2500; // Super Clear (usually > 720p)
+    }
+
+    if lower.contains("720") || lower.contains("hd") {
         return 2000;
     }
-    if lower.contains("1080") || lower.contains("fhd") {
-        return 1080;
+
+    if lower.contains("高清") {
+        return 1500; // High Clear
     }
-    if lower.contains("720") || lower.contains("hd") {
-        return 720;
+
+    if lower.contains("540") {
+        return 1200;
     }
-    if lower.contains("480") || lower.contains("sd") {
-        return 480;
+
+    if lower.contains("480") || lower.contains("sd") || lower.contains("标清") {
+        return 1000;
     }
-    if lower.contains("360") || lower.contains("ld") {
-        return 360;
+
+    if lower.contains("360") || lower.contains("ld") || lower.contains("流畅") {
+        return 600;
     }
-    if lower.contains("original") || lower.contains("source") {
-        return 3000;
-    }
+
+    // Extract digits as fallback (e.g., just "1080", "720")
+    // Only if the string is mostly digits to avoid matching "mp4" or similar blindly if we were less careful
+    // But simplistic extraction is explicitly requested in previous versions, so we keep a robust version.
     let mut digits = String::new();
     for ch in lower.chars() {
         if ch.is_ascii_digit() {
             digits.push(ch);
         } else if !digits.is_empty() {
+             // Stop at first non-digit after finding digits to handle things like "720p"
             break;
         }
     }
-    digits.parse::<i64>().unwrap_or(0)
+    if let Ok(val) = digits.parse::<i64>() {
+        if val > 100 { // Avoid parsing small numbers like "5" as quality
+             return val;
+        }
+    }
+    
+    0
 }
 
 async fn fetch_mobile_live_value(
@@ -1647,12 +1694,7 @@ pub fn get_kuaishou_cookie_item(cookies: &str, key: &str) -> Option<String> {
     None
 }
 
-pub fn extract_kuaishou_id(cookies: &str) -> Option<String> {
-    get_kuaishou_cookie_item(cookies, "userId")
-        .or_else(|| get_kuaishou_cookie_item(cookies, "userIdStr"))
-        .or_else(|| get_kuaishou_cookie_item(cookies, "user_id"))
-        .or_else(|| get_kuaishou_cookie_item(cookies, "uid"))
-}
+
 
 fn get_string_field(map: &Map<String, Value>, keys: &[&str]) -> Option<String> {
     for key in keys {

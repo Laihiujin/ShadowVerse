@@ -117,26 +117,7 @@ impl Database {
         Ok(best.clone())
     }
 
-    pub async fn get_account_by_platform_cookies(
-        &self,
-        platform: &str,
-        cookies: &str,
-    ) -> Result<AccountRow, DatabaseError> {
-        let lock = self.db.read().await.clone().unwrap();
-        let normalized = cookies.trim();
-        let accounts = sqlx::query_as::<_, AccountRow>("SELECT * FROM accounts WHERE platform = $1")
-            .bind(platform)
-            .fetch_all(&lock)
-            .await?;
-            
-        for account in accounts {
-            if account.cookies.trim() == normalized {
-                return Ok(account);
-            }
-        }
-        
-        Err(DatabaseError::NotFound)
-    }
+
 }
 
 fn account_profile_score(account: &AccountRow) -> usize {

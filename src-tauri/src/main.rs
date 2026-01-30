@@ -776,7 +776,7 @@ fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
         crate::handlers::account::close_webview_window,
         crate::handlers::account::close_webview_window,
         crate::handlers::account::close_all_login_windows,
-        crate::handlers::account::set_kuaishou_danmu_cookie,
+
         crate::handlers::config::get_config,
         crate::handlers::config::get_static_port,
         crate::handlers::config::set_cache_path,

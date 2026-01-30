@@ -600,25 +600,9 @@ function platform_avatar(platform: string) {
                     in:scale={{ duration: 100, start: 0.95 }}
                     out:scale={{ duration: 100, start: 0.95 }}
                   >
-                    {#if account.platform === 'kuaishou'}
-                      <button
-                        class="w-full px-4 py-2 text-left text-sm text-gray-700 dark:text-gray-200 hover:bg-[#e5e5e5] dark:hover:bg-[#3a3a3c] flex items-center justify-between rounded-t-lg"
-                        on:click={async () => {
-                          const is_active = account_info.kuaishou_danmu_cookie === account.cookies;
-                          await invoke("set_kuaishou_danmu_cookie", { cookie: is_active ? "" : account.cookies });
-                          await update_accounts();
-                          activeDropdown = null;
-                        }}
-                      >
-                        <span>弹幕专用账号</span>
-                        {#if (account_info.kuaishou_danmu_cookie || "").trim() === (account.cookies || "").trim()}
-                          <Check class="w-4 h-4 text-green-500" />
-                        {/if}
-                      </button>
-                      <div class="h-px bg-gray-200 dark:bg-gray-700 mx-2 my-1"></div>
-                    {/if}
+
                     <button
-                      class="w-full px-4 py-2 text-left text-sm text-red-600 hover:bg-[#e5e5e5] dark:hover:bg-[#3a3a3c] {account.platform === 'kuaishou' ? 'rounded-b-lg' : 'rounded-t-lg rounded-b-lg'}"
+                      class="w-full px-4 py-2 text-left text-sm text-red-600 hover:bg-[#e5e5e5] dark:hover:bg-[#3a3a3c] rounded-lg"
                       on:click={async () => {
                         await invoke("remove_account", {
                           platform: account.platform,
