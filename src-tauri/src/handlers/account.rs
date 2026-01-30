@@ -2091,7 +2091,40 @@ async fn get_huya_webview_guest_cookies(state: &crate::state::State) -> Result<S
         )
         .title("Huya Guest")
         .inner_size(900.0, 700.0)
-        .visible(false);
+        .visible(false)
+        .skip_taskbar(true)
+        .initialization_script(r#"
+            (function() {
+                // Mute audio context if possible
+                if (window.AudioContext || window.webkitAudioContext) {
+                    try {
+                        const AudioContext = window.AudioContext || window.webkitAudioContext;
+                        const ctx = new AudioContext();
+                        ctx.suspend();
+                    } catch (e) {}
+                }
+                
+                // Mute all media elements periodically
+                const muteAll = () => {
+                    document.querySelectorAll('video, audio').forEach(el => {
+                        el.muted = true;
+                        el.pause();
+                        el.volume = 0;
+                    });
+                };
+                
+                setInterval(muteAll, 500);
+                document.addEventListener('DOMContentLoaded', muteAll);
+                window.addEventListener('load', muteAll);
+                
+                // Override media play
+                const originalPlay = HTMLMediaElement.prototype.play;
+                HTMLMediaElement.prototype.play = function() {
+                    this.muted = true;
+                    return Promise.resolve(); // Fake success or originalPlay.apply(this, arguments);
+                };
+            })();
+        "#);
 
         let fallback_ua = std::env::var("HUYA_WEBVIEW_USER_AGENT")
             .or_else(|_| std::env::var("HUYA_USER_AGENT"))
@@ -2101,16 +2134,17 @@ async fn get_huya_webview_guest_cookies(state: &crate::state::State) -> Result<S
             builder = builder.user_agent(ua);
         }
 
-        builder
-            .build()
-            .map_err(|e| format!("Failed to open guest window: {e}"))?;
+        if let Err(e) = builder.build() {
+            return Err(format!("Failed to open guest window: {e}"));
+        }
         created = true;
     }
 
-    let window = state
-        .app_handle
-        .get_webview_window(label)
-        .ok_or_else(|| "未找到内置浏览器窗口，请先打开虎牙窗口".to_string())?;
+    let window = state.app_handle.get_webview_window(label);
+    if window.is_none() {
+         return Err("未找到内置浏览器窗口".to_string());
+    }
+    let window = window.unwrap();
     if created {
         tokio::time::sleep(Duration::from_millis(1000)).await;
     }
@@ -2189,7 +2223,40 @@ async fn get_bilibili_webview_guest_cookies(state: &crate::state::State) -> Resu
         )
         .title("Bilibili Guest")
         .inner_size(900.0, 700.0)
-        .visible(false);
+        .visible(false)
+        .skip_taskbar(true)
+        .initialization_script(r#"
+            (function() {
+                // Mute audio context if possible
+                if (window.AudioContext || window.webkitAudioContext) {
+                    try {
+                        const AudioContext = window.AudioContext || window.webkitAudioContext;
+                        const ctx = new AudioContext();
+                        ctx.suspend();
+                    } catch (e) {}
+                }
+                
+                // Mute all media elements periodically
+                const muteAll = () => {
+                    document.querySelectorAll('video, audio').forEach(el => {
+                        el.muted = true;
+                        el.pause();
+                        el.volume = 0;
+                    });
+                };
+                
+                setInterval(muteAll, 500);
+                document.addEventListener('DOMContentLoaded', muteAll);
+                window.addEventListener('load', muteAll);
+                
+                // Override media play
+                const originalPlay = HTMLMediaElement.prototype.play;
+                HTMLMediaElement.prototype.play = function() {
+                    this.muted = true;
+                    return Promise.resolve(); // Fake success or originalPlay.apply(this, arguments);
+                };
+            })();
+        "#);
 
         let fallback_ua = std::env::var("BILIBILI_WEBVIEW_USER_AGENT")
             .or_else(|_| std::env::var("BILIBILI_USER_AGENT"))
@@ -2199,16 +2266,17 @@ async fn get_bilibili_webview_guest_cookies(state: &crate::state::State) -> Resu
             builder = builder.user_agent(ua);
         }
 
-        builder
-            .build()
-            .map_err(|e| format!("Failed to open guest window: {e}"))?;
+        if let Err(e) = builder.build() {
+            return Err(format!("Failed to open guest window: {e}"));
+        }
         created = true;
     }
 
-    let window = state
-        .app_handle
-        .get_webview_window(label)
-        .ok_or_else(|| "未找到内置浏览器窗口，请先打开 BiliBili 页面".to_string())?;
+    let window = state.app_handle.get_webview_window(label);
+    if window.is_none() {
+         return Err("未找到内置浏览器窗口".to_string());
+    }
+    let window = window.unwrap();
     if created {
         tokio::time::sleep(Duration::from_millis(1000)).await;
     }
