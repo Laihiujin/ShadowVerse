@@ -44,7 +44,7 @@ use tokio::sync::broadcast;
 use tokio::sync::RwLock;
 
 #[cfg(not(feature = "headless"))]
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 
 #[derive(serde::Deserialize, serde::Serialize, Clone, Debug)]
 pub struct RecorderList {
@@ -443,6 +443,26 @@ impl RecorderManager {
                         success,
                         message,
                     });
+                }
+                RecorderEvent::GuestCookieRefreshRequested { platform, reason } => {
+                    log::warn!(
+                        "[Account] Guest cookie refresh requested by {}: {}",
+                        platform.as_str(),
+                        reason
+                    );
+                    #[cfg(feature = "gui")]
+                    {
+                        let state = self.app_handle.state::<crate::state::State>().clone();
+                        let refresh_reason =
+                            format!("{}: {}", platform.as_str(), reason);
+                        tokio::spawn(async move {
+                            let _ = crate::handlers::account::refresh_guest_accounts_on_demand(
+                                state,
+                                refresh_reason,
+                            )
+                            .await;
+                        });
+                    }
                 }
                 RecorderEvent::DanmuReceived { room, ts, content } => {
                     self.emitter

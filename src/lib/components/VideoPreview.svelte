@@ -120,6 +120,7 @@
   // 投稿相关变量
   let current_post_event_id = null;
   let config: Config = null;
+  let bilibiliPostEnabled = false;
   let accounts: any[] = [];
   let uid_selected = 0;
   let show_cover_editor = false;
@@ -294,16 +295,22 @@
     try {
       // 获取配置
       config = (await invoke("get_config")) as Config;
+      bilibiliPostEnabled = config?.bilibili_post_enabled ?? false;
 
       // 获取账号列表
-      const account_info: AccountInfo = await invoke("get_accounts");
-      accounts = account_info.accounts
-        .filter((a) => a.platform === "bilibili")
-        .map((a) => ({
-          value: a.uid,
-          name: a.name,
-          platform: a.platform,
-        }));
+      if (bilibiliPostEnabled) {
+        const account_info: AccountInfo = await invoke("get_accounts");
+        accounts = account_info.accounts
+          .filter((a) => a.platform === "bilibili")
+          .map((a) => ({
+            value: a.uid,
+            name: a.name,
+            platform: a.platform,
+          }));
+      } else {
+        accounts = [];
+        uid_selected = 0;
+      }
     } catch (error) {
       console.error("Failed to initialize upload data:", error);
     }
@@ -596,6 +603,10 @@
   // 监听样式编辑器关闭，重新加载样式
   $: if (!showStyleEditor) {
     loadSubtitleStyle();
+  }
+
+  $: if (!bilibiliPostEnabled && activeTab === "post") {
+    activeTab = "subtitle";
   }
 
   async function handleVideoLoaded() {
@@ -1921,8 +1932,23 @@
               ></div>
             {/if}
           </button>
-
-          
+          {#if bilibiliPostEnabled}
+            <button
+              class="px-6 py-3 text-sm font-medium transition-all duration-200 relative"
+              class:text-white={activeTab === "post"}
+              class:text-gray-400={activeTab !== "post"}
+              class:bg-[#2c2c2e]={activeTab === "post"}
+              class:bg-transparent={activeTab !== "post"}
+              on:click={() => (activeTab = "post")}
+            >
+              B站投稿
+              {#if activeTab === "post"}
+                <div
+                  class="absolute bottom-0 left-0 right-0 h-0.5 bg-[#0A84FF]"
+                ></div>
+              {/if}
+            </button>
+          {/if}
         </div>
 
         <!-- Tab 内容 -->
@@ -2061,7 +2087,7 @@
               {/each}
             </div>
           </div>
-        {:else if false}
+        {:else if activeTab === "post" && bilibiliPostEnabled}
           <!-- 投稿 Tab 内容 -->
           <div class="p-4 space-y-6">
             <!-- 封面预览 -->

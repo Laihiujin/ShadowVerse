@@ -81,3 +81,27 @@ pub enum RecorderError {
     #[error("Not live")]
     NotLive,
 }
+
+pub fn is_guest_cookie_block_error(err: &RecorderError) -> bool {
+    match err {
+        RecorderError::InvalidCookies => true,
+        RecorderError::SecurityControlError => true,
+        RecorderError::InvalidResponseStatus { status } => {
+            matches!(status.as_u16(), 401 | 403 | 429)
+        }
+        RecorderError::ApiError { error } | RecorderError::UploadError { err: error } => {
+            let lower = error.to_ascii_lowercase();
+            lower.contains("cookie")
+                || lower.contains("login")
+                || lower.contains("invalid")
+                || lower.contains("expired")
+                || lower.contains("token")
+                || lower.contains("blocked")
+                || lower.contains("forbidden")
+                || lower.contains("rate")
+                || lower.contains("too many")
+                || lower.contains("captcha")
+        }
+        _ => false,
+    }
+}

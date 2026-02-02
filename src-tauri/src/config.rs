@@ -24,6 +24,8 @@ pub struct Config {
     pub live_end_notify: bool,
     pub clip_notify: bool,
     pub post_notify: bool,
+    #[serde(default = "default_bilibili_post_enabled")]
+    pub bilibili_post_enabled: bool,
     #[serde(default = "default_auto_subtitle")]
     pub auto_subtitle: bool,
     #[serde(default = "default_subtitle_generator_type")]
@@ -208,6 +210,10 @@ fn default_danmu_ass_options() -> Danmu2AssOptions {
 }
 
 fn default_auto_subtitle() -> bool {
+    false
+}
+
+fn default_bilibili_post_enabled() -> bool {
     false
 }
 
@@ -774,6 +780,7 @@ impl Config {
             live_end_notify: true,
             clip_notify: true,
             post_notify: true,
+            bilibili_post_enabled: default_bilibili_post_enabled(),
             auto_subtitle: false,
             subtitle_generator_type: default_subtitle_generator_type(),
             whisper_model: default_whisper_model(),

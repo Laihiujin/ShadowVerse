@@ -36,4 +36,8 @@ pub enum RecorderEvent {
         ts: i64,
         content: String,
     },
+    GuestCookieRefreshRequested {
+        platform: PlatformType,
+        reason: String,
+    },
 }

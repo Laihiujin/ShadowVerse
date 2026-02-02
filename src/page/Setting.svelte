@@ -28,6 +28,7 @@
     live_end_notify: true,
     clip_notify: true,
     post_notify: true,
+    bilibili_post_enabled: false,
     auto_cleanup: true,
     auto_subtitle: false,
     subtitle_generator_type: "whisper",
@@ -228,6 +229,12 @@
     }
   }
 
+  async function update_bilibili_post_enabled() {
+    await invoke("update_bilibili_post_enabled", {
+      bilibiliPostEnabled: setting_model.bilibili_post_enabled,
+    });
+  }
+
   async function update_network_config() {
     const httpProxyValue = httpProxy.trim();
     const httpsProxyValue = httpsProxy.trim();
@@ -378,7 +385,7 @@
             </div>
           </div>
         </div>
-                                                                <div class="space-y-4">
+        <div class="space-y-4">
           <h2
             class="text-lg font-medium text-gray-900 dark:text-white flex items-center space-x-2"
           >
@@ -423,6 +430,41 @@
                     class="peer opacity-0 w-0 h-0"
                     bind:checked={setting_model.use_login_accounts}
                     on:change={update_use_login_accounts}
+                  />
+                  <span
+                    class="switch-slider absolute cursor-pointer top-0 left-0 right-0 bottom-0 bg-gray-300 dark:bg-gray-600 rounded-full transition-all duration-300 before:absolute before:h-4 before:w-4 before:left-1 before:bottom-1 before:bg-white before:rounded-full before:transition-all before:duration-300 peer-checked:bg-blue-500 peer-checked:before:translate-x-5"
+                  ></span>
+                </label>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="space-y-4">
+          <h2
+            class="text-lg font-medium text-gray-900 dark:text-white flex items-center space-x-2"
+          >
+            <DiscAlbum class="w-5 h-5 dark:icon-white" />
+            <span>投稿设置</span>
+          </h2>
+          <div
+            class="bg-white dark:bg-[#3c3c3e] rounded-xl border border-gray-200 dark:border-gray-700 divide-y divide-gray-200 dark:divide-gray-700"
+          >
+            <div class="p-4">
+              <div class="flex items-center justify-between">
+                <div>
+                  <h3 class="text-sm font-medium text-gray-900 dark:text-white">
+                    启用 B站投稿
+                  </h3>
+                  <p class="text-sm text-gray-500 dark:text-gray-400">
+                    关闭后隐藏 B站投稿功能
+                  </p>
+                </div>
+                <label class="relative inline-block w-11 h-6">
+                  <input
+                    type="checkbox"
+                    class="peer opacity-0 w-0 h-0"
+                    bind:checked={setting_model.bilibili_post_enabled}
+                    on:change={update_bilibili_post_enabled}
                   />
                   <span
                     class="switch-slider absolute cursor-pointer top-0 left-0 right-0 bottom-0 bg-gray-300 dark:bg-gray-600 rounded-full transition-all duration-300 before:absolute before:h-4 before:w-4 before:left-1 before:bottom-1 before:bg-white before:rounded-full before:transition-all before:duration-300 peer-checked:bg-blue-500 peer-checked:before:translate-x-5"

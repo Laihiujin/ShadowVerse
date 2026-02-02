@@ -7,7 +7,7 @@ use crate::core::flv_recorder::FlvRecorder;
 use crate::core::hls_recorder::{construct_stream_from_variant, HlsRecorder};
 use crate::core::{Codec, Format};
 use crate::danmu::DanmuStorage;
-use crate::errors::RecorderError;
+use crate::errors::{is_guest_cookie_block_error, RecorderError};
 use crate::events::RecorderEvent;
 use crate::platforms::PlatformType;
 use crate::traits::RecorderTrait;
@@ -349,6 +349,14 @@ impl TikTokRecorder {
                 }
             }
             Err(e) => {
+                if self.account.is_guest() && is_guest_cookie_block_error(&e) {
+                    let _ = self.event_channel.send(
+                        RecorderEvent::GuestCookieRefreshRequested {
+                            platform: PlatformType::TikTok,
+                            reason: format!("tiktok guest cookie blocked: {}", e),
+                        },
+                    );
+                }
                 self.log_error(&format!("Update room status failed: {}", e));
                 pre_live_status
             }

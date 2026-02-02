@@ -138,6 +138,7 @@ export interface Config {
   live_end_notify: boolean;
   clip_notify: boolean;
   post_notify: boolean;
+  bilibili_post_enabled: boolean;
   auto_cleanup: boolean;
   auto_subtitle: boolean;
   subtitle_generator_type: string;

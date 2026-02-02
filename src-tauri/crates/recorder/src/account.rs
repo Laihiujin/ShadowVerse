@@ -7,3 +7,9 @@ pub struct Account {
     pub csrf: String,
     pub cookies: String,
 }
+
+impl Account {
+    pub fn is_guest(&self) -> bool {
+        self.id.starts_with("guest:") || self.id.starts_with("cookie_")
+    }
+}

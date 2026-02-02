@@ -3,7 +3,7 @@ pub mod profile;
 pub mod response;
 use crate::account::Account;
 use crate::core::hls_recorder::HlsRecorder;
-use crate::errors::RecorderError;
+use crate::errors::{is_guest_cookie_block_error, RecorderError};
 use crate::events::RecorderEvent;
 use crate::platforms::bilibili::api::{Protocol, Qn};
 use crate::platforms::PlatformType;
@@ -242,6 +242,14 @@ impl BiliRecorder {
                 }
             }
             Err(e) => {
+                if self.account.is_guest() && is_guest_cookie_block_error(&e) {
+                    let _ = self.event_channel.send(
+                        RecorderEvent::GuestCookieRefreshRequested {
+                            platform: PlatformType::BiliBili,
+                            reason: format!("bilibili guest cookie blocked: {}", e),
+                        },
+                    );
+                }
                 log::error!("[{}]Update room status failed: {}", &self.room_id, e);
                 // may encounter internet issues, not sure whether the stream is closed or started, just remain
                 pre_live_status

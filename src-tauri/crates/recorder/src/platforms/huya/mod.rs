@@ -5,7 +5,7 @@ pub mod url_builder;
 use crate::account::Account;
 use crate::core::hls_recorder::{construct_stream_from_variant, HlsRecorder};
 use crate::core::{Codec, Format};
-use crate::errors::RecorderError;
+use crate::errors::{is_guest_cookie_block_error, RecorderError};
 use crate::events::RecorderEvent;
 use crate::platforms::huya::extractor::StreamInfo;
 use crate::traits::RecorderTrait;
@@ -123,6 +123,14 @@ impl HuyaRecorder {
                 true
             }
             Err(e) => {
+                if self.account.is_guest() && is_guest_cookie_block_error(&e) {
+                    let _ = self.event_channel.send(
+                        RecorderEvent::GuestCookieRefreshRequested {
+                            platform: PlatformType::Huya,
+                            reason: format!("huya guest cookie blocked: {}", e),
+                        },
+                    );
+                }
                 log::warn!("[{}]Update room status failed: {}", &self.room_id, e);
                 pre_live_status
             }

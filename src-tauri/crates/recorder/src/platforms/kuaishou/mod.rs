@@ -7,7 +7,7 @@ use crate::core::hls_recorder::{construct_stream_from_variant, HlsRecorder};
 use crate::core::rtmp_recorder::RtmpRecorder;
 use crate::core::{Codec, Format};
 use crate::danmu::DanmuStorage;
-use crate::errors::RecorderError;
+use crate::errors::{is_guest_cookie_block_error, RecorderError};
 use crate::events::RecorderEvent;
 use crate::platforms::PlatformType;
 use crate::traits::RecorderTrait;
@@ -341,6 +341,14 @@ impl KuaishouRecorder {
                 }
             }
             Err(e) => {
+                if self.account.is_guest() && is_guest_cookie_block_error(&e) {
+                    let _ = self.event_channel.send(
+                        RecorderEvent::GuestCookieRefreshRequested {
+                            platform: PlatformType::Kuaishou,
+                            reason: format!("kuaishou guest cookie blocked: {}", e),
+                        },
+                    );
+                }
                 if api::is_rate_limited_error(&e) {
                     self.log_info("Rate limited, backing off");
                     self.extra

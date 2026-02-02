@@ -5,7 +5,7 @@ pub mod stream_info;
 use crate::account::Account;
 use crate::core::hls_recorder::{construct_stream_from_variant, HlsRecorder};
 use crate::core::{Codec, Format};
-use crate::errors::RecorderError;
+use crate::errors::{is_guest_cookie_block_error, RecorderError};
 use crate::events::RecorderEvent;
 use crate::platforms::douyin::stream_info::DouyinStream;
 use crate::traits::RecorderTrait;
@@ -205,6 +205,14 @@ impl DouyinRecorder {
                 true
             }
             Err(e) => {
+                if self.account.is_guest() && is_guest_cookie_block_error(&e) {
+                    let _ = self.event_channel.send(
+                        RecorderEvent::GuestCookieRefreshRequested {
+                            platform: PlatformType::Douyin,
+                            reason: format!("douyin guest cookie blocked: {}", e),
+                        },
+                    );
+                }
                 log::warn!("[{}]Update room status failed: {}", &self.room_id, e);
                 pre_live_status
             }

@@ -194,6 +194,17 @@ pub async fn update_subtitle_setting(state: state_type!(), auto_subtitle: bool) 
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]
+pub async fn update_bilibili_post_enabled(
+    state: state_type!(),
+    bilibili_post_enabled: bool,
+) -> Result<(), ()> {
+    let mut config = state.config.write().await;
+    config.bilibili_post_enabled = bilibili_post_enabled;
+    config.save();
+    Ok(())
+}
+
+#[cfg_attr(feature = "gui", tauri::command)]
 pub async fn update_clip_name_format(
     state: state_type!(),
     clip_name_format: String,
