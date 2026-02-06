@@ -19,6 +19,7 @@ use recorder::danmu::DanmuEntry;
 use recorder::platforms::bilibili;
 use recorder::platforms::douyin;
 use recorder::platforms::PlatformType;
+use recorder::platforms::{huya, kuaishou, tiktok};
 use recorder::RecorderInfo;
 #[cfg(feature = "gui")]
 use serde::Deserialize;
@@ -727,6 +728,29 @@ pub async fn send_danmaku(
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]
+pub async fn delete_zero_size_archives(state: state_type!()) -> Result<usize, String> {
+    match state.recorder_manager.delete_zero_size_archives().await {
+        Ok(count) => Ok(count),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn delete_small_size_archives(
+    state: state_type!(),
+    max_size: i64,
+) -> Result<usize, String> {
+    match state
+        .recorder_manager
+        .delete_small_size_archives(max_size)
+        .await
+    {
+        Ok(count) => Ok(count),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+#[cfg_attr(feature = "gui", tauri::command)]
 pub async fn get_total_length(state: state_type!()) -> Result<f64, String> {
     match state.db.get_total_length().await {
         Ok(total_length) => Ok(total_length),
@@ -753,6 +777,166 @@ pub async fn get_recent_record(
         Ok(records) => Ok(records),
         Err(e) => Err(format!("Failed to get recent record: {e}")),
     }
+}
+
+#[derive(serde::Serialize)]
+pub struct RefreshRoomInfoResult {
+    pub rooms_checked: usize,
+    pub records_updated: usize,
+    pub rooms_failed: usize,
+}
+
+fn build_account_from_config(
+    config: &crate::config::Config,
+    platform: &str,
+) -> Account {
+    let mut cookies = String::new();
+    if config.use_login_accounts {
+        if let Some(entry) = config
+            .login_accounts
+            .iter()
+            .find(|entry| entry.platform == platform && !entry.cookies.trim().is_empty())
+        {
+            cookies = entry.cookies.clone();
+        }
+    }
+    if cookies.is_empty() && config.use_guest_accounts {
+        if let Some(entry) = config
+            .guest_accounts
+            .iter()
+            .find(|entry| entry.platform == platform && !entry.cookies.trim().is_empty())
+        {
+            cookies = entry.cookies.clone();
+        }
+    }
+    Account {
+        platform: platform.to_string(),
+        cookies,
+        ..Account::default()
+    }
+}
+
+fn is_unknown_title(title: &str) -> bool {
+    let trimmed = title.trim();
+    trimmed.is_empty() || trimmed.starts_with("UnknownLive")
+}
+
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn refresh_archive_room_info(state: state_type!()) -> Result<RefreshRoomInfoResult, String> {
+    let config_snapshot = state.config.read().await.clone();
+    let client = reqwest::Client::new();
+    let rooms = state
+        .db
+        .get_distinct_record_rooms()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let mut rooms_checked = 0usize;
+    let mut rooms_failed = 0usize;
+    let mut records_updated = 0usize;
+
+    for (platform, room_id) in rooms {
+        let platform_lower = platform.to_lowercase();
+        let account = build_account_from_config(&config_snapshot, &platform_lower);
+
+        let room_info = match platform_lower.as_str() {
+            "bilibili" => {
+                bilibili::api::get_room_info(&client, &account, &room_id)
+                    .await
+                    .ok()
+                    .map(|info| recorder::RoomInfo {
+                        platform: "bilibili".to_string(),
+                        room_id: room_id.clone(),
+                        room_title: info.room_title,
+                        room_cover: info.room_cover_url,
+                        status: info.live_status == 1,
+                    })
+            }
+            "huya" => {
+                huya::api::get_room_info(&client, &account, &room_id)
+                    .await
+                    .ok()
+                    .map(|(_user, room, _stream)| room)
+            }
+            "kuaishou" => {
+                let url = if room_id.starts_with("http") {
+                    room_id.clone()
+                } else {
+                    format!("https://live.kuaishou.com/u/{room_id}")
+                };
+                kuaishou::api::get_room_info(&client, &account, &url)
+                    .await
+                    .ok()
+                    .map(|info| recorder::RoomInfo {
+                        platform: "kuaishou".to_string(),
+                        room_id: room_id.clone(),
+                        room_title: info.room_title,
+                        room_cover: info.room_cover_url,
+                        status: info.live_status,
+                    })
+            }
+            "tiktok" => {
+                let url = if room_id.starts_with("http") {
+                    room_id.clone()
+                } else if room_id.starts_with("@") {
+                    format!("https://www.tiktok.com/{room_id}")
+                } else {
+                    format!("https://www.tiktok.com/@{room_id}")
+                };
+                tiktok::api::get_room_info(&client, &account, &url)
+                    .await
+                    .ok()
+                    .map(|info| recorder::RoomInfo {
+                        platform: "tiktok".to_string(),
+                        room_id: room_id.clone(),
+                        room_title: info.room_title,
+                        room_cover: info.room_cover_url,
+                        status: info.live_status,
+                    })
+            }
+            _ => None,
+        };
+
+        rooms_checked += 1;
+        let Some(room_info) = room_info else {
+            rooms_failed += 1;
+            continue;
+        };
+
+        let records = state
+            .db
+            .get_records_by_room_platform(&platform, &room_id)
+            .await
+            .map_err(|e| e.to_string())?;
+        for record in records {
+            let mut updated = false;
+            if is_unknown_title(&record.title) && !room_info.room_title.trim().is_empty() {
+                state
+                    .db
+                    .update_record_title(&record.live_id, &room_info.room_title)
+                    .await
+                    .ok();
+                updated = true;
+            }
+            if record.cover.is_none() && !room_info.room_cover.trim().is_empty() {
+                state
+                    .db
+                    .update_record_cover(&record.live_id, Some(room_info.room_cover.clone()))
+                    .await
+                    .ok();
+                updated = true;
+            }
+            if updated {
+                records_updated += 1;
+            }
+        }
+    }
+
+    Ok(RefreshRoomInfoResult {
+        rooms_checked,
+        records_updated,
+        rooms_failed,
+    })
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]

@@ -459,12 +459,37 @@ impl RecorderManager {
                             .clone();
                         let refresh_reason =
                             format!("{}: {}", platform.as_str(), reason);
+                        let target_platform = platform;
                         tokio::spawn(async move {
-                            let _ = crate::handlers::account::refresh_guest_accounts_on_demand(
-                                state,
+                            match crate::handlers::account::refresh_guest_accounts_on_demand_owned(
+                                state.clone(),
                                 refresh_reason,
                             )
-                            .await;
+                            .await
+                            {
+                                Ok(changed_platforms) => {
+                                    if changed_platforms
+                                        .iter()
+                                        .any(|platform| *platform == target_platform)
+                                    {
+                                        if let Err(err) = state
+                                            .recorder_manager
+                                            .restart_recorders_for_platforms(&[target_platform])
+                                            .await
+                                        {
+                                            log::warn!(
+                                                "Failed to restart recorders after guest refresh: {err}"
+                                            );
+                                        }
+                                    }
+                                }
+                                Err(err) => {
+                                    log::warn!(
+                                        "[Account] Guest cookie refresh failed: {}",
+                                        err
+                                    );
+                                }
+                            }
                         });
                     }
                 }
@@ -707,6 +732,10 @@ impl RecorderManager {
             });
         }
 
+        if matches!(platform, PlatformType::Kuaishou) {
+            self.config.read().await.apply_kuaishou_ws_env();
+        }
+
         let cache_dir = self.config.read().await.cache.clone();
         let cache_dir = PathBuf::from(&cache_dir);
 
@@ -864,8 +893,7 @@ impl RecorderManager {
 
     /// Remove a recorder from the manager
     ///
-    /// This will stop the recorder and remove it from the manager
-    /// and remove the related cache folder
+    /// This will stop the recorder and remove it from the manager.
     pub async fn remove_recorder(
         &self,
         platform: PlatformType,
@@ -885,15 +913,6 @@ impl RecorderManager {
                 recorder_id = found_id;
             } else {
                 let recorder = self.db.remove_recorder(room_id).await?;
-                let cache_folder = format!(
-                    "{}/{}/{}",
-                    self.config.read().await.cache,
-                    recorder.platform,
-                    room_id
-                );
-                log::debug!("Remove cache folder: {cache_folder}");
-                let _ = tokio::fs::remove_dir_all(cache_folder).await;
-                log::info!("Recorder {room_id} cache folder removed");
                 return Ok(recorder);
             }
         }
@@ -918,17 +937,6 @@ impl RecorderManager {
         // remove from to_remove
         log::debug!("Remove from to_remove: {recorder_id}");
         self.to_remove.write().await.remove(&recorder_id);
-
-        // remove related cache folder
-        let cache_folder = format!(
-            "{}/{}/{}",
-            self.config.read().await.cache,
-            recorder.platform,
-            room_id
-        );
-        log::debug!("Remove cache folder: {cache_folder}");
-        let _ = tokio::fs::remove_dir_all(cache_folder).await;
-        log::info!("Recorder {room_id} cache folder removed");
 
         Ok(recorder)
     }
@@ -962,8 +970,8 @@ impl RecorderManager {
         Ok(bytes)
     }
 
-    fn playlist_path(&self, platform: PlatformType, room_id: &str, live_id: &str) -> PathBuf {
-        let cache_path = self.config.blocking_read().cache.clone();
+    async fn playlist_path(&self, platform: PlatformType, room_id: &str, live_id: &str) -> PathBuf {
+        let cache_path = self.config.read().await.cache.clone();
         Path::new(&cache_path)
             .join(platform.as_str())
             .join(room_id)
@@ -978,7 +986,7 @@ impl RecorderManager {
         live_id: &str,
         timeout_ms: u64,
     ) -> bool {
-        let path = self.playlist_path(platform, room_id, live_id);
+        let path = self.playlist_path(platform, room_id, live_id).await;
         let start = std::time::Instant::now();
         while start.elapsed().as_millis() < timeout_ms as u128 {
             if path.exists() {
@@ -1765,6 +1773,43 @@ impl RecorderManager {
             to_deletes.push(to_delete);
         }
         Ok(to_deletes)
+    }
+
+    pub async fn delete_zero_size_archives(
+        &self,
+    ) -> Result<usize, RecorderManagerError> {
+        let records = self.db.get_zero_size_records().await?;
+        let mut deleted = 0usize;
+        for record in records {
+            let platform = match PlatformType::from_str(&record.platform) {
+                Ok(platform) => platform,
+                Err(_) => continue,
+            };
+            let _ = self
+                .delete_archive(platform, &record.room_id, &record.live_id)
+                .await?;
+            deleted += 1;
+        }
+        Ok(deleted)
+    }
+
+    pub async fn delete_small_size_archives(
+        &self,
+        max_size: i64,
+    ) -> Result<usize, RecorderManagerError> {
+        let records = self.db.get_records_below_size(max_size).await?;
+        let mut deleted = 0usize;
+        for record in records {
+            let platform = match PlatformType::from_str(&record.platform) {
+                Ok(platform) => platform,
+                Err(_) => continue,
+            };
+            let _ = self
+                .delete_archive(platform, &record.room_id, &record.live_id)
+                .await?;
+            deleted += 1;
+        }
+        Ok(deleted)
     }
 
     pub async fn handle_hls_request(&self, uri: &str) -> Result<Vec<u8>, RecorderManagerError> {

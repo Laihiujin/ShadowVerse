@@ -72,6 +72,14 @@ pub struct Config {
     pub use_login_accounts: bool,
     #[serde(skip_serializing, skip_deserializing, default = "default_tiktok_feed")]
     pub tiktok_feed: TikTokFeedConfig,
+    #[serde(default = "default_kuaishou_ws_token")]
+    pub kuaishou_ws_token: String,
+    #[serde(default = "default_kuaishou_ws_urls")]
+    pub kuaishou_ws_urls: String,
+    #[serde(default = "default_kuaishou_ws_updated_at")]
+    pub kuaishou_ws_updated_at: i64,
+    #[serde(default = "default_kuaishou_danmu_cookie")]
+    pub kuaishou_danmu_cookie: String,
 }
 
 #[derive(Deserialize, Serialize, Clone)]
@@ -341,6 +349,10 @@ fn locate_accounts_file(name: &str) -> Option<PathBuf> {
         candidates.push(cwd.join("src-tauri").join(name));
         candidates.push(cwd.join(name));
     }
+    if let Some(app_dirs) = platform_dirs::AppDirs::new(Some("cn.ShadowVerse"), false) {
+        candidates.push(app_dirs.config_dir.join(name));
+        candidates.push(app_dirs.data_dir.join(name));
+    }
     if let Ok(exe) = env::current_exe() {
         if let Some(dir) = exe.parent() {
             candidates.push(dir.join(name));
@@ -358,6 +370,9 @@ pub(crate) fn resolve_accounts_file_write_path() -> PathBuf {
         if let Some(parent) = example_path.parent() {
             return parent.join("accounts.toml");
         }
+    }
+    if let Some(app_dirs) = platform_dirs::AppDirs::new(Some("cn.ShadowVerse"), false) {
+        return app_dirs.config_dir.join("accounts.toml");
     }
     if let Ok(cwd) = env::current_dir() {
         let src_tauri = cwd.join("src-tauri");
@@ -408,6 +423,22 @@ fn default_tiktok_feed() -> TikTokFeedConfig {
         ms_token: String::new(),
         root_referer: String::new(),
     }
+}
+
+fn default_kuaishou_ws_token() -> String {
+    String::new()
+}
+
+fn default_kuaishou_ws_urls() -> String {
+    String::new()
+}
+
+fn default_kuaishou_ws_updated_at() -> i64 {
+    0
+}
+
+fn default_kuaishou_danmu_cookie() -> String {
+    String::new()
 }
 
 fn default_http_proxy() -> String {
@@ -806,6 +837,10 @@ impl Config {
             login_accounts: default_login_accounts(),
             use_login_accounts: default_use_login_accounts(),
             tiktok_feed: default_tiktok_feed(),
+            kuaishou_ws_token: default_kuaishou_ws_token(),
+            kuaishou_ws_urls: default_kuaishou_ws_urls(),
+            kuaishou_ws_updated_at: default_kuaishou_ws_updated_at(),
+            kuaishou_danmu_cookie: default_kuaishou_danmu_cookie(),
         };
 
         config.ensure_storage_dirs();
@@ -1028,5 +1063,20 @@ impl Config {
         set_or_clear("TIKTOK_FEED_VERIFY_FP", &cfg.verify_fp);
         set_or_clear("TIKTOK_FEED_MS_TOKEN", &cfg.ms_token);
         set_or_clear("TIKTOK_FEED_ROOT_REFERER", &cfg.root_referer);
+    }
+
+    pub fn apply_kuaishou_ws_env(&self) {
+        let token = self.kuaishou_ws_token.trim();
+        if token.is_empty() {
+            std::env::remove_var("KUAISHOU_WS_TOKEN");
+        } else {
+            std::env::set_var("KUAISHOU_WS_TOKEN", token);
+        }
+        let urls = self.kuaishou_ws_urls.trim();
+        if urls.is_empty() {
+            std::env::remove_var("KUAISHOU_WS_URLS");
+        } else {
+            std::env::set_var("KUAISHOU_WS_URLS", urls);
+        }
     }
 }

@@ -129,6 +129,23 @@ impl Database {
         Ok(())
     }
 
+    pub async fn update_record_stats(
+        &self,
+        live_id: &str,
+        length: f64,
+        size: u64,
+    ) -> Result<(), DatabaseError> {
+        let lock = self.db.read().await.clone().unwrap();
+        let size = i64::try_from(size).map_err(|_| DatabaseError::NumberExceedI64Range)?;
+        sqlx::query("UPDATE records SET length = $1, size = $2 WHERE live_id = $3")
+            .bind(length)
+            .bind(size)
+            .bind(live_id)
+            .execute(&lock)
+            .await?;
+        Ok(())
+    }
+
     pub async fn update_record_parent_id(
         &self,
         live_id: &str,
@@ -155,6 +172,47 @@ impl Database {
             .execute(&lock)
             .await?;
         Ok(())
+    }
+
+    pub async fn update_record_title(
+        &self,
+        live_id: &str,
+        title: &str,
+    ) -> Result<(), DatabaseError> {
+        let lock = self.db.read().await.clone().unwrap();
+        sqlx::query("UPDATE records SET title = $1 WHERE live_id = $2")
+            .bind(title)
+            .bind(live_id)
+            .execute(&lock)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn get_distinct_record_rooms(
+        &self,
+    ) -> Result<Vec<(String, String)>, DatabaseError> {
+        let lock = self.db.read().await.clone().unwrap();
+        let rows = sqlx::query_as::<_, (String, String)>(
+            "SELECT DISTINCT platform, room_id FROM records",
+        )
+        .fetch_all(&lock)
+        .await?;
+        Ok(rows)
+    }
+
+    pub async fn get_records_by_room_platform(
+        &self,
+        platform: &str,
+        room_id: &str,
+    ) -> Result<Vec<RecordRow>, DatabaseError> {
+        let lock = self.db.read().await.clone().unwrap();
+        Ok(sqlx::query_as::<_, RecordRow>(
+            "SELECT * FROM records WHERE platform = $1 AND room_id = $2 ORDER BY created_at DESC",
+        )
+        .bind(platform)
+        .bind(room_id)
+        .fetch_all(&lock)
+        .await?)
     }
 
     pub async fn update_record_resolution(
@@ -219,6 +277,28 @@ impl Database {
             .fetch_all(&lock)
             .await?)
         }
+    }
+
+    pub async fn get_zero_size_records(&self) -> Result<Vec<RecordRow>, DatabaseError> {
+        let lock = self.db.read().await.clone().unwrap();
+        Ok(sqlx::query_as::<_, RecordRow>(
+            "SELECT * FROM records WHERE size = 0",
+        )
+        .fetch_all(&lock)
+        .await?)
+    }
+
+    pub async fn get_records_below_size(
+        &self,
+        max_size: i64,
+    ) -> Result<Vec<RecordRow>, DatabaseError> {
+        let lock = self.db.read().await.clone().unwrap();
+        Ok(sqlx::query_as::<_, RecordRow>(
+            "SELECT * FROM records WHERE size < $1",
+        )
+        .bind(max_size)
+        .fetch_all(&lock)
+        .await?)
     }
 
     pub async fn get_record_disk_usage(&self) -> Result<i64, DatabaseError> {

@@ -41,6 +41,9 @@
   let selectedArchives: Set<string> = new Set();
   let showDeleteConfirm = false;
   let archiveToDelete: RecordItem | null = null;
+  let showDeleteZeroConfirm = false;
+  let deleteSizeThresholdMb = 1;
+  let autoRoomInfoRefreshDone = false;
 
   // 生成完整录播相关状态
   let showWholeClipModal = false;
@@ -108,6 +111,14 @@
       }
       room_cover_fallback.set(room.room_info.room_id, cover);
     }
+    for (const archive of allArchives) {
+      if (!room_cover_fallback.has(archive.room_id)) {
+        room_cover_fallback.set(
+          archive.room_id,
+          default_cover(archive.platform)
+        );
+      }
+    }
   }
 
   function handle_archive_cover_load(event: Event, archive: RecordItem) {
@@ -152,49 +163,69 @@
     loadError = "";
 
     try {
+      if (!autoRoomInfoRefreshDone) {
+        autoRoomInfoRefreshDone = true;
+        invoke("refresh_archive_room_info")
+          .catch((error) => {
+            console.warn("Failed to refresh archive room info:", error);
+          });
+      }
+
       // 获取所有直播间列表
       const recorderList: RecorderList = await invoke("get_recorder_list");
       allRooms = recorderList.recorders || [];
-      await refresh_room_cover_fallback();
 
-      // 收集所有直播间，用账号名/直播间标题+直播间号展示
-      roomOptions = allRooms
-        .map((room: RecorderInfo) => {
-          const id = room.room_info.room_id;
-          const name =
-            room.user_info?.user_name?.trim() ||
-            room.room_info?.room_title?.trim() ||
-            "";
-          const label = name ? `${name} (${id})` : id;
-          return { id, label };
-        })
-        .sort((a, b) => a.label.localeCompare(b.label));
-
-      // 加载所有录播数据
+      // ??
       allArchives = [];
-      for (const room of allRooms) {
-        try {
-          const roomArchives = await invoke<RecordItem[]>("get_archives", {
-            roomId: room.room_info.room_id,
-            offset: 0,
-            limit: 100, // 每个直播间获取更多数据
-          });
-
-          // 处理封面
-          for (const archive of roomArchives) {
-            archive.cover = await get_static_url(
-              "cache",
-              `${archive.platform}/${archive.room_id}/${archive.live_id}/cover.jpg`
-            );
-          }
-
-          allArchives = [...allArchives, ...roomArchives];
-        } catch (error) {
-          console.warn(`Failed to load archives for room ${room}:`, error);
+      let offset = 0;
+      const fetchLimit = 200;
+      while (true) {
+        const batch = await invoke<RecordItem[]>("get_recent_record", {
+          roomId: "",
+          offset,
+          limit: fetchLimit,
+        });
+        if (!batch.length) {
+          break;
         }
+        for (const archive of batch) {
+          archive.cover = await get_static_url(
+            "cache",
+            `${archive.platform}/${archive.room_id}/${archive.live_id}/cover.jpg`
+          );
+        }
+        allArchives = [...allArchives, ...batch];
+        if (batch.length < fetchLimit) {
+          break;
+        }
+        offset += fetchLimit;
       }
 
-      // 按创建时间排序
+      await refresh_room_cover_fallback();
+
+      // ???
+      const roomOptionMap: Map<string, RoomOption> = new Map();
+      for (const room of allRooms) {
+        const id = room.room_info.room_id;
+        const name =
+          room.user_info?.user_name?.trim() ||
+          room.room_info?.room_title?.trim() ||
+          "";
+        const label = name ? `${name} (${id})` : id;
+        roomOptionMap.set(id, { id, label });
+      }
+      for (const archive of allArchives) {
+        if (!roomOptionMap.has(archive.room_id)) {
+          roomOptionMap.set(archive.room_id, {
+            id: archive.room_id,
+            label: archive.room_id,
+          });
+        }
+      }
+      roomOptions = Array.from(roomOptionMap.values()).sort((a, b) =>
+        a.label.localeCompare(b.label)
+      );
+
       allArchives.sort((a, b) => {
         return (
           new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
@@ -486,6 +517,23 @@
     }
   }
 
+  async function deleteSmallSizeArchives() {
+    try {
+      const thresholdMb = Number(deleteSizeThresholdMb) || 0;
+      const maxSizeBytes = Math.max(0, Math.floor(thresholdMb * 1024 * 1024));
+      const deleted = await invoke<number>("delete_small_size_archives", {
+        maxSize: maxSizeBytes,
+      });
+      selectedArchives.clear();
+      await loadArchives();
+      showDeleteZeroConfirm = false;
+      alert(`已删除 ${deleted} 个小于 ${thresholdMb} MB 的录播`);
+    } catch (error) {
+      console.error("Failed to delete small size archives:", error);
+      alert("删除失败");
+    }
+  }
+
   async function playArchive(archive: RecordItem) {
     try {
       await invoke("open_live", {
@@ -523,6 +571,25 @@
       </div>
 
       <div class="flex items-center space-x-3">
+        <div class="flex items-center space-x-2">
+          <input
+            type="number"
+            min="0"
+            step="0.1"
+            bind:value={deleteSizeThresholdMb}
+            class="w-24 px-3 py-2 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-red-500"
+          />
+          <span class="text-sm text-gray-600 dark:text-gray-300">MB</span>
+        </div>
+        <button
+          class="px-4 py-2 bg-red-500 text-white rounded-lg hover:bg-red-600 transition-colors flex items-center space-x-2"
+          on:click={() => {
+            showDeleteZeroConfirm = true;
+          }}
+        >
+          <Trash2 class="w-4 h-4" />
+          <span>删除小于</span>
+        </button>
         <button
           class="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors flex items-center space-x-2 disabled:opacity-50 disabled:cursor-not-allowed"
           on:click={loadArchives}
@@ -980,7 +1047,7 @@
 </div>
 
 <!-- Delete Confirmation Modal -->
-{#if showDeleteConfirm}
+{#if showDeleteConfirm || showDeleteZeroConfirm}
   <div
     class="fixed inset-0 bg-black/20 dark:bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center"
   >
@@ -993,7 +1060,9 @@
             确认删除
           </h3>
           <p class="text-sm text-gray-500 dark:text-gray-400">
-            {#if archiveToDelete}
+            {#if showDeleteZeroConfirm}
+              确定要删除小于 ${deleteSizeThresholdMb} MB 的录播吗？
+            {:else if archiveToDelete}
               确定要删除录播 "{archiveToDelete.title}" 吗？
             {:else}
               确定要删除选中的 {selectedArchives.size} 个录播吗？
@@ -1006,6 +1075,7 @@
             class="w-24 px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-600 rounded-lg transition-colors"
             on:click={() => {
               showDeleteConfirm = false;
+              showDeleteZeroConfirm = false;
               archiveToDelete = null;
             }}
           >
@@ -1014,7 +1084,9 @@
           <button
             class="w-24 px-4 py-2 bg-red-600 hover:bg-red-700 text-white text-sm font-medium rounded-lg transition-colors"
             on:click={() => {
-              if (archiveToDelete) {
+              if (showDeleteZeroConfirm) {
+                deleteSmallSizeArchives();
+              } else if (archiveToDelete) {
                 deleteArchive(archiveToDelete);
               } else {
                 deleteSelectedArchives();
@@ -1028,34 +1100,3 @@
     </div>
   </div>
 {/if}
-
-<!-- 生成完整录播Modal -->
-<GenerateWholeClipModal
-  bind:showModal={showWholeClipModal}
-  archive={wholeClipArchive}
-  roomId={wholeClipArchive?.room_id || ""}
-  platform={wholeClipArchive?.platform || ""}
-  on:generated={handleWholeClipGenerated}
-/>
-
-<style>
-  /* macOS style modal */
-  .mac-modal {
-    box-shadow:
-      0 20px 25px -5px rgba(0, 0, 0, 0.1),
-      0 10px 10px -5px rgba(0, 0, 0, 0.04);
-  }
-
-  :global(.dark) .mac-modal {
-    box-shadow:
-      0 20px 25px -5px rgba(0, 0, 0, 0.3),
-      0 10px 10px -5px rgba(0, 0, 0, 0.1);
-  }
-
-  /* fixed icon size in tables */
-  :global(.table-icon) {
-    width: 1rem; /* 16px, same as Tailwind w-4 */
-    height: 1rem; /* 16px, same as Tailwind h-4 */
-    flex: 0 0 auto;
-  }
-</style>

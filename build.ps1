@@ -1,4 +1,5 @@
 $ErrorActionPreference = "Stop"
+Set-Location $PSScriptRoot
 
 function Rename-And-MoveBundle {
     param(
@@ -21,7 +22,7 @@ function Rename-And-MoveBundle {
         }
 
         Rename-Item -Path $_.FullName -NewName $newName
-        Move-Item -Path (Join-Path $_.DirectoryName $newName) -Destination ./src-tauri/target/
+        Move-Item -Path (Join-Path $_.DirectoryName $newName) -Destination ./src-tauri/target/ -Force
     }
 }
 

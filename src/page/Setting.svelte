@@ -142,6 +142,23 @@
     await invoke("open_log_folder");
   }
 
+  async function handleImportCache() {
+    const new_folder = await browse_folder();
+    if (new_folder) {
+      try {
+        const result = await invoke("import_cache_from_path", {
+          sourcePath: new_folder,
+        });
+        alert(
+          `导入完成，新建 ${result.added} 条，更新 ${result.updated} 条录播记录`
+        );
+      } catch (e) {
+        alert(e);
+      }
+    }
+  }
+
+
   async function confirmChange() {
     showModal = false;
     const new_folder = await browse_folder();
@@ -205,9 +222,6 @@
   }
 
   async function update_use_login_accounts() {
-    if (setting_model.use_login_accounts) {
-      setting_model.use_guest_accounts = false;
-    }
     await invoke("update_use_login_accounts", {
       useLoginAccounts: setting_model.use_login_accounts,
     });
@@ -215,9 +229,6 @@
   }
 
   async function update_use_guest_accounts() {
-    if (setting_model.use_guest_accounts) {
-      setting_model.use_login_accounts = false;
-    }
     await invoke("update_use_guest_accounts", {
       useGuestAccounts: setting_model.use_guest_accounts,
     });
@@ -400,7 +411,7 @@
                 <div>
                   <h3 class="text-sm font-medium text-gray-900 dark:text-white">使用访客模式</h3>
                   <p class="text-sm text-gray-500 dark:text-gray-400">
-                    启用后自动更新「访客账号（不需要登录账号）」
+                    启用后自动更新账号，无需登录即可使用
                   </p>
                 </div>
                 <label class="relative inline-block w-11 h-6">
@@ -421,7 +432,7 @@
                 <div>
                   <h3 class="text-sm font-medium text-gray-900 dark:text-white">使用登录模式</h3>
                   <p class="text-sm text-gray-500 dark:text-gray-400">
-                    启用后优先使用「已登录账号(手动填写账号Cookie/二维码登录)」
+                    启用后优先使用「已登录账号」
                   </p>
                 </div>
                 <label class="relative inline-block w-11 h-6">
@@ -541,6 +552,26 @@
                       on:click={handleCacheChange}
                     >
                       变更
+                    </button>
+                  </div>
+                </div>
+                <div class="p-4">
+                  <div class="flex items-center justify-between">
+                    <div>
+                      <h3
+                        class="text-sm font-medium text-gray-900 dark:text-white"
+                      >
+                        迁移缓存并识别
+                      </h3>
+                      <p class="text-sm text-gray-500 dark:text-gray-400">
+                        从旧目录迁移缓存到当前缓存路径，并重建录播记录
+                      </p>
+                    </div>
+                    <button
+                      class="px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 text-gray-900 dark:text-white hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors"
+                      on:click={handleImportCache}
+                    >
+                      选择目录
                     </button>
                   </div>
                 </div>

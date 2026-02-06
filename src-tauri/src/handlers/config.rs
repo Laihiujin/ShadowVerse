@@ -26,6 +26,72 @@ pub async fn get_static_port(state: state_type!()) -> Result<u16, ()> {
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]
+pub async fn import_cache_from_path(
+    state: state_type!(),
+    source_path: String,
+) -> Result<ImportCacheResult, String> {
+    let source_path = source_path.trim();
+    if source_path.is_empty() {
+        return Err("Empty cache path".to_string());
+    }
+
+    let mut source = std::path::PathBuf::from(source_path);
+    if !source.exists() {
+        return Err(format!("Source path not found: {source_path}"));
+    }
+    if !source.is_dir() {
+        return Err(format!("Source path is not a directory: {source_path}"));
+    }
+
+    // If a cache subfolder exists, prefer it
+    let candidate = source.join("cache");
+    if candidate.is_dir() {
+        let mut has_platform = false;
+        for platform in ["bilibili", "douyin", "kuaishou", "huya", "tiktok", "weibo", "xiaohongshu"] {
+            if candidate.join(platform).is_dir() {
+                has_platform = true;
+                break;
+            }
+        }
+        if has_platform {
+            source = candidate;
+        }
+    }
+
+    let target = std::path::PathBuf::from(state.config.read().await.cache.clone());
+    let should_copy = target != source;
+    if !target.exists() {
+        if let Err(err) = std::fs::create_dir_all(&target) {
+            return Err(err.to_string());
+        }
+    }
+
+    let platforms = ["bilibili", "douyin", "kuaishou", "huya", "tiktok", "weibo", "xiaohongshu"];
+    if should_copy {
+        for platform in platforms {
+            let src_dir = source.join(platform);
+            if !src_dir.is_dir() {
+                continue;
+            }
+            let dst_dir = target.join(platform);
+            if let Err(err) = crate::handlers::utils::copy_dir_all(&src_dir, &dst_dir) {
+                return Err(err.to_string());
+            }
+        }
+    }
+
+    let (added, updated) =
+        crate::migration::migration_methods::try_rebuild_archives_from_cache_scan(
+        &state.db,
+        target,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+
+    Ok(ImportCacheResult { added, updated })
+}
+
+#[cfg_attr(feature = "gui", tauri::command)]
 #[allow(dead_code)]
 pub async fn set_cache_path(state: state_type!(), cache_path: String) -> Result<(), String> {
     let old_cache_path = state.config.read().await.cache.clone();
@@ -314,15 +380,11 @@ pub async fn update_use_login_accounts(
 ) -> Result<(), ()> {
     let mut config = state.config.write().await;
     config.use_login_accounts = use_login_accounts;
-    if use_login_accounts {
-        config.use_guest_accounts = false;
-    }
     config.save();
     let config_snapshot = config.clone();
     drop(config);
     if use_login_accounts {
         crate::handlers::account::ensure_login_accounts(&state.db, &config_snapshot).await;
-        crate::handlers::account::remove_guest_accounts(&state.db, &config_snapshot).await;
     } else {
         crate::handlers::account::remove_login_accounts(&state.db, &config_snapshot).await;
     }
@@ -337,14 +399,9 @@ pub async fn update_use_guest_accounts(
 ) -> Result<(), String> {
     let mut config = state.config.write().await;
     config.use_guest_accounts = use_guest_accounts;
-    if use_guest_accounts {
-        config.use_login_accounts = false;
-    }
     config.save();
-    let config_snapshot = config.clone();
     drop(config);
     if use_guest_accounts {
-        crate::handlers::account::remove_login_accounts(&state.db, &config_snapshot).await;
         crate::handlers::account::refresh_guest_accounts(state.clone()).await?;
     } else {
         // First, get the current guest accounts for deletion BEFORE clearing
@@ -480,4 +537,9 @@ pub async fn update_powerlive_key(state: state_type!(), powerlive_key: String) -
     state.config.write().await.save();
     log::info!("Updated powerlive key");
     Ok(())
+}
+#[derive(serde::Serialize)]
+pub struct ImportCacheResult {
+    pub added: usize,
+    pub updated: usize,
 }

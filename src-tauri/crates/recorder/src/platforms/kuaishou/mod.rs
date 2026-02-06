@@ -16,11 +16,13 @@ use async_trait::async_trait;
 use chrono::Utc;
 use danmu_stream::danmu_stream::DanmuStream;
 use danmu_stream::provider::ProviderType;
+use reqwest::StatusCode;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{atomic, Arc};
 use std::time::Duration;
 use tokio::sync::{broadcast, Mutex, RwLock};
+use url::Url;
 
 const KUAISHOU_USER_AGENT: &str =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
@@ -129,6 +131,113 @@ impl KuaishouRecorder {
 
     fn log_error(&self, message: &str) {
         log::error!("[Kuaishou][{}]{}", self.room_id, message);
+    }
+
+    fn build_stream_headers(is_mobile_stream: bool, cookies: &str) -> reqwest::header::HeaderMap {
+        let mut headers = reqwest::header::HeaderMap::new();
+        if is_mobile_stream {
+            headers.insert("Referer", "https://www.kuaishou.com/".parse().unwrap());
+            headers.insert("Origin", "https://www.kuaishou.com".parse().unwrap());
+            headers.insert("User-Agent", KUAISHOU_MOBILE_USER_AGENT.parse().unwrap());
+        } else {
+            headers.insert("Referer", "https://live.kuaishou.com/".parse().unwrap());
+            headers.insert("Origin", "https://live.kuaishou.com".parse().unwrap());
+            headers.insert("User-Agent", KUAISHOU_USER_AGENT.parse().unwrap());
+        }
+        if !cookies.is_empty() {
+            headers.insert("Cookie", cookies.parse().unwrap());
+        }
+        headers
+    }
+
+    fn extract_first_media_uri(m3u8_text: &str) -> Option<String> {
+        for line in m3u8_text.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                continue;
+            }
+            return Some(trimmed.to_string());
+        }
+        None
+    }
+
+    fn resolve_uri(base: &str, uri: &str) -> Option<String> {
+        if uri.starts_with("http://") || uri.starts_with("https://") {
+            return Some(uri.to_string());
+        }
+        let base_url = Url::parse(base).ok()?;
+        base_url.join(uri).ok().map(|url| url.to_string())
+    }
+
+    async fn check_hls_stream_accessible(
+        client: &reqwest::Client,
+        headers: &reqwest::header::HeaderMap,
+        m3u8_url: &str,
+    ) -> bool {
+        let response = match client.get(m3u8_url).headers(headers.clone()).send().await {
+            Ok(resp) => resp,
+            Err(_) => return false,
+        };
+        if !response.status().is_success() {
+            return false;
+        }
+        let mut playlist_text = match response.text().await {
+            Ok(text) => text,
+            Err(_) => return false,
+        };
+        let mut playlist_url = m3u8_url.to_string();
+
+        let first_uri = match Self::extract_first_media_uri(&playlist_text) {
+            Some(uri) => uri,
+            None => return false,
+        };
+
+        if first_uri.contains(".m3u8") {
+            let resolved = match Self::resolve_uri(m3u8_url, &first_uri) {
+                Some(url) => url,
+                None => return false,
+            };
+            let response = match client.get(&resolved).headers(headers.clone()).send().await {
+                Ok(resp) => resp,
+                Err(_) => return false,
+            };
+            if !response.status().is_success() {
+                return false;
+            }
+            playlist_text = match response.text().await {
+                Ok(text) => text,
+                Err(_) => return false,
+            };
+            playlist_url = resolved;
+        }
+
+        let first_segment = match Self::extract_first_media_uri(&playlist_text) {
+            Some(uri) => uri,
+            None => return false,
+        };
+        let stream = match construct_stream_from_variant(
+            "probe",
+            &playlist_url,
+            Format::TS,
+            Codec::Avc,
+        )
+        .await
+        {
+            Ok(stream) => stream,
+            Err(_) => return false,
+        };
+        let segment_url = stream.ts_url(&first_segment);
+        let response = match client
+            .get(&segment_url)
+            .headers(headers.clone())
+            .header("Range", "bytes=0-1")
+            .send()
+            .await
+        {
+            Ok(resp) => resp,
+            Err(_) => return false,
+        };
+        response.status().is_success()
     }
 
     fn parse_bool_env(value: &str) -> Option<bool> {
@@ -384,6 +493,19 @@ impl KuaishouRecorder {
              cookies.push_str(&format!("did={did}; didv={didv}"));
         }
 
+        let live_id = self.live_id.read().await.clone();
+        if !live_id.is_empty() && !cookies.contains("liveStreamId=") {
+            if !cookies.is_empty() {
+                cookies.push_str("; ");
+            }
+            cookies.push_str(&format!("liveStreamId={live_id}"));
+        }
+        self.log_info(&format!(
+            "Danmu cookie prepared: live_id={}, has_liveStreamId={}",
+            live_id,
+            cookies.contains("liveStreamId=")
+        ));
+
         let room_id = self.room_id.clone();
         let danmu_stream_res = DanmuStream::new(ProviderType::Kuaishou, &cookies, &room_id).await;
 
@@ -489,16 +611,6 @@ impl KuaishouRecorder {
 
         let is_mobile_stream =
             stream_url.contains("auth_key=") || stream_url.contains("pull.yximgs.com");
-        let mut headers = reqwest::header::HeaderMap::new();
-        if is_mobile_stream {
-            headers.insert("Referer", "https://www.kuaishou.com/".parse().unwrap());
-            headers.insert("Origin", "https://www.kuaishou.com".parse().unwrap());
-            headers.insert("User-Agent", KUAISHOU_MOBILE_USER_AGENT.parse().unwrap());
-        } else {
-            headers.insert("Referer", "https://live.kuaishou.com/".parse().unwrap());
-            headers.insert("Origin", "https://live.kuaishou.com".parse().unwrap());
-            headers.insert("User-Agent", KUAISHOU_USER_AGENT.parse().unwrap());
-        }
         // Try to find the exact cookie used for this stream
         let selected_stream = stream_list.iter().find(|s| s.url == stream_url);
         let stream_cookie = selected_stream.and_then(|s| s.cookie.clone());
@@ -508,11 +620,43 @@ impl KuaishouRecorder {
         } else {
             self.account.cookies.clone()
         };
+        let web_headers = Self::build_stream_headers(false, &cookies);
+        let h5_headers = Self::build_stream_headers(true, &cookies);
+        let mut headers = if is_mobile_stream {
+            h5_headers.clone()
+        } else {
+            web_headers.clone()
+        };
 
-
-
-        if !cookies.is_empty() {
-            headers.insert("Cookie", cookies.parse().unwrap());
+        if stream_url.contains(".m3u8") {
+            let web_ok =
+                Self::check_hls_stream_accessible(&self.client, &web_headers, &stream_url).await;
+            let h5_ok =
+                Self::check_hls_stream_accessible(&self.client, &h5_headers, &stream_url).await;
+            let selected = match (web_ok, h5_ok) {
+                (true, false) => Some(("web", web_headers.clone())),
+                (false, true) => Some(("h5", h5_headers.clone())),
+                (true, true) => Some(("web", web_headers.clone())),
+                (false, false) => None,
+            };
+            match selected {
+                Some((label, chosen)) => {
+                    headers = chosen;
+                    self.log_info(&format!(
+                        "HLS preflight: web={}, h5={}, using {} headers",
+                        if web_ok { "ok" } else { "fail" },
+                        if h5_ok { "ok" } else { "fail" },
+                        label
+                    ));
+                }
+                None => {
+                    self.log_info(&format!(
+                        "HLS preflight failed: web={}, h5={}, keep default headers",
+                        if web_ok { "ok" } else { "fail" },
+                        if h5_ok { "ok" } else { "fail" }
+                    ));
+                }
+            }
         }
 
         if stream_url.starts_with("rtmp://") || stream_url.starts_with("rtmps://") {
@@ -559,6 +703,23 @@ impl KuaishouRecorder {
             .run_hls_recorder(&stream_url, &headers, &work_dir, live_id)
             .await
         {
+            let should_retry = matches!(
+                &e,
+                RecorderError::InvalidResponseStatus { status } if *status == StatusCode::FORBIDDEN
+            );
+            if should_retry {
+                let alt_headers = Self::build_stream_headers(!is_mobile_stream, &cookies);
+                self.log_info("HLS 403, retrying with alternate headers");
+                if self
+                    .run_hls_recorder(&stream_url, &alt_headers, &work_dir, live_id)
+                    .await
+                    .is_ok()
+                {
+                    return Ok(());
+                }
+                headers = alt_headers;
+            }
+
             self.log_error(&format!("Hls recorder quit with error: {}", e));
             if let Some(flv_url) = fallback_flv {
                 self.log_info("HLS failed, fallback to FLV recorder");

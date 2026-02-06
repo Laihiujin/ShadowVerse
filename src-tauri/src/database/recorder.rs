@@ -65,8 +65,6 @@ impl Database {
             return Err(DatabaseError::NotFound);
         }
 
-        // remove related archive
-        let _ = self.remove_archive(room_id).await;
         Ok(recorder)
     }
 

@@ -1223,8 +1223,8 @@
           </h3>
           <p class="text-sm text-gray-500 dark:text-gray-400">
             {deleteMode === "bulk"
-              ? `将移除选中的 ${deleteRooms.length} 个直播间及相关录制记录`
-              : "此操作将移除所有相关的录制记录"}
+              ? `将移除选中的 ${deleteRooms.length} 个直播间`
+              : "此操作将移除该直播间"}
           </p>
         </div>
         <div class="flex justify-center space-x-3">

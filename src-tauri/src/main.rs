@@ -49,6 +49,7 @@ use std::os::windows::fs::MetadataExt;
 use {
     tauri::{Manager, WindowEvent},
     tauri_plugin_sql::{Migration, MigrationKind},
+    sqlx::Row,
 };
 
 #[cfg(feature = "headless")]
@@ -151,20 +152,23 @@ async fn setup_logging(log_dir: &Path) -> Result<(), Box<dyn std::error::Error>>
         .add_filter_ignore_str("reqwest")
         .add_filter_ignore_str("h2")
         .add_filter_ignore_str("danmu_stream")
+        .add_filter_ignore_str("cookie_store")
         .add_filter_ignore_str("html5ever")
         .add_filter_ignore_str("selectors")
         .build();
 
+    let term_config = config.clone();
+
     simplelog::CombinedLogger::init(vec![
         simplelog::TermLogger::new(
             simplelog::LevelFilter::Debug,
-            config,
+            term_config,
             simplelog::TerminalMode::Mixed,
             simplelog::ColorChoice::Auto,
         ),
         simplelog::WriteLogger::new(
             simplelog::LevelFilter::Info,
-            simplelog::Config::default(),
+            config,
             file,
         ),
     ])?;
@@ -547,6 +551,7 @@ async fn setup_server_state(args: Args) -> Result<State, Box<dyn std::error::Err
     config.apply_record_protocol_env();
     config.apply_douyin_passport_env();
     config.apply_tiktok_feed_env();
+    config.apply_kuaishou_ws_env();
     let config = Arc::new(RwLock::new(config));
     let db = Arc::new(Database::new());
     // connect to sqlite database
@@ -573,6 +578,19 @@ async fn setup_server_state(args: Args) -> Result<State, Box<dyn std::error::Err
 
     db.set(db_pool).await;
     db.finish_pending_tasks().await?;
+    let guest_from_db = crate::handlers::account::load_guest_accounts_from_db(&db).await;
+    if !guest_from_db.is_empty() {
+        let mut cfg = config.write().await;
+        let guest_empty_or_blank = cfg.guest_accounts.is_empty()
+            || cfg
+                .guest_accounts
+                .iter()
+                .all(|entry| entry.cookies.trim().is_empty());
+        if cfg.use_guest_accounts && guest_empty_or_blank {
+            cfg.guest_accounts = guest_from_db;
+            cfg.save();
+        }
+    }
     let config_snapshot = config.read().await.clone();
     crate::handlers::account::ensure_default_accounts(&db, &config_snapshot).await;
     crate::handlers::account::ensure_guest_accounts(&db, &config_snapshot).await;
@@ -646,6 +664,7 @@ async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::
     config.apply_record_protocol_env();
     config.apply_douyin_passport_env();
     config.apply_tiktok_feed_env();
+    config.apply_kuaishou_ws_env();
 
     let config = Arc::new(RwLock::new(config));
     let config_clone = config.clone();
@@ -656,10 +675,33 @@ async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::
     let binding = dbs.0.read().await;
     let dbpool = binding.get("sqlite:data_v2.db").unwrap();
     let sqlite_pool = match dbpool {
-        tauri_plugin_sql::DbPool::Sqlite(pool) => Some(pool),
+        tauri_plugin_sql::DbPool::Sqlite(pool) => pool.clone(),
     };
-    db_clone.set(sqlite_pool.unwrap().clone()).await;
+    db_clone.set(sqlite_pool.clone()).await;
     db_clone.finish_pending_tasks().await?;
+    if let Ok(rows) = sqlx::query("PRAGMA database_list")
+        .fetch_all(&sqlite_pool)
+        .await
+    {
+        for row in rows {
+            let name: String = row.try_get("name").unwrap_or_default();
+            let file: String = row.try_get("file").unwrap_or_default();
+            log::info!("[DB] database_list name={} file={}", name, file);
+        }
+    }
+    let guest_from_db = crate::handlers::account::load_guest_accounts_from_db(&db).await;
+    if !guest_from_db.is_empty() {
+        let mut cfg = config.write().await;
+        let guest_empty_or_blank = cfg.guest_accounts.is_empty()
+            || cfg
+                .guest_accounts
+                .iter()
+                .all(|entry| entry.cookies.trim().is_empty());
+        if cfg.use_guest_accounts && guest_empty_or_blank {
+            cfg.guest_accounts = guest_from_db;
+            cfg.save();
+        }
+    }
     let config_snapshot = config.read().await.clone();
     crate::handlers::account::ensure_login_accounts(&db, &config_snapshot).await;
     crate::handlers::account::ensure_guest_accounts(&db, &config_snapshot).await;
@@ -772,10 +814,12 @@ fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
         crate::handlers::account::close_webview_window,
         crate::handlers::account::close_webview_window,
         crate::handlers::account::close_all_login_windows,
+        crate::handlers::account::refresh_guest_accounts_force,
 
         crate::handlers::config::get_config,
         crate::handlers::config::get_static_port,
         crate::handlers::config::set_cache_path,
+        crate::handlers::config::import_cache_from_path,
         crate::handlers::config::set_output_path,
         crate::handlers::config::update_notify,
         crate::handlers::config::update_whisper_model,
@@ -814,12 +858,15 @@ fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
         crate::handlers::recorder::generate_archive_subtitle,
         crate::handlers::recorder::delete_archive,
         crate::handlers::recorder::delete_archives,
+        crate::handlers::recorder::delete_zero_size_archives,
+        crate::handlers::recorder::delete_small_size_archives,
         crate::handlers::recorder::get_danmu_record,
         crate::handlers::recorder::export_danmu,
         crate::handlers::recorder::send_danmaku,
         crate::handlers::recorder::get_total_length,
         crate::handlers::recorder::get_today_record_count,
         crate::handlers::recorder::get_recent_record,
+        crate::handlers::recorder::refresh_archive_room_info,
         crate::handlers::recorder::set_enable,
         crate::handlers::recorder::fetch_hls,
         crate::handlers::recorder::generate_whole_clip,
@@ -897,6 +944,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 app.manage(state.clone());
                 
+                if state.config.read().await.use_guest_accounts {
+                    let guest_empty_or_blank = {
+                        let cfg = state.config.read().await;
+                        cfg.guest_accounts.is_empty()
+                            || cfg
+                                .guest_accounts
+                                .iter()
+                                .all(|entry| entry.cookies.trim().is_empty())
+                    };
+                    if guest_empty_or_blank {
+                        let state_clone = state.clone();
+                        tauri::async_runtime::spawn(async move {
+                            let _ = crate::handlers::account::refresh_guest_accounts_on_demand_owned(
+                                state_clone,
+                                "startup".to_string(),
+                            )
+                            .await;
+                        });
+                    }
+                }
+
                 // Start periodic guest cookie refresh timer
                 crate::handlers::account::start_guest_cookie_refresh_timer(state);
                 

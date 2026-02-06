@@ -1,4 +1,4 @@
-﻿use super::response::{LiveStreamResponse, MobileApiResponse};
+use super::response::{LiveStreamResponse, UserFollowCountResponse};
 use crate::account::Account;
 use crate::errors::RecorderError;
 use chrono::Utc;
@@ -6,45 +6,30 @@ use rand::Rng;
 use regex::Regex;
 use reqwest::Client;
 use serde::Deserialize;
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicI64, Ordering};
+use std::time::Duration;
 
 const USER_AGENT: &str =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
-const MOBILE_USER_AGENT: &str =
-    "ios/7.830 (ios 17.0; ; iPhone 15 (A2846/A3089/A3090/A3092))";
-const MOBILE_REFERER: &str = "https://www.kuaishou.com/short-video/3x224rwabjmuc9y?fid=1712760877&cc=share_copylink&followRefer=151&shareMethod=TOKEN&docId=9&kpn=KUAISHOU&subBiz=BROWSE_SLIDE_PHOTO&photoId=3x224rwabjmuc9y&shareId=17144298796566&shareToken=X-6FTMeYTsY97qYL&shareResourceType=PHOTO_OTHER&userId=3xtnuitaz2982eg&shareType=1&et=1_i/2000048330179867715_h3052&shareMode=APP&originShareId=17144298796566&appType=21&shareObjectId=5230086626478274600&shareUrlOpened=0&timestamp=1663833792288&utm_source=app_share&utm_medium=app_share&utm_campaign=app_share&location=app_share";
-const MOBILE_FALLBACK_COOKIE: &str = "did=web_e988652e11b545469633396abe85a89f; didv=1796004001000";
-const MOBILE_RATE_LIMIT_COOLDOWN_SECS: i64 = 120;
-const WEB_RATE_LIMIT_COOLDOWN_SECS: i64 = 120;
+const WEB_RATE_LIMIT_COOLDOWN_SECS: i64 = 10;
+const WEB_RATE_LIMIT_RETRY_SECS: u64 = 10;
 
-static MOBILE_COOLDOWN_UNTIL: AtomicI64 = AtomicI64::new(0);
-static MOBILE_DISABLED: AtomicI64 = AtomicI64::new(-1);
 static WEB_COOLDOWN_UNTIL: AtomicI64 = AtomicI64::new(0);
-
-fn mobile_api_disabled() -> bool {
-    let cached = MOBILE_DISABLED.load(Ordering::Relaxed);
-    if cached >= 0 {
-        return cached == 1;
-    }
-    let disabled = std::env::var("BSR_KUAISHOU_DISABLE_MOBILE")
-        .map(|v| {
-            let v = v.to_ascii_lowercase();
-            v == "1" || v == "true" || v == "yes" || v == "on"
-        })
-        .unwrap_or(true);
-    MOBILE_DISABLED.store(if disabled { 1 } else { 0 }, Ordering::Relaxed);
-    disabled
-}
-
+ 
 fn is_rate_limit_message(message: &str) -> bool {
     let trimmed = message.trim();
     !trimmed.is_empty()
         && (trimmed.contains("\u{64cd}\u{4f5c}\u{592a}\u{5feb}")
             || trimmed.contains("\u{8bbf}\u{95ee}\u{8fc7}\u{4e8e}\u{9891}\u{7e41}")
             || trimmed.contains("\u{8bbf}\u{95ee}\u{9891}\u{7e41}")
-            || trimmed.contains("\u{8bf7}\u{7a0d}\u{540e}\u{518d}\u{8bd5}"))
+            || trimmed.contains("\u{8bbf}\u{95ee}\u{592a}\u{5feb}")
+            || trimmed.contains("\u{8bf7}\u{7a0d}\u{540e}\u{518d}\u{8bd5}")
+            || trimmed.contains("\u{8bf7}\u{7a0d}\u{5019}\u{518d}\u{8bd5}")
+            || trimmed.contains("\u{7a0d}\u{5019}\u{518d}\u{8bd5}")
+            || trimmed.contains("\u{7a0d}\u{540e}\u{518d}\u{8bd5}")
+            || trimmed.contains("\u{8bf7}\u{6c42}\u{8fc7}\u{4e8e}\u{9891}\u{7e41}"))
 }
 
 fn is_room_disabled_message(message: &str) -> bool {
@@ -52,11 +37,6 @@ fn is_room_disabled_message(message: &str) -> bool {
     !trimmed.is_empty() && trimmed.contains("\u{672a}\u{542f}\u{7528}")
 }
 
-fn set_mobile_cooldown(reason: &str) {
-    let until = Utc::now().timestamp() + MOBILE_RATE_LIMIT_COOLDOWN_SECS;
-    MOBILE_COOLDOWN_UNTIL.store(until, Ordering::Relaxed);
-    log::info!("[Kuaishou] Mobile API cooldown set ({}s): {}", MOBILE_RATE_LIMIT_COOLDOWN_SECS, reason);
-}
 
 fn set_web_cooldown(reason: &str) {
     let until = Utc::now().timestamp() + WEB_RATE_LIMIT_COOLDOWN_SECS;
@@ -68,13 +48,6 @@ fn set_web_cooldown(reason: &str) {
     );
 }
 
-fn mobile_api_allowed() -> bool {
-    if mobile_api_disabled() {
-        return false;
-    }
-    let now = Utc::now().timestamp();
-    now >= MOBILE_COOLDOWN_UNTIL.load(Ordering::Relaxed)
-}
 
 fn web_api_allowed() -> bool {
     let now = Utc::now().timestamp();
@@ -189,8 +162,15 @@ fn extract_metadata_from_html(html_str: &str) -> (Option<String>, Option<String>
     ];
     for p in title_patterns {
         if let Some(m) = Regex::new(p).ok().and_then(|re| re.captures(html_str)).and_then(|c| c.get(1)) {
-            let t = m.as_str().replace(" - 蹇墜鐩存挱", "").trim().to_string();
-            if !t.is_empty() && !t.contains("错误代码") && !t.contains("Error Code") {
+            let t = m
+                .as_str()
+                .replace(" - \u{5feb}\u{624b}\u{76f4}\u{64ad}", "")
+                .trim()
+                .to_string();
+            if !t.is_empty()
+                && !t.contains("\u{9519}\u{8bef}\u{4ee3}\u{7801}")
+                && !t.contains("Error Code")
+            {
                 title = Some(t);
                 break;
             }
@@ -314,6 +294,80 @@ fn get_cookie_value_ci(cookies: &str, key: &str) -> Option<String> {
     None
 }
 
+fn append_cookie_pair(mut header: String, key: &str, value: &str) -> String {
+    let value = value.trim();
+    if value.is_empty() {
+        return header;
+    }
+    if !header.is_empty() {
+        header.push_str("; ");
+    }
+    header.push_str(key);
+    header.push('=');
+    header.push_str(value);
+    header
+}
+
+fn ensure_kuaishou_request_cookie(cookies: &str) -> String {
+    let normalized = normalize_cookie_header(cookies);
+    let filtered = filter_kuaishou_cookie_header(&normalized);
+    let mut ensured = if filtered.is_empty() {
+        let did = gen_web_did();
+        let didv = Utc::now().timestamp_millis();
+        format!("did={did}; didv={didv}")
+    } else {
+        ensure_kuaishou_base_cookies(&filtered)
+    };
+
+    ensured
+}
+
+fn ensure_kuaishou_base_cookies(cookies: &str) -> String {
+    let mut normalized = filter_kuaishou_cookie_header(&normalize_cookie_header(cookies));
+    if normalized.is_empty() {
+        return normalized;
+    }
+
+    let did_existing = get_cookie_value_ci(&normalized, "did");
+    if did_existing.is_none() {
+        let fallback_did = get_cookie_value_ci(&normalized, "_did");
+        let did_value = fallback_did.unwrap_or_else(gen_web_did);
+        normalized = append_cookie_pair(normalized, "did", &did_value);
+    }
+
+    if get_cookie_value_ci(&normalized, "didv").is_none() {
+        let didv = Utc::now().timestamp_millis().to_string();
+        normalized = append_cookie_pair(normalized, "didv", &didv);
+    }
+
+    normalized
+}
+
+fn filter_kuaishou_cookie_header(cookies: &str) -> String {
+    let allow = [
+        "kwssectoken",
+        "kuaishou.live.web_st",
+        "kuaishou.live.web_ph",
+        "did",
+        "didv",
+        "userid",
+    ];
+    let mut kept = Vec::new();
+    for part in cookies.split(';').map(str::trim) {
+        if part.is_empty() {
+            continue;
+        }
+        let Some((k, v)) = part.split_once('=') else {
+            continue;
+        };
+        let key_lower = k.trim().to_ascii_lowercase();
+        if allow.iter().any(|item| *item == key_lower) {
+            kept.push(format!("{}={}", k.trim(), v.trim()));
+        }
+    }
+    kept.join("; ")
+}
+
 fn extract_user_id_from_url(url: &str) -> String {
     let url_no_fragment = url.split('#').next().unwrap_or(url);
     let url_no_query = url_no_fragment.split('?').next().unwrap_or(url_no_fragment);
@@ -375,11 +429,6 @@ async fn fetch_web_html(
     account: &Account,
     url: &str,
 ) -> Result<(String, reqwest::Url), RecorderError> {
-    if !web_api_allowed() {
-        return Err(RecorderError::ApiError {
-            error: "访问太快，请稍后再试。".to_string(),
-        });
-    }
     let mut headers = reqwest::header::HeaderMap::new();
     headers.insert("User-Agent", USER_AGENT.parse().unwrap());
     headers.insert(
@@ -395,84 +444,181 @@ async fn fetch_web_html(
             .unwrap(),
     );
 
+    let mut cookie_header = String::new();
     if !account.cookies.is_empty() {
         let cookie = normalize_cookie_header(&account.cookies);
         if !cookie.is_empty() {
-            headers.insert("Cookie", cookie.parse().unwrap());
+            cookie_header = cookie;
+            headers.insert("Cookie", cookie_header.parse().unwrap());
         }
     }
 
-    let mut last_error: Option<RecorderError> = None;
-    let mut last_small: Option<(String, reqwest::Url)> = None;
-
-    for candidate in build_web_candidate_urls(url) {
-        let referer = if candidate.contains("www.kuaishou.com") {
-            "https://www.kuaishou.com/"
-        } else {
-            "https://live.kuaishou.com/"
-        };
-        let mut req_headers = headers.clone();
-        req_headers.insert("Referer", referer.parse().unwrap());
-
-        let response = client.get(&candidate).headers(req_headers).send().await?;
-        let status = response.status();
-        let final_url = response.url().clone();
-        let html_str = response.text().await?;
-
-        if !status.is_success() {
-            log::warn!(
-                "[Kuaishou] Web response status: {}, url: {}",
-                status,
-                final_url
+    for attempt in 0..2 {
+        if !web_api_allowed() {
+            log::info!(
+                "[Kuaishou] Web rate limited, retrying after {}s (attempt {})",
+                WEB_RATE_LIMIT_RETRY_SECS,
+                attempt + 1
             );
-            if let Some(msg) = extract_rate_limit_message_from_body(&html_str) {
-                set_web_cooldown(&msg);
-                return Err(RecorderError::ApiError { error: msg });
-            }
-            let snippet_len = html_str.len().min(200);
-            if snippet_len > 0 {
-                log::debug!(
-                    "[Kuaishou] Web error snippet: {}...",
-                    &html_str[..snippet_len]
-                );
-            }
-            last_error = Some(RecorderError::ApiError {
-                error: format!("Kuaishou web status: {}", status),
-            });
-            continue;
+            tokio::time::sleep(Duration::from_secs(WEB_RATE_LIMIT_RETRY_SECS)).await;
         }
 
-        if html_str.len() <= 256 {
-            log::warn!(
-                "[Kuaishou] Web response small ({} bytes), url: {}",
-                html_str.len(),
-                final_url
-            );
-            if let Some(msg) = extract_rate_limit_message_from_body(&html_str) {
-                set_web_cooldown(&msg);
-                return Err(RecorderError::ApiError { error: msg });
+        // Best-effort pre-warm: visit homepage before jumping to room URL.
+        {
+            let mut pre_headers = headers.clone();
+            pre_headers.insert("Referer", "https://live.kuaishou.com/".parse().unwrap());
+            match client
+                .get("https://live.kuaishou.com/")
+                .headers(pre_headers)
+                .send()
+                .await
+            {
+                Ok(resp) => {
+                    let status = resp.status();
+                    let mut prewarm_map: HashMap<String, String> = HashMap::new();
+                    for cookie_header in resp.headers().get_all("set-cookie") {
+                        if let Ok(cookie_str) = cookie_header.to_str() {
+                            if let Some(pair) = cookie_str.split(';').next() {
+                                if let Some((name, value)) = pair.split_once('=') {
+                                    let name = name.trim();
+                                    let value = value.trim();
+                                    if !name.is_empty() {
+                                        prewarm_map.insert(name.to_string(), value.to_string());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    let body = resp.text().await.unwrap_or_default();
+                    if !status.is_success() {
+                        log::warn!(
+                            "[Kuaishou] Homepage prewarm status: {}",
+                            status
+                        );
+                    }
+                    if let Some(msg) = extract_rate_limit_message_from_body(&body) {
+                        set_web_cooldown(&msg);
+                    }
+                    if !prewarm_map.is_empty() {
+                        let mut merged: HashMap<String, String> = HashMap::new();
+                        for part in cookie_header.split(';').map(str::trim) {
+                            if let Some((k, v)) = part.split_once('=') {
+                                let key = k.trim();
+                                if !key.is_empty() {
+                                    merged.insert(key.to_string(), v.trim().to_string());
+                                }
+                            }
+                        }
+                        for (k, v) in prewarm_map {
+                            merged.entry(k).or_insert(v);
+                        }
+                        let mut pairs: Vec<String> = merged
+                            .into_iter()
+                            .map(|(k, v)| format!("{k}={v}"))
+                            .collect();
+                        pairs.sort();
+                        cookie_header = pairs.join("; ");
+                    }
+                }
+                Err(err) => {
+                    log::debug!("[Kuaishou] Homepage prewarm failed: {}", err);
+                }
             }
-            let snippet_len = html_str.len().min(200);
-            if snippet_len > 0 {
-                log::debug!(
-                    "[Kuaishou] Web small snippet: {}...",
-                    &html_str[..snippet_len]
-                );
-            }
-            last_small = Some((html_str, final_url));
-            continue;
         }
 
-        return Ok((html_str, final_url));
+        let mut last_error: Option<RecorderError> = None;
+        let mut last_small: Option<(String, reqwest::Url)> = None;
+
+        for candidate in build_web_candidate_urls(url) {
+            let referer = if candidate.contains("www.kuaishou.com") {
+                "https://www.kuaishou.com/"
+            } else {
+                "https://live.kuaishou.com/"
+            };
+            let mut req_headers = headers.clone();
+            if !cookie_header.is_empty() {
+                req_headers.insert("Cookie", cookie_header.parse().unwrap());
+            }
+            req_headers.insert("Referer", referer.parse().unwrap());
+
+            let response = client.get(&candidate).headers(req_headers).send().await?;
+            let status = response.status();
+            let final_url = response.url().clone();
+            let html_str = response.text().await?;
+
+            if !status.is_success() {
+                log::warn!(
+                    "[Kuaishou] Web response status: {}, url: {}",
+                    status,
+                    final_url
+                );
+                if let Some(msg) = extract_rate_limit_message_from_body(&html_str) {
+                    set_web_cooldown(&msg);
+                    last_error = Some(RecorderError::ApiError { error: msg });
+                    continue;
+                }
+                let snippet_len = html_str.len().min(200);
+                if snippet_len > 0 {
+                    log::debug!(
+                        "[Kuaishou] Web error snippet: {}...",
+                        &html_str[..snippet_len]
+                    );
+                }
+                last_error = Some(RecorderError::ApiError {
+                    error: format!("Kuaishou web status: {}", status),
+                });
+                continue;
+            }
+
+            if html_str.len() <= 256 {
+                log::warn!(
+                    "[Kuaishou] Web response small ({} bytes), url: {}",
+                    html_str.len(),
+                    final_url
+                );
+                if let Some(msg) = extract_rate_limit_message_from_body(&html_str) {
+                    set_web_cooldown(&msg);
+                    last_error = Some(RecorderError::ApiError { error: msg });
+                    continue;
+                }
+                let snippet_len = html_str.len().min(200);
+                if snippet_len > 0 {
+                    log::debug!(
+                        "[Kuaishou] Web small snippet: {}...",
+                        &html_str[..snippet_len]
+                    );
+                }
+                last_small = Some((html_str, final_url));
+                continue;
+            }
+
+            return Ok((html_str, final_url));
+        }
+
+        if let Some((html, final_url)) = last_small {
+            return Ok((html, final_url));
+        }
+
+        let err = last_error.unwrap_or_else(|| RecorderError::ApiError {
+            error: "Failed to fetch Kuaishou web page".to_string(),
+        });
+
+        if let RecorderError::ApiError { error } = &err {
+            if is_rate_limit_message(error) && attempt == 0 {
+                log::info!(
+                    "[Kuaishou] Web rate limited, retrying after {}s",
+                    WEB_RATE_LIMIT_RETRY_SECS
+                );
+                tokio::time::sleep(Duration::from_secs(WEB_RATE_LIMIT_RETRY_SECS)).await;
+                continue;
+            }
+        }
+        return Err(err);
     }
 
-    if let Some((html, final_url)) = last_small {
-        return Ok((html, final_url));
-    }
-
-    Err(last_error.unwrap_or_else(|| RecorderError::ApiError {
-        error: "Failed to fetch Kuaishou web page".to_string(),
-    }))
+    Err(RecorderError::ApiError {
+        error: "???????????".to_string(),
+    })
 }
 
 fn normalize_image_url(url: &str) -> String {
@@ -482,6 +628,174 @@ fn normalize_image_url(url: &str) -> String {
     } else {
         trimmed.to_string()
     }
+}
+
+#[derive(Clone, Debug)]
+struct FollowLiveInfo {
+    caption: Option<String>,
+    cover_url: Option<String>,
+    user_name: Option<String>,
+    user_id: Option<String>,
+    user_avatar: Option<String>,
+}
+
+fn normalize_id(value: &str) -> String {
+    value.trim().to_ascii_lowercase()
+}
+
+fn extract_kuaishou_kww(cookies: &str) -> Option<String> {
+    for part in cookies.split(';').map(str::trim) {
+        if let Some((key, value)) = part.split_once('=') {
+            let key = key.trim().to_ascii_lowercase();
+            if key == "kww" || key == "kwfv1" {
+                let value = value.trim();
+                if !value.is_empty() {
+                    return Some(value.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+async fn fetch_follow_live_info(
+    client: &Client,
+    account: &Account,
+    room_id: &str,
+    author_id: &str,
+    author_name: &str,
+) -> Option<FollowLiveInfo> {
+    let mut headers = reqwest::header::HeaderMap::new();
+    headers.insert("User-Agent", USER_AGENT.parse().ok()?);
+    headers.insert("Accept", "application/json, text/plain, */*".parse().ok()?);
+    headers.insert("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8".parse().ok()?);
+    headers.insert("Referer", "https://live.kuaishou.com/".parse().ok()?);
+    headers.insert("Origin", "https://live.kuaishou.com".parse().ok()?);
+
+    let cookie_header = ensure_kuaishou_request_cookie(&account.cookies);
+    if !cookie_header.is_empty() {
+        headers.insert("Cookie", cookie_header.parse().ok()?);
+    }
+    if let Some(kww) = extract_kuaishou_kww(&cookie_header) {
+        if let Ok(value) = kww.parse() {
+            headers.insert("kww", value);
+        }
+    }
+
+    let response = client
+        .get("https://live.kuaishou.com/live_api/baseuser/userFollowCount")
+        .headers(headers)
+        .send()
+        .await
+        .ok()?;
+
+    if !response.status().is_success() {
+        log::debug!("[Kuaishou] userFollowCount status: {}", response.status());
+        return None;
+    }
+
+    let body = response.text().await.ok()?;
+    let data: UserFollowCountResponse = serde_json::from_str(&body).ok()?;
+    let follow_list = data.data?.follow;
+
+    let room_id_norm = normalize_id(room_id);
+    let author_id_norm = normalize_id(author_id);
+    let author_name_norm = normalize_id(author_name);
+
+    for item in follow_list {
+        let Some(user) = item.user else {
+            continue;
+        };
+        let principal_id = user
+            .principal_id
+            .as_deref()
+            .map(normalize_id)
+            .unwrap_or_default();
+        let user_id = user
+            .user_id
+            .as_deref()
+            .map(normalize_id)
+            .unwrap_or_default();
+        let user_name = user
+            .user_name
+            .as_deref()
+            .map(normalize_id)
+            .unwrap_or_default();
+
+        let matches = (!room_id_norm.is_empty() && principal_id == room_id_norm)
+            || (!author_id_norm.is_empty() && user_id == author_id_norm)
+            || (!author_name_norm.is_empty() && user_name == author_name_norm);
+
+        if matches {
+            return Some(FollowLiveInfo {
+                caption: item.caption,
+                cover_url: item.cover_url,
+                user_name: user.user_name,
+                user_id: user.user_id,
+                user_avatar: user.head_url,
+            });
+        }
+    }
+
+    None
+}
+
+async fn fetch_livedetail_info(
+    client: &Client,
+    account: &Account,
+    room_id: &str,
+) -> Option<FollowLiveInfo> {
+    let cookie_header = ensure_kuaishou_request_cookie(&account.cookies);
+    let did = get_cookie_value_ci(&cookie_header, "did")
+        .or_else(|| get_cookie_value_ci(&cookie_header, "_did"))
+        .unwrap_or_else(gen_web_did);
+    let signer = crate::reverse_generate::kuaishou_sign::KuaishouSign::new(&did);
+    let query_str = format!("principalId={}", room_id);
+    let sign = signer.generate_sign(&query_str);
+
+    let mut headers = reqwest::header::HeaderMap::new();
+    headers.insert("User-Agent", USER_AGENT.parse().ok()?);
+    headers.insert("Accept", "application/json, text/plain, */*".parse().ok()?);
+    headers.insert("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8".parse().ok()?);
+    headers.insert("Referer", format!("https://live.kuaishou.com/u/{room_id}").parse().ok()?);
+    headers.insert("Origin", "https://live.kuaishou.com".parse().ok()?);
+
+    if !cookie_header.is_empty() {
+        headers.insert("Cookie", cookie_header.parse().ok()?);
+    }
+    if let Some(kww) = extract_kuaishou_kww(&cookie_header) {
+        if let Ok(value) = kww.parse() {
+            headers.insert("kww", value);
+        }
+    }
+
+    let response = client
+        .get("https://live.kuaishou.com/live_api/liveroom/livedetail")
+        .query(&[("principalId", room_id), ("sign", sign.as_str())])
+        .headers(headers)
+        .send()
+        .await
+        .ok()?;
+
+    if !response.status().is_success() {
+        log::debug!("[Kuaishou] livedetail status: {}", response.status());
+        return None;
+    }
+
+    let body = response.text().await.ok()?;
+    let value: Value = serde_json::from_str(&body).ok()?;
+
+    let caption = find_string_value(&value, &["caption", "title", "liveTitle", "streamTitle"]);
+    let cover_url = find_image_url(&value, &["coverUrl", "cover", "poster", "snapshot"]);
+    let user_info = find_user_info(&value);
+
+    Some(FollowLiveInfo {
+        caption,
+        cover_url,
+        user_name: user_info.as_ref().map(|u| u.user_name.clone()),
+        user_id: user_info.as_ref().map(|u| u.user_id.clone()),
+        user_avatar: user_info.as_ref().map(|u| u.user_avatar.clone()),
+    })
 }
 
 fn extract_image_url(value: &Value) -> Option<String> {
@@ -628,164 +942,6 @@ fn quality_rank(label: &str) -> i64 {
     0
 }
 
-async fn fetch_mobile_live_value(
-    client: &Client,
-    account: &Account,
-    url: &str,
-) -> Result<Value, RecorderError> {
-    if mobile_api_disabled() {
-        return Err(RecorderError::ApiError {
-            error: "Mobile API disabled".to_string(),
-        });
-    }
-    if !mobile_api_allowed() {
-        return Err(RecorderError::ApiError {
-            error: "Mobile API cooldown".to_string(),
-        });
-    }
-    let eid = extract_user_id_from_url(url);
-    if eid.is_empty() {
-        return Err(RecorderError::ApiError {
-            error: "Failed to extract EID for mobile API".to_string(),
-        });
-    }
-
-    let mut headers = reqwest::header::HeaderMap::new();
-    headers.insert("User-Agent", MOBILE_USER_AGENT.parse().unwrap());
-    headers.insert("Referer", MOBILE_REFERER.parse().unwrap());
-    headers.insert(
-        "Accept-Language",
-        "zh-CN,zh;q=0.8,zh-TW;q=0.7,zh-HK;q=0.5,en-US;q=0.3,en;q=0.2"
-            .parse()
-            .unwrap(),
-    );
-    headers.insert("Content-Type", "application/json".parse().unwrap());
-
-    let cookie = if account.cookies.is_empty() {
-        MOBILE_FALLBACK_COOKIE.to_string()
-    } else {
-        let normalized = normalize_cookie_header(&account.cookies);
-        if normalized.is_empty() {
-            MOBILE_FALLBACK_COOKIE.to_string()
-        } else {
-            normalized
-        }
-    };
-    headers.insert("Cookie", cookie.parse().unwrap());
-
-    let api_url = "https://livev.m.chenzhongtech.com/rest/k/live/byUser?kpn=GAME_ZONE&captchaToken=";
-    let data = serde_json::json!({
-        "source": 5,
-        "eid": eid,
-        "shareMethod": "card",
-        "clientType": "WEB_OUTSIDE_SHARE_H5"
-    });
-
-    let response = client
-        .post(api_url)
-        .headers(headers)
-        .json(&data)
-        .send()
-        .await?;
-
-    let status = response.status();
-    let text = response.text().await?;
-    if !status.is_success() {
-        return Err(RecorderError::ApiError {
-            error: format!("Kuaishou mobile API failed: {}", status),
-        });
-    }
-
-    let value = serde_json::from_str::<Value>(&text).map_err(|e| RecorderError::ApiError {
-        error: format!("Failed to parse mobile API response: {}", e),
-    })?;
-    if let Some(msg) = value.get("error_msg").and_then(|v| v.as_str()) {
-        if !msg.is_empty() {
-            log::warn!("[Kuaishou] Mobile API error message: {}", msg);
-            if is_rate_limit_message(msg) {
-                set_mobile_cooldown(msg);
-                return Err(RecorderError::ApiError {
-                    error: format!("Rate limited: {}", msg),
-                });
-            }
-        }
-    }
-    Ok(value)
-}
-
-fn extract_mobile_room_info(value: &Value, _account: &Account, url: &str) -> Option<RoomInfo> {
-    let live_stream = value.get("liveStream")?;
-    let live_map = live_stream.as_object()?;
-    let living = live_map
-        .get("living")
-        .and_then(|v| v.as_bool())
-        .or_else(|| live_map.get("living").and_then(|v| v.as_i64().map(|n| n == 1)))
-        .unwrap_or(false);
-
-    let fallback_user_id = extract_user_id_from_url(url);
-    let fallback_user_name = "Kuaishou Live".to_string();
-
-    let user_map = live_map.get("user").and_then(|v| v.as_object());
-    let user_name = user_map
-        .and_then(|map| get_string_field(map, &["user_name", "userName", "name", "nickname", "nickName"]))
-        .unwrap_or_else(|| fallback_user_name.clone());
-    let user_id = user_map
-        .and_then(|map| get_string_field(map, &["user_id", "userId", "id", "eid"]))
-        .unwrap_or_else(|| fallback_user_id.clone());
-
-    let room_title = get_string_field(live_map, &["caption", "title", "roomTitle", "introduction"])
-        .unwrap_or_else(|| format!("{}'s live", user_name));
-
-    let user_avatar = user_map
-        .and_then(|map| {
-            find_image_url(
-                &Value::Object(map.clone()),
-                &["headurl", "headUrl", "avatar", "avatarUrl", "portrait", "profilePic", "avatarThumb"],
-            )
-        })
-        .or_else(|| {
-            find_image_url(
-                live_stream,
-                &["headurl", "headUrl", "avatar", "avatarUrl", "portrait", "profilePic", "avatarThumb"],
-            )
-        })
-        .or_else(|| {
-             find_image_url(
-                value,
-                &["headurl", "headUrl", "avatar", "avatarUrl", "portrait", "profilePic", "avatarThumb"],
-            )
-        })
-        .unwrap_or_default();
-
-    let cover_url = find_image_url(
-        live_stream,
-        &["cover", "coverUrl", "poster", "image", "snapshot", "shareCover", "cover_url", "posterUrl"],
-    )
-    .or_else(|| {
-        find_image_url(
-            value,
-            &["cover", "coverUrl", "poster", "shareCover", "snapshot", "image", "cover_url", "posterUrl"],
-        )
-    })
-    .unwrap_or_default();
-
-    let room_cover_url = if cover_url.is_empty() {
-        user_avatar.clone()
-    } else {
-        cover_url
-    };
-
-    Some(RoomInfo {
-        live_status: living,
-        room_title,
-        room_cover_url,
-        user_id,
-        user_name,
-        user_avatar,
-    })
-}
-
-
 
 /// QR code information for login
 #[derive(Debug, Clone, serde::Serialize, Deserialize)]
@@ -822,6 +978,12 @@ pub struct QrStatus {
     pub code: u8,
     pub cookies: String,
     pub message: Option<String>,
+    #[serde(default)]
+    pub user_id: Option<String>,
+    #[serde(default)]
+    pub user_name: Option<String>,
+    #[serde(default)]
+    pub user_avatar: Option<String>,
 }
 
 fn gen_web_did() -> String {
@@ -903,6 +1065,26 @@ fn has_captcha_signal(value: &Value) -> bool {
     }
 }
 
+fn extract_qr_scan_user(value: &Value) -> (Option<String>, Option<String>, Option<String>) {
+    let user = value.get("user");
+    let user_id = user
+        .and_then(|v| v.get("user_id").or_else(|| v.get("userId")))
+        .and_then(|v| v.as_i64().map(|n| n.to_string()).or_else(|| v.as_str().map(|s| s.to_string())))
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let user_name = user
+        .and_then(|v| v.get("user_name").or_else(|| v.get("userName")).or_else(|| v.get("name")))
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let user_avatar = user
+        .and_then(|v| v.get("headurl").or_else(|| v.get("headUrl")).or_else(|| v.get("avatar")))
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    (user_id, user_name, user_avatar)
+}
+
 /// Get room information from web page
 pub async fn get_room_info(
     client: &Client,
@@ -911,15 +1093,7 @@ pub async fn get_room_info(
 ) -> Result<RoomInfo, RecorderError> {
     let account_obj = ensure_guest_cookie(account);
     let account = &account_obj;
-    let (html_str, _final_url) = match fetch_web_html(client, account, url).await {
-        Ok(result) => result,
-        Err(e) => {
-            if let Ok(mobile_info) = get_mobile_room_info(client, account, url).await {
-                return Ok(mobile_info);
-            }
-            return Err(e);
-        }
-    };
+    let (html_str, _final_url) = fetch_web_html(client, account, url).await?;
     if is_rate_limit_message(&html_str) {
         let message = "访问太快，请稍后再试。";
         set_web_cooldown(message);
@@ -933,50 +1107,77 @@ pub async fn get_room_info(
 
     let fallback_user_name = html_title.clone().unwrap_or_else(|| "Kuaishou Live".to_string());
 
-    let fallback_room_info = RoomInfo {
+    let fallback_title = html_title
+        .clone()
+        .unwrap_or_else(|| format!("{}'s live", fallback_user_name));
+    let mut fallback_room_info = RoomInfo {
         live_status: has_fallback_stream,
-        room_title: html_title
-            .clone()
-            .unwrap_or_else(|| format!("{}'s live", fallback_user_name)),
+        room_title: fallback_title.clone(),
         room_cover_url: html_cover.clone().unwrap_or_default(),
         user_id: fallback_user_id.clone(),
         user_name: fallback_user_name.clone(),
         user_avatar: html_avatar.clone().unwrap_or_default(),
     };
 
+    if fallback_room_info.room_title == fallback_title {
+        let follow_info = match fetch_follow_live_info(
+            client,
+            account,
+            &fallback_user_id,
+            &fallback_room_info.user_id,
+            &fallback_room_info.user_name,
+        )
+        .await
+        {
+            Some(info) => Some(info),
+            None => fetch_livedetail_info(client, account, &fallback_user_id).await,
+        };
+
+        if let Some(info) = follow_info {
+            if let Some(caption) = info.caption.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
+                fallback_room_info.room_title = caption.to_string();
+            }
+            if let Some(name) = info.user_name.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
+                fallback_room_info.user_name = name.to_string();
+            }
+            if let Some(uid) = info.user_id.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
+                fallback_room_info.user_id = uid.to_string();
+            }
+            if fallback_room_info.room_cover_url.is_empty() {
+                if let Some(cover) = info.cover_url.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
+                    fallback_room_info.room_cover_url = normalize_image_url(cover);
+                }
+            }
+            if fallback_room_info.user_avatar.is_empty() {
+                if let Some(avatar) = info.user_avatar.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
+                    fallback_room_info.user_avatar = normalize_image_url(avatar);
+                }
+            }
+        }
+    }
+    if fallback_room_info.room_title == fallback_title {
+        if !fallback_room_info.user_name.trim().is_empty() {
+            fallback_room_info.room_title = fallback_room_info.user_name.clone();
+        }
+    }
+
     // Parse JSON from script tag
     let json_str = match extract_initial_state(&html_str) {
         Some(json_str) => json_str,
         None => {
-            if !mobile_api_disabled() {
-                if let Ok(mobile_info) = get_mobile_room_info(client, account, url).await {
-                    return Ok(mobile_info);
-                }
-            }
-            if has_fallback_stream {
-                return Ok(fallback_room_info.clone());
-            }
-            return Err(RecorderError::ApiError {
-                error: "Failed to extract JSON data from page".to_string(),
-            });
+            return Ok(fallback_room_info.clone());
         }
     };
 
 
 
 
+    let state_value = serde_json::from_str::<Value>(&json_str).ok();
+
     let live_data = match parse_live_stream_response(&json_str) {
         Ok(live_data) => live_data,
-        Err(e) => {
-            if !mobile_api_disabled() {
-                if let Ok(mobile_info) = get_mobile_room_info(client, account, url).await {
-                    return Ok(mobile_info);
-                }
-            }
-            if has_fallback_stream {
-                return Ok(fallback_room_info.clone());
-            }
-            return Err(e);
+        Err(_) => {
+            return Ok(fallback_room_info.clone());
         }
     };
 
@@ -992,12 +1193,12 @@ pub async fn get_room_info(
     })?;
 
     let author = live_data.author.unwrap_or_default();
-    let author_name = if author.name.is_empty() {
+    let mut author_name = if author.name.is_empty() {
         fallback_user_name.clone()
     } else {
         author.name.clone()
     };
-    let author_id = if author.id.is_empty() {
+    let mut author_id = if author.id.is_empty() {
         fallback_user_id.clone()
     } else {
         author.id.clone()
@@ -1008,11 +1209,9 @@ pub async fn get_room_info(
         .map(|url| normalize_image_url(&url))
         .filter(|url| !url.is_empty())
         .or_else(|| {
-             if let Ok(value) = serde_json::from_str::<Value>(&json_str) {
-                 find_image_url(&value, &["headurl", "headUrl", "avatar", "avatarUrl", "portrait", "profilePic", "avatarThumb"])
-             } else {
-                 None
-             }
+             state_value.as_ref().and_then(|value| {
+                 find_image_url(value, &["headurl", "headUrl", "avatar", "avatarUrl", "portrait", "profilePic", "avatarThumb"])
+             })
         })
         .unwrap_or_default();
 
@@ -1035,8 +1234,8 @@ pub async fn get_room_info(
         url
     } else {
         // Try finding cover recursively, BUT explicitly exclude avatar-like keys first
-         if let Ok(value) = serde_json::from_str::<Value>(&json_str) {
-             find_image_url(&value, &["cover", "coverUrl", "poster", "image"])
+         if let Some(value) = state_value.as_ref() {
+             find_image_url(value, &["cover", "coverUrl", "poster", "image"])
                 .or_else(|| {
                      // Try regex fallback for poster/cover patterns in HTML
                      let patterns = [
@@ -1061,25 +1260,88 @@ pub async fn get_room_info(
          }
     };
 
-    let final_title = live_stream
+    let fallback_title = format!("{}'s live", author_name);
+    let extra_title = state_value
+        .as_ref()
+        .and_then(|value| find_string_value(value, &["caption", "title", "liveTitle", "streamTitle"]))
+        .filter(|t| is_title_useful(t, &author_name));
+
+    let mut final_title = live_stream
         .caption
         .clone()
         .or_else(|| live_data.config.and_then(|c| c.caption))
         .filter(|s| !s.is_empty())
         .or(html_title)
-        .unwrap_or_else(|| format!("{}'s live", author_name));
+        .or(extra_title)
+        .unwrap_or_else(|| fallback_title.clone());
 
-    let final_cover = if room_cover_url.is_empty() {
+    let mut final_cover = if room_cover_url.is_empty() {
         html_cover.unwrap_or_default()
     } else {
         room_cover_url
     };
 
-    let final_avatar = if author_avatar.is_empty() {
+    let mut final_avatar = if author_avatar.is_empty() {
         html_avatar.unwrap_or_default()
     } else {
         author_avatar
     };
+
+    if final_title == fallback_title {
+        let follow_info = match fetch_follow_live_info(
+            client,
+            account,
+            &fallback_user_id,
+            &author_id,
+            &author_name,
+        )
+        .await
+        {
+            Some(info) => Some(info),
+            None => fetch_livedetail_info(client, account, &fallback_user_id).await,
+        };
+        if let Some(follow_info) = follow_info {
+            if let Some(caption) = follow_info
+                .caption
+                .as_deref()
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+            {
+                final_title = caption.to_string();
+            }
+            if author_name.is_empty() {
+                if let Some(name) = follow_info.user_name {
+                    if !name.trim().is_empty() {
+                        author_name = name;
+                    }
+                }
+            }
+            if author_id.is_empty() {
+                if let Some(id) = follow_info.user_id {
+                    if !id.trim().is_empty() {
+                        author_id = id;
+                    }
+                }
+            }
+            if final_cover.is_empty() {
+                if let Some(cover) = follow_info.cover_url {
+                    if !cover.trim().is_empty() {
+                        final_cover = normalize_image_url(&cover);
+                    }
+                }
+            }
+            if final_avatar.is_empty() {
+                if let Some(avatar) = follow_info.user_avatar {
+                    if !avatar.trim().is_empty() {
+                        final_avatar = normalize_image_url(&avatar);
+                    }
+                }
+            }
+        }
+    }
+    if final_title == fallback_title && !author_name.trim().is_empty() {
+        final_title = author_name.clone();
+    }
 
     Ok(RoomInfo {
         live_status: is_live,
@@ -1090,107 +1352,6 @@ pub async fn get_room_info(
         user_avatar: final_avatar,
     })
 }
-
-async fn get_mobile_room_info(
-    client: &Client,
-    account: &Account,
-    url: &str,
-) -> Result<RoomInfo, RecorderError> {
-    let value = fetch_mobile_live_value(client, account, url).await?;
-    extract_mobile_room_info(&value, account, url).ok_or(RecorderError::ApiError {
-        error: "No liveStream in mobile API response".to_string(),
-    })
-}
-
-/// Helper to get stream data from mobile API which often provides better quality
-async fn get_mobile_stream_data(
-    client: &Client,
-    account: &Account,
-    url: &str,
-) -> Result<Vec<StreamInfo>, RecorderError> {
-    let value = fetch_mobile_live_value(client, account, url).await?;
-    let mobile_resp: MobileApiResponse =
-        serde_json::from_value(value).map_err(|e| RecorderError::ApiError {
-            error: format!("Failed to parse mobile API response: {}", e),
-        })?;
-
-    if let Some(stream) = mobile_resp.live_stream {
-        if stream.living {
-            let mut streams = Vec::new();
-            
-            // Extract from multiResolutionHlsPlayUrls
-            if let Some(multi_hls) = stream.multi_resolution_hls_play_urls {
-                 for item in multi_hls {
-                     let quality = item.level.unwrap_or_default();
-                     for url in item.urls {
-                         streams.push(StreamInfo {
-                             url,
-                             quality: quality.clone(),
-                             bitrate: Some(quality_rank(&quality)), // Estimate bitrate from quality name
-                             cookie: Some(account.cookies.clone()),
-                         });
-                     }
-                 }
-            }
-
-            // Extract from multiResolutionPlayUrls (often FLV)
-            if let Some(multi_play) = stream.multi_resolution_play_urls {
-                 for item in multi_play {
-                     let quality = item.level.unwrap_or_default();
-                     for url in item.urls {
-                         streams.push(StreamInfo {
-                             url,
-                             quality: quality.clone(),
-                             bitrate: Some(quality_rank(&quality)),
-                             cookie: Some(account.cookies.clone()),
-                         });
-                     }
-                 }
-            }
-
-            // Extract from playUrls
-            if let Some(play_urls) = stream.play_urls {
-                 for item in play_urls {
-                     let quality = item.quality.unwrap_or_default();
-                     streams.push(StreamInfo {
-                         url: item.url,
-                         quality: quality.clone(),
-                         bitrate: Some(quality_rank(&quality)),
-                         cookie: Some(account.cookies.clone()),
-                     });
-                 }
-            }
-
-            if streams.is_empty() {
-                 if let Some(hls) = stream.hls_play_url {
-                     streams.push(StreamInfo {
-                         url: hls,
-                         quality: "sd".to_string(),
-                         bitrate: None,
-                         cookie: Some(account.cookies.clone()),
-                     });
-                 }
-            }
-
-            let mut seen = std::collections::HashSet::new();
-            streams.retain(|stream| seen.insert(stream.url.clone()));
-            streams.sort_by(|a, b| {
-                let a_m3u8 = a.url.contains(".m3u8");
-                let b_m3u8 = b.url.contains(".m3u8");
-                b_m3u8
-                    .cmp(&a_m3u8)
-                    .then_with(|| b.bitrate.unwrap_or(0).cmp(&a.bitrate.unwrap_or(0)))
-                    .then_with(|| quality_rank(&b.quality).cmp(&quality_rank(&a.quality)))
-            });
-
-            return Ok(streams);
-        }
-    }
-
-    Err(RecorderError::ApiError { error: "No stream found in mobile API".to_string() })
-}
-
-
 /// Get stream URLs from Kuaishou web page
 pub async fn get_stream_urls(
     client: &Client,
@@ -1199,33 +1360,10 @@ pub async fn get_stream_urls(
 ) -> Result<Vec<StreamInfo>, RecorderError> {
     let account_obj = ensure_guest_cookie(account);
     let account = &account_obj;
-    // Prefer web first to reduce mobile rate limits; only try mobile if no m3u8 is found.
-    let (html_str, _final_url) = match fetch_web_html(client, account, url).await {
-        Ok(result) => result,
-        Err(e) => {
-            match get_mobile_stream_data(client, account, url).await {
-                Ok(streams) => {
-                    if !streams.is_empty() {
-                        if streams.iter().any(|s| s.url.contains(".m3u8")) {
-                            log::info!(
-                                "[Kuaishou] Mobile API returned m3u8 stream(s) after web error"
-                            );
-                        }
-                        return Ok(streams);
-                    }
-                }
-                Err(err) => {
-                    if is_rate_limited_error(&err) {
-                        log::info!("[Kuaishou] Mobile API rate limited, skipping mobile for now");
-                    }
-                }
-            }
-            return Err(e);
-        }
-    };
+    let (html_str, _final_url) = fetch_web_html(client, account, url).await?;
     let fallback_hls = extract_hls_play_url(&html_str).map(|hls_url| StreamInfo {
         url: hls_url,
-        quality: "蓝光质臻".to_string(),  // HLS adaptive streaming, typically delivers 720p+
+        quality: "蓝光质臻".to_string(), // HLS adaptive streaming, typically delivers 720p+
         bitrate: None,
         cookie: Some(account.cookies.clone()),
     });
@@ -1236,30 +1374,6 @@ pub async fn get_stream_urls(
         None => {
             if let Some(fallback) = fallback_hls.clone() {
                 urls.push(fallback);
-            }
-            if !mobile_api_disabled() {
-                match get_mobile_stream_data(client, account, url).await {
-                    Ok(streams) => {
-                        if !streams.is_empty() {
-                            if streams.iter().any(|s| s.url.contains(".m3u8")) {
-                                log::info!(
-                                    "[Kuaishou] Mobile API returned m3u8 stream(s) after web parse failed"
-                                );
-                                return Ok(streams);
-                            }
-                            if urls.is_empty() {
-                                return Ok(streams);
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        if is_rate_limited_error(&e) {
-                            log::info!(
-                                "[Kuaishou] Mobile API rate limited, skipping mobile for now"
-                            );
-                        }
-                    }
-                }
             }
             if !urls.is_empty() {
                 return Ok(urls);
@@ -1275,30 +1389,6 @@ pub async fn get_stream_urls(
         Err(e) => {
             if let Some(fallback) = fallback_hls.clone() {
                 urls.push(fallback);
-            }
-            if !mobile_api_disabled() {
-                match get_mobile_stream_data(client, account, url).await {
-                    Ok(streams) => {
-                        if !streams.is_empty() {
-                            if streams.iter().any(|s| s.url.contains(".m3u8")) {
-                                log::info!(
-                                    "[Kuaishou] Mobile API returned m3u8 stream(s) after web parse failed"
-                                );
-                                return Ok(streams);
-                            }
-                            if urls.is_empty() {
-                                return Ok(streams);
-                            }
-                        }
-                    }
-                    Err(err) => {
-                        if is_rate_limited_error(&err) {
-                            log::info!(
-                                "[Kuaishou] Mobile API rate limited, skipping mobile for now"
-                            );
-                        }
-                    }
-                }
             }
             if !urls.is_empty() {
                 return Ok(urls);
@@ -1335,30 +1425,30 @@ pub async fn get_stream_urls(
 
     if let Some(h264) = play_urls.h264 {
         if let Some(set) = h264.adaptation_set {
-             all_representations.extend(set.representation);
+            all_representations.extend(set.representation);
         }
     }
 
     if let Some(h265) = play_urls.h265 {
         if let Some(set) = h265.adaptation_set {
-             all_representations.extend(set.representation);
+            all_representations.extend(set.representation);
         }
     }
 
     if all_representations.is_empty() {
-         if !urls.is_empty() {
-             return Ok(urls);
-         }
-         return Err(RecorderError::ApiError {
-             error: "No usable stream representations found".to_string(),
-         });
+        if !urls.is_empty() {
+            return Ok(urls);
+        }
+        return Err(RecorderError::ApiError {
+            error: "No usable stream representations found".to_string(),
+        });
     }
 
     all_representations.sort_by(|a, b| b.bitrate.unwrap_or(0).cmp(&a.bitrate.unwrap_or(0)));
-    
+
     // Remove duplicates based on URL
     let mut seen_urls = std::collections::HashSet::new();
-    
+
     urls.extend(all_representations.into_iter().filter_map(|rep| {
         if seen_urls.contains(&rep.url) {
             return None;
@@ -1366,10 +1456,7 @@ pub async fn get_stream_urls(
         seen_urls.insert(rep.url.clone());
         Some(StreamInfo {
             url: rep.url,
-            quality: rep
-                .name
-                .or(rep.quality_type)
-                .unwrap_or_default(),
+            quality: rep.name.or(rep.quality_type).unwrap_or_default(),
             bitrate: rep.bitrate,
             cookie: Some(account.cookies.clone()),
         })
@@ -1391,31 +1478,6 @@ pub async fn get_stream_urls(
     });
 
     if !urls.iter().any(|stream| stream.url.contains(".m3u8")) {
-        if !mobile_api_disabled() {
-            match get_mobile_stream_data(client, account, url).await {
-                Ok(streams) => {
-                    if !streams.is_empty() {
-                        if streams.iter().any(|s| s.url.contains(".m3u8")) {
-                            log::info!(
-                                "[Kuaishou] Mobile API returned m3u8 stream(s) after web fallback"
-                            );
-                            return Ok(streams);
-                        }
-                        if urls.is_empty() {
-                            return Ok(streams);
-                        }
-                    }
-                }
-                Err(e) => {
-                    if is_rate_limited_error(&e) {
-                        log::info!("[Kuaishou] Mobile API rate limited, skipping mobile for now");
-                    }
-                }
-            }
-        }
-    }
-
-    if !urls.iter().any(|stream| stream.url.contains(".m3u8")) {
         if let Some(flv_url) = urls
             .iter()
             .find(|stream| stream.url.contains(".flv"))
@@ -1428,7 +1490,7 @@ pub async fn get_stream_urls(
                     0,
                     StreamInfo {
                         url: guessed_hls,
-                        quality: "蓝光质臻".to_string(),  // HLS adaptive streaming, typically delivers 720p+
+                        quality: "蓝光质臻".to_string(), // HLS adaptive streaming, typically delivers 720p+
                         bitrate: None,
                         cookie: Some(account.cookies.clone()),
                     },
@@ -1445,8 +1507,16 @@ pub async fn get_stream_urls(
                 "  [{}] Quality: {}, Bitrate: {}, Format: {}",
                 i,
                 if stream.quality.is_empty() { "unknown" } else { &stream.quality },
-                stream.bitrate.map_or("unknown".to_string(), |b| format!("{} kbps", b)),
-                if stream.url.contains(".m3u8") { "HLS" } else if stream.url.contains(".flv") { "FLV" } else { "other" }
+                stream
+                    .bitrate
+                    .map_or("unknown".to_string(), |b| format!("{} kbps", b)),
+                if stream.url.contains(".m3u8") {
+                    "HLS"
+                } else if stream.url.contains(".flv") {
+                    "FLV"
+                } else {
+                    "other"
+                }
             );
         }
     } else {
@@ -1456,107 +1526,17 @@ pub async fn get_stream_urls(
     Ok(urls)
 }
 
+
 fn ensure_guest_cookie(account: &crate::account::Account) -> crate::account::Account {
-    account.clone()
-}
-
-/// Get stream URL from mobile API (fallback method)
-pub async fn get_stream_url_mobile(
-    client: &Client,
-    account: &Account,
-    eid: &str,
-) -> Result<String, RecorderError> {
-    let mut headers = reqwest::header::HeaderMap::new();
-    headers.insert("User-Agent", MOBILE_USER_AGENT.parse().unwrap());
-    headers.insert(
-        "Accept-Language",
-        "zh-CN,zh;q=0.8,zh-TW;q=0.7,zh-HK;q=0.5,en-US;q=0.3,en;q=0.2"
-            .parse()
-            .unwrap(),
-    );
-    headers.insert("Referer", "https://www.kuaishou.com/".parse().unwrap());
-    headers.insert("content-type", "application/json".parse().unwrap());
-
-    let cookie = if account.cookies.is_empty() {
-        MOBILE_FALLBACK_COOKIE.to_string()
-    } else {
-        let normalized = normalize_cookie_header(&account.cookies);
-        if normalized.is_empty() {
-            MOBILE_FALLBACK_COOKIE.to_string()
-        } else {
-            normalized
-        }
-    };
-    headers.insert("Cookie", cookie.parse().unwrap());
-
-    let data = json!({
-        "source": 5,
-        "eid": eid,
-        "shareMethod": "card",
-        "clientType": "WEB_OUTSIDE_SHARE_H5"
-    });
-
-    let api_url =
-        "https://livev.m.chenzhongtech.com/rest/k/live/byUser?kpn=GAME_ZONE&captchaToken=";
-
-    let response = client.post(api_url).headers(headers).json(&data).send().await?;
-
-    let json_data: MobileApiResponse = response.json().await?;
-
-    let live_stream = json_data.live_stream.ok_or(RecorderError::ApiError {
-        error: "No liveStream in mobile API response".to_string(),
-    })?;
-
-    if !live_stream.living {
-        return Err(RecorderError::NotLive);
+    let mut next = account.clone();
+    let normalized = normalize_cookie_header(&next.cookies);
+    let ensured = ensure_kuaishou_base_cookies(&normalized);
+    if ensured != next.cookies {
+        next.cookies = ensured;
+    } else if normalized != next.cookies {
+        next.cookies = normalized;
     }
-
-    // Prefer multiResolutionHlsPlayUrls
-    if let Some(mut multi_hls) = live_stream.multi_resolution_hls_play_urls {
-        multi_hls.sort_by(|a, b| {
-            quality_rank(b.level.as_deref().unwrap_or(""))
-                .cmp(&quality_rank(a.level.as_deref().unwrap_or("")))
-        });
-        for entry in multi_hls {
-            if let Some(url) = entry
-                .urls
-                .iter()
-                .find(|url| url.contains(".m3u8"))
-                .or_else(|| entry.urls.first())
-            {
-                return Ok(url.clone());
-            }
-        }
-    }
-
-    // Fallback to multiResolutionPlayUrls (often FLV)
-    if let Some(mut multi_play) = live_stream.multi_resolution_play_urls {
-        multi_play.sort_by(|a, b| {
-            quality_rank(b.level.as_deref().unwrap_or(""))
-                .cmp(&quality_rank(a.level.as_deref().unwrap_or("")))
-        });
-        for entry in multi_play {
-            if let Some(url) = entry.urls.first() {
-                return Ok(url.clone());
-            }
-        }
-    }
-
-    // Fallback to hlsPlayUrl
-    if let Some(hls_url) = live_stream.hls_play_url {
-        return Ok(hls_url);
-    }
-
-    // Last resort: playUrls
-    if let Some(play_urls) = live_stream.play_urls {
-        if let Some(first) = play_urls.first() {
-            return Ok(first.url.clone());
-        }
-    }
-
-    Err(RecorderError::ApiError {
-        error: "No stream URL found in mobile API response".to_string(),
-    })
+    next
 }
 
 pub async fn fetch_guest_state(client: &Client) -> Result<String, RecorderError> {
@@ -1696,6 +1676,54 @@ pub fn get_kuaishou_cookie_item(cookies: &str, key: &str) -> Option<String> {
 
 
 
+fn find_string_value(value: &Value, keys: &[&str]) -> Option<String> {
+    match value {
+        Value::Object(map) => {
+            for key in keys {
+                if let Some(Value::String(value)) = map.get(*key) {
+                    let trimmed = value.trim();
+                    if !trimmed.is_empty() {
+                        return Some(trimmed.to_string());
+                    }
+                }
+            }
+            for child in map.values() {
+                if let Some(found) = find_string_value(child, keys) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        Value::Array(values) => {
+            for child in values {
+                if let Some(found) = find_string_value(child, keys) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+fn is_title_useful(title: &str, author_name: &str) -> bool {
+    let trimmed = title.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    if !author_name.trim().is_empty() && trimmed == author_name.trim() {
+        return false;
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    if lower.contains("????") || lower.contains("error code") || lower.contains("????") {
+        return false;
+    }
+    if lower.ends_with("'s live") || trimmed.ends_with("???") {
+        return false;
+    }
+    true
+}
+
 fn get_string_field(map: &Map<String, Value>, keys: &[&str]) -> Option<String> {
     for key in keys {
         if let Some(value) = map.get(*key) {
@@ -1774,30 +1802,74 @@ fn find_user_info(value: &Value) -> Option<crate::UserInfo> {
     }
 }
 
+async fn fetch_baseuser_info(
+    client: &Client,
+    account: &Account,
+) -> Option<crate::UserInfo> {
+    let mut headers = reqwest::header::HeaderMap::new();
+    headers.insert("User-Agent", USER_AGENT.parse().ok()?);
+    headers.insert("Accept", "application/json, text/plain, */*".parse().ok()?);
+    headers.insert("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8".parse().ok()?);
+    headers.insert("Referer", "https://live.kuaishou.com/".parse().ok()?);
+    headers.insert("Origin", "https://live.kuaishou.com".parse().ok()?);
+
+    let cookie_header = ensure_kuaishou_request_cookie(&account.cookies);
+    if !cookie_header.is_empty() {
+        headers.insert("Cookie", cookie_header.parse().ok()?);
+    }
+    if let Some(kww) = extract_kuaishou_kww(&cookie_header) {
+        if let Ok(value) = kww.parse() {
+            headers.insert("kww", value);
+        }
+    }
+
+    let response = client
+        .get("https://live.kuaishou.com/live_api/baseuser/userinfo")
+        .headers(headers)
+        .send()
+        .await
+        .ok()?;
+    if !response.status().is_success() {
+        return None;
+    }
+    let body = response.text().await.ok()?;
+    let value: Value = serde_json::from_str(&body).ok()?;
+    if let Some(info) = find_user_info(&value) {
+        return Some(info);
+    }
+    value
+        .get("data")
+        .and_then(find_user_info)
+}
+
 /// Get user information from cookies
 pub async fn get_user_info(
     client: &Client,
     account: &Account,
 ) -> Result<crate::UserInfo, RecorderError> {
+    let account = ensure_guest_cookie(account);
+    let uid = get_cookie_value_ci(&account.cookies, "userId")
+        .or_else(|| get_cookie_value_ci(&account.cookies, "user_id"))
+        .or_else(|| get_cookie_value_ci(&account.cookies, "userIdStr"))
+        .or_else(|| get_cookie_value_ci(&account.cookies, "uid"));
+
+    if let Some(info) = fetch_baseuser_info(client, &account).await {
+        return Ok(info);
+    }
+
     let mut candidates = vec![
         "https://live.kuaishou.com/".to_string(),
         "https://www.kuaishou.com/".to_string(),
     ];
 
-    if !account.cookies.is_empty() {
-        let uid = get_cookie_value_ci(&account.cookies, "userId")
-            .or_else(|| get_cookie_value_ci(&account.cookies, "user_id"))
-            .or_else(|| get_cookie_value_ci(&account.cookies, "userIdStr"))
-            .or_else(|| get_cookie_value_ci(&account.cookies, "uid"));
-        if let Some(uid) = uid {
-            candidates.push(format!("https://live.kuaishou.com/u/{uid}"));
-            candidates.push(format!("https://www.kuaishou.com/u/{uid}"));
-            candidates.push(format!("https://www.kuaishou.com/profile/{uid}"));
-        }
+    if let Some(uid) = uid.as_ref() {
+        candidates.push(format!("https://live.kuaishou.com/u/{uid}"));
+        candidates.push(format!("https://www.kuaishou.com/u/{uid}"));
+        candidates.push(format!("https://www.kuaishou.com/profile/{uid}"));
     }
 
     for url in candidates {
-        let (html_str, _) = match fetch_web_html(client, account, &url).await {
+        let (html_str, _) = match fetch_web_html(client, &account, &url).await {
             Ok(result) => result,
             Err(_) => continue,
         };
@@ -1858,6 +1930,16 @@ pub async fn get_user_info(
         }
     }
 
+    if let Some(uid) = uid {
+        if let Some(info) = fetch_livedetail_info(client, &account, &uid).await {
+            return Ok(crate::UserInfo {
+                user_id: info.user_id.unwrap_or(uid),
+                user_name: info.user_name.unwrap_or_else(|| "Kuaishou".to_string()),
+                user_avatar: info.user_avatar.unwrap_or_default(),
+            });
+        }
+    }
+
     Err(RecorderError::ApiError {
         error: "Failed to parse user info from page".to_string(),
     })
@@ -1897,6 +1979,7 @@ pub async fn get_qr_status(
 
     let scan_data: serde_json::Value = scan_response.json().await?;
     log::warn!("[Kuaishou] QR scanResult: {}", scan_data);
+    let (scan_user_id, scan_user_name, scan_user_avatar) = extract_qr_scan_user(&scan_data);
 
     // If not scanned yet, return pending status
     if scan_data["result"].as_u64().unwrap_or(1) != 1 {
@@ -1905,6 +1988,9 @@ pub async fn get_qr_status(
             code: 1,
             cookies: String::new(),
             message,
+            user_id: scan_user_id,
+            user_name: scan_user_name,
+            user_avatar: scan_user_avatar,
         });
     }
 
@@ -1926,6 +2012,9 @@ pub async fn get_qr_status(
             code: 2,
             cookies: String::new(),
             message,
+            user_id: scan_user_id,
+            user_name: scan_user_name,
+            user_avatar: scan_user_avatar,
         });
     }
 
@@ -1994,6 +2083,9 @@ pub async fn get_qr_status(
                 code: 2,
                 cookies: String::new(),
                 message: Some(message),
+                user_id: scan_user_id,
+                user_name: scan_user_name,
+                user_avatar: scan_user_avatar,
             });
         }
         if has_captcha_signal(&callback_json) {
@@ -2001,6 +2093,9 @@ pub async fn get_qr_status(
                 code: 2,
                 cookies: String::new(),
                 message: Some("\u{9700}\u{8981}\u{6ed1}\u{5757}\u{9a8c}\u{8bc1}".to_string()),
+                user_id: scan_user_id,
+                user_name: scan_user_name,
+                user_avatar: scan_user_avatar,
             });
         }
         return Err(RecorderError::ApiError {
@@ -2012,6 +2107,9 @@ pub async fn get_qr_status(
         code: 0,
         cookies,
         message: None,
+        user_id: scan_user_id,
+        user_name: scan_user_name,
+        user_avatar: scan_user_avatar,
     })
 }
 

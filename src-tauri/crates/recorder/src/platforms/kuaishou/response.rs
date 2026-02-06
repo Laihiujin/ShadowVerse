@@ -1,4 +1,5 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
+use serde_json::Value;
 
 /// Response structure for Kuaishou live stream data
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -136,4 +137,55 @@ pub struct MobileUser {
     pub user_name: String,
     #[serde(rename = "user_id")]
     pub user_id: String,
+}
+
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UserFollowCountResponse {
+    pub data: Option<UserFollowData>,
+}
+
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UserFollowData {
+    #[serde(default)]
+    pub follow: Vec<UserFollowLive>,
+}
+
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UserFollowLive {
+    #[serde(default)]
+    pub caption: Option<String>,
+    #[serde(default, alias = "coverUrl")]
+    pub cover_url: Option<String>,
+    #[serde(default, alias = "liveStreamId")]
+    pub live_stream_id: Option<String>,
+    pub user: Option<UserFollowUser>,
+}
+
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UserFollowUser {
+    #[serde(default, alias = "principalId")]
+    pub principal_id: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_opt_string", alias = "user_id", alias = "userId")]
+    pub user_id: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_opt_string", alias = "user_name", alias = "userName")]
+    pub user_name: Option<String>,
+    #[serde(default, alias = "headurl", alias = "headUrl", alias = "avatar")]
+    pub head_url: Option<String>,
+}
+
+fn deserialize_opt_string<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<Value>::deserialize(deserializer)?;
+    Ok(match value {
+        Some(Value::String(value)) => Some(value),
+        Some(Value::Number(value)) => Some(value.to_string()),
+        Some(Value::Bool(value)) => Some(value.to_string()),
+        _ => None,
+    })
 }

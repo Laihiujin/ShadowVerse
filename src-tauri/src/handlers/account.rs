@@ -1,6 +1,8 @@
 use std::env;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+use std::sync::Arc;
 
 use crate::database::account::AccountRow;
 use crate::config::{
@@ -19,23 +21,31 @@ use recorder::platforms::{
 use recorder::UserInfo;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use tauri::Emitter;
+use url::Url;
 
 use hyper::header::HeaderValue;
+use reqwest::cookie::{CookieStore, Jar};
 use reqwest::header::{HeaderMap, USER_AGENT};
-#[cfg(feature = "gui")]
-use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
-#[cfg(feature = "gui")]
 use tokio::time::Duration;
 #[cfg(feature = "gui")]
-use url::Url;
+use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn get_accounts(state: state_type!()) -> Result<super::AccountInfo, String> {
-    let account_info = super::AccountInfo {
-        accounts: state.db.get_accounts().await?,
-    };
+    let accounts = state.db.get_accounts().await?;
+    log::info!(
+        "[Account] get_accounts count={} uids={:?}",
+        accounts.len(),
+        accounts
+            .iter()
+            .map(|a| format!("{}:{}", a.platform, a.uid))
+            .collect::<Vec<_>>()
+    );
+    let account_info = super::AccountInfo { accounts };
     Ok(account_info)
 }
+
 
 fn get_item_from_cookies(name: &str, cookies: &str) -> Result<String, String> {
     Ok(cookies
@@ -83,6 +93,195 @@ fn normalize_cookie_string_for_compare(cookies: &str) -> String {
         .collect();
     pairs.sort();
     pairs.join("; ")
+}
+fn resolve_roaming_accounts_file_path() -> Option<PathBuf> {
+    platform_dirs::AppDirs::new(Some("cn.ShadowVerse"), false)
+        .map(|dirs| dirs.config_dir.join("accounts.toml"))
+}
+
+fn load_accounts_file_from_path(path: &Path) -> AccountsFile {
+    if let Ok(raw) = std::fs::read_to_string(path) {
+        return toml::from_str::<AccountsFile>(&raw).unwrap_or_default();
+    }
+    if let Some(parent) = path.parent() {
+        let example_path = parent.join("accounts.example.toml");
+        if let Ok(raw) = std::fs::read_to_string(&example_path) {
+            return toml::from_str::<AccountsFile>(&raw).unwrap_or_default();
+        }
+    }
+    AccountsFile::default()
+}
+
+fn write_login_account_to_paths(
+    paths: &[PathBuf],
+    platform: &str,
+    cookies: &str,
+    extra: Option<&str>,
+) {
+    for path in paths {
+        let mut accounts = load_accounts_file_from_path(path);
+        if let Some(entry) = accounts
+            .login_accounts
+            .iter_mut()
+            .find(|entry| entry.platform == platform)
+        {
+            entry.cookies = cookies.to_string();
+            if let Some(extra) = extra {
+                entry.extra = extra.to_string();
+            }
+        } else {
+            accounts.login_accounts.push(DefaultAccountConfig {
+                platform: platform.to_string(),
+                cookies: cookies.to_string(),
+                extra: extra.unwrap_or_default().to_string(),
+            });
+        }
+        if let Err(err) = write_accounts_file(path, &accounts) {
+            log::warn!("Failed to write accounts file {:?}: {}", path, err);
+        }
+    }
+}
+
+fn remove_login_account_from_paths(paths: &[PathBuf], platform: &str, cookies: &str) {
+    for path in paths {
+        let mut accounts = load_accounts_file_from_path(path);
+        let before_file = accounts.login_accounts.len();
+        accounts.login_accounts.retain(|entry| {
+            entry.platform != platform
+                || normalize_cookie_string_for_compare(&entry.cookies)
+                    != normalize_cookie_string_for_compare(cookies)
+        });
+        if accounts.login_accounts.len() != before_file {
+            if let Err(err) = write_accounts_file(path, &accounts) {
+                log::warn!("Failed to write accounts file {:?}: {}", path, err);
+            }
+        }
+    }
+}
+
+fn remove_login_account_by_platform_from_paths(paths: &[PathBuf], platform: &str) {
+    for path in paths {
+        let mut accounts = load_accounts_file_from_path(path);
+        let before_file = accounts.login_accounts.len();
+        accounts
+            .login_accounts
+            .retain(|entry| entry.platform != platform);
+        if accounts.login_accounts.len() != before_file {
+            if let Err(err) = write_accounts_file(path, &accounts) {
+                log::warn!("Failed to write accounts file {:?}: {}", path, err);
+            }
+        }
+    }
+}
+
+fn strip_cookie_fields(cookies: &str, fields: &[&str]) -> String {
+    let mut kept: Vec<String> = Vec::new();
+    for part in cookies.split(';') {
+        let trimmed = part.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let mut drop = false;
+        for field in fields {
+            if trimmed.to_ascii_lowercase().starts_with(&format!("{}=", field.to_ascii_lowercase())) {
+                drop = true;
+                break;
+            }
+        }
+        if !drop {
+            kept.push(trimmed.to_string());
+        }
+    }
+    kept.join("; ")
+}
+
+fn filter_kuaishou_cookie_header(cookies: &str) -> String {
+    let allow = [
+        "kwssectoken",
+        "kuaishou.live.web_st",
+        "kuaishou.live.web_ph",
+        "did",
+        "didv",
+        "userid",
+    ];
+    let mut kept: Vec<String> = Vec::new();
+    for part in cookies.split(';') {
+        let trimmed = part.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let Some((k, v)) = trimmed.split_once('=') else {
+            continue;
+        };
+        let key_lower = k.trim().to_ascii_lowercase();
+        if allow.iter().any(|item| *item == key_lower) {
+            kept.push(format!("{}={}", k.trim(), v.trim()));
+        }
+    }
+    kept.join("; ")
+}
+
+fn restore_kuaishou_userid_for_profile(cookies: &str, extra: Option<&str>) -> String {
+    if extra.is_none() {
+        return cookies.to_string();
+    }
+    let extra = extra.unwrap_or("");
+    if extra.trim().is_empty() {
+        return cookies.to_string();
+    }
+    if get_item_from_cookies_ci("userId", cookies).is_ok() {
+        return cookies.to_string();
+    }
+    let parsed: serde_json::Value = match serde_json::from_str(extra) {
+        Ok(v) => v,
+        Err(_) => return cookies.to_string(),
+    };
+    let direct_user_id = parsed
+        .get("user_info")
+        .and_then(|v| v.get("user_id"))
+        .and_then(|v| v.as_str())
+        .or_else(|| {
+            parsed
+                .get("login_info")
+                .and_then(|v| v.get("user_id"))
+                .and_then(|v| v.as_str())
+        });
+    if let Some(uid) = direct_user_id {
+        let uid = uid.trim();
+        if !uid.is_empty() {
+            if cookies.trim().is_empty() {
+                return format!("userId={uid}");
+            }
+            return format!("{cookies}; userId={uid}");
+        }
+    }
+    let Some(items) = parsed
+        .get("cookie_info")
+        .and_then(|v| v.get("cookies"))
+        .and_then(|v| v.as_array())
+    else {
+        return cookies.to_string();
+    };
+    let mut user_id: Option<String> = None;
+    for item in items {
+        let name = item.get("name").and_then(|v| v.as_str()).unwrap_or("");
+        if name.eq_ignore_ascii_case("userId") {
+            let value = item.get("value").and_then(|v| v.as_str()).unwrap_or("");
+            if !value.trim().is_empty() {
+                user_id = Some(value.trim().to_string());
+                break;
+            }
+        }
+    }
+    if let Some(uid) = user_id {
+        if cookies.trim().is_empty() {
+            format!("userId={uid}")
+        } else {
+            format!("{cookies}; userId={uid}")
+        }
+    } else {
+        cookies.to_string()
+    }
 }
 
 fn remove_cookie_keys_ci(
@@ -142,6 +341,21 @@ fn extract_numeric_after_marker(text: &str, marker: &str) -> Option<String> {
     None
 }
 
+fn extract_kuaishou_kww(cookies: &str) -> Option<String> {
+    for part in cookies.split(';').map(str::trim) {
+        if let Some((key, value)) = part.split_once('=') {
+            let key_lower = key.trim().to_ascii_lowercase();
+            if key_lower == "kww" || key_lower == "kwfv1" {
+                let value = value.trim();
+                if !value.is_empty() {
+                    return Some(value.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
 fn gen_kuaishou_web_did() -> String {
     let mut rng = rand::thread_rng();
     let mut bytes = [0u8; 16];
@@ -164,6 +378,17 @@ fn ensure_kuaishou_base_cookies(cookie_map: &mut std::collections::HashMap<Strin
         cookie_map.insert("kwpsecproductname".to_string(), "PCLive".to_string());
     }
 }
+
+fn random_kuaishou_user_agent() -> String {
+    let uas = [
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    ];
+    let idx = rand::thread_rng().gen_range(0..uas.len());
+    uas[idx].to_string()
+}
+
 
 async fn fetch_huya_uid_from_cookie(client: &reqwest::Client, cookies: &str) -> Option<String> {
     let mut headers = HeaderMap::new();
@@ -333,11 +558,62 @@ fn build_account_extra_json(cookie_list: Vec<CookieItem>, user_info: &UserInfo) 
     serde_json::to_string(&extra).unwrap_or_default()
 }
 
+fn is_kuaishou_login_cookie(cookies: &str) -> bool {
+    let lower = cookies.to_ascii_lowercase();
+    lower.contains("userid=")
+        || lower.contains("kuaishou.live.web_st=")
+        || lower.contains("kuaishou.live.web_ph=")
+        || lower.contains("kwssectoken=")
+}
+
+fn has_kuaishou_full_cookie(cookies: &str) -> bool {
+    let lower = cookies.to_ascii_lowercase();
+    lower.contains("buserid=")
+        && lower.contains("kuaishou.web.cp.api_st=")
+        && lower.contains("kuaishou.web.cp.api_ph=")
+        && lower.contains("perf_dv6tr4n=")
+}
+
+fn append_kuaishou_user_id_from_extra(cookies: &str, extra: Option<&String>) -> String {
+    if is_kuaishou_login_cookie(cookies) {
+        return cookies.to_string();
+    }
+    let Some(extra) = extra else {
+        return cookies.to_string();
+    };
+    let parsed: serde_json::Value = match serde_json::from_str(extra) {
+        Ok(v) => v,
+        Err(_) => return cookies.to_string(),
+    };
+    let user_id = parsed
+        .get("user_info")
+        .and_then(|v| v.get("user_id"))
+        .and_then(|v| v.as_str())
+        .or_else(|| {
+            parsed
+                .get("login_info")
+                .and_then(|v| v.get("user_id"))
+                .and_then(|v| v.as_str())
+        });
+    let Some(uid) = user_id else {
+        return cookies.to_string();
+    };
+    let uid = uid.trim();
+    if uid.is_empty() {
+        return cookies.to_string();
+    }
+    if cookies.trim().is_empty() {
+        return format!("userId={uid}");
+    }
+    format!("{cookies}; userId={uid}")
+}
+
 async fn build_webview_cookie_result(
     platform: &str,
     cookie_str: String,
     cookie_list: Vec<CookieItem>,
 ) -> Result<WebviewCookieResult, String> {
+    let cookie_str = cookie_str;
     let account = build_account_row(platform, &cookie_str, None, None).await?;
     let user_info = UserInfo {
         user_id: account.uid.clone(),
@@ -369,6 +645,78 @@ pub async fn add_account(
     Ok(())
 }
 
+async fn fetch_kuaishou_login_cookies_via_http(cookies: &str) -> String {
+    if cookies.trim().is_empty() {
+        return cookies.to_string();
+    }
+
+    let base_url = Url::parse("https://live.kuaishou.com/").ok();
+    let Some(base_url) = base_url else {
+        return cookies.to_string();
+    };
+
+    let jar = Arc::new(Jar::default());
+    jar.add_cookie_str(cookies, &base_url);
+
+    let client = match reqwest::Client::builder()
+        .cookie_provider(jar.clone())
+        .build()
+    {
+        Ok(client) => client,
+        Err(_) => return cookies.to_string(),
+    };
+
+    let mut headers = HeaderMap::new();
+    headers.insert("Accept", "*/*".parse().unwrap());
+    headers.insert(
+        "Accept-Language",
+        "zh-CN,zh;q=0.9,en;q=0.8".parse().unwrap(),
+    );
+    headers.insert("Referer", "https://live.kuaishou.com/".parse().unwrap());
+    headers.insert(
+        "sec-ch-ua",
+        "\"Not)A;Brand\";v=\"8\", \"Chromium\";v=\"138\", \"Google Chrome\";v=\"138\""
+            .parse()
+            .unwrap(),
+    );
+    headers.insert("sec-ch-ua-mobile", "?0".parse().unwrap());
+    headers.insert("sec-ch-ua-platform", "\"Windows\"".parse().unwrap());
+    headers.insert(
+        USER_AGENT,
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36"
+            .parse()
+            .unwrap(),
+    );
+    if let Some(kww) = extract_kuaishou_kww(cookies) {
+        if let Ok(value) = HeaderValue::from_str(&kww) {
+            headers.insert("kww", value);
+        }
+    }
+
+    let urls = [
+        "https://live.kuaishou.com/",
+        "https://live.kuaishou.com/live_api/baseuser/userinfo",
+        "https://live.kuaishou.com/live_api/baseuser/userFollowCount",
+    ];
+    for url in urls {
+        let _ = client.get(url).headers(headers.clone()).send().await;
+    }
+
+    if let Some(value) = jar.cookies(&base_url) {
+        if let Ok(s) = value.to_str() {
+            if !s.trim().is_empty() {
+                let from_http = s.to_string();
+                if has_kuaishou_full_cookie(&from_http) {
+                    return from_http;
+                }
+                return cookies.to_string();
+            }
+        }
+    }
+
+    cookies.to_string()
+}
+
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn update_login_account(
     state: state_type!(),
@@ -379,7 +727,45 @@ pub async fn update_login_account(
     if cookies.trim().is_empty() {
         return Err("Empty cookies".to_string());
     }
-    let _ = build_account_row(&platform, &cookies, None, None).await?;
+    let cookies = if platform == "kuaishou" {
+        let with_uid = append_kuaishou_user_id_from_extra(&cookies, extra.as_ref());
+        fetch_kuaishou_login_cookies_via_http(&with_uid).await
+    } else {
+        cookies
+    };
+    if platform == "kuaishou" && !is_kuaishou_login_cookie(&cookies) {
+        let mut config = state.config.write().await;
+        if let Some(entry) = config
+            .login_accounts
+            .iter_mut()
+            .find(|entry| entry.platform == platform)
+        {
+            entry.cookies.clear();
+            if let Some(extra) = extra.as_ref() {
+                entry.extra = extra.clone();
+            }
+        } else {
+            config.login_accounts.push(DefaultAccountConfig {
+                platform: platform.clone(),
+                cookies: String::new(),
+                extra: extra.clone().unwrap_or_default(),
+            });
+        }
+        config.save();
+        drop(config);
+
+        let mut paths = vec![resolve_accounts_file_write_path()];
+        if let Some(roaming_path) = resolve_roaming_accounts_file_path() {
+            if !paths.iter().any(|path| path == &roaming_path) {
+                paths.push(roaming_path);
+            }
+        }
+        write_login_account_to_paths(&paths, &platform, "", extra.as_deref());
+
+        let _ = state.app_handle.emit("accounts-updated", ());
+        return Ok(());
+    }
+    let account = build_account_row(&platform, &cookies, extra.clone(), Some("login")).await?;
     let mut old_cookies: Option<String> = None;
     {
         let mut config = state.config.write().await;
@@ -405,31 +791,32 @@ pub async fn update_login_account(
         config.save();
     }
     {
-        let (mut accounts, _) =
-            load_accounts_file_or_example().unwrap_or_else(|| (AccountsFile::default(), resolve_accounts_file_write_path()));
-        if let Some(entry) = accounts
-            .login_accounts
-            .iter_mut()
-            .find(|entry| entry.platform == platform)
-        {
-            entry.cookies = cookies.clone();
-            if let Some(extra) = extra.as_ref() {
-                entry.extra = extra.clone();
+        let mut paths = vec![resolve_accounts_file_write_path()];
+        if let Some(roaming_path) = resolve_roaming_accounts_file_path() {
+            if !paths.iter().any(|path| path == &roaming_path) {
+                paths.push(roaming_path);
             }
-        } else {
-            accounts.login_accounts.push(DefaultAccountConfig {
-                platform: platform.clone(),
-                cookies: cookies.clone(),
-                extra: extra.clone().unwrap_or_default(),
-            });
         }
-        let path = resolve_accounts_file_write_path();
-        if let Err(err) = write_accounts_file(&path, &accounts) {
-            log::warn!("Failed to write accounts file {:?}: {}", path, err);
-        }
+        write_login_account_to_paths(&paths, &platform, &cookies, extra.as_deref());
     }
     if let Some(old_cookies) = old_cookies {
         remove_accounts_by_platform_cookies(&state.db, &platform, &old_cookies).await;
+    }
+    if let Some(stripped) = account.uid.strip_prefix("login:") {
+        let manual_uid = format!("manual:{stripped}");
+        let _ = state.db.remove_account(&platform, &manual_uid).await;
+    }
+    if let Err(e) = state.db.remove_account(&platform, &account.uid).await {
+        if !matches!(e, crate::database::DatabaseError::NotFound) {
+            log::warn!(
+                "Failed to remove existing login account for {}: {}",
+                platform,
+                e
+            );
+        }
+    }
+    if let Err(e) = state.db.add_account(&account).await {
+        log::warn!("Failed to add login account for {}: {}", platform, e);
     }
     if platform == "tiktok" {
         let config_snapshot = state.config.read().await.clone();
@@ -641,6 +1028,14 @@ async fn build_account_row(
         .map_err(|e| format!("Invalid cookies: {e}"))?;
 
     let platform = PlatformType::from_str(platform).map_err(|_| "Invalid platform".to_string())?;
+    if platform == PlatformType::Kuaishou && uid_prefix != Some("guest") {
+        // Kuaishou login cookies should not be auto-enriched
+    }
+    let cookies = if platform == PlatformType::Kuaishou {
+        filter_kuaishou_cookie_header(&cookies)
+    } else {
+        cookies
+    };
 
     let csrf = match platform {
         PlatformType::BiliBili => cookies
@@ -800,6 +1195,7 @@ async fn build_account_row(
             }
         }
         PlatformType::Kuaishou => {
+            let cookies = restore_kuaishou_userid_for_profile(&cookies, extra.as_deref());
             let tmp_account = AccountRow {
                 platform: platform.as_str().to_string(),
                 uid: "".into(),
@@ -920,6 +1316,10 @@ async fn build_account_row(
         build_account_extra_json(cookie_list_from_header(&cookies), &user_info)
     });
 
+    if uid_prefix == Some("guest") && platform == PlatformType::Kuaishou {
+        user_info.user_id = format!("cookie_{:x}", md5::compute(&cookies));
+    }
+
     let mut uid = user_info.user_id;
     if let Some(prefix) = uid_prefix {
         uid = format!("{}:{}", prefix, uid);
@@ -956,12 +1356,48 @@ pub async fn remove_account(
     platform: String,
     uid: String,
 ) -> Result<(), String> {
+    let account_row = state.db.get_account(&platform, &uid).await.ok();
     if platform == "bilibili" {
-        let account = state.db.get_account(&platform, &uid).await?;
-        let client = crate::utils::http::no_proxy_client();
-        let _ = bilibili::api::logout(&client, &account.to_account()).await;
+        if let Some(ref account) = account_row {
+            let client = crate::utils::http::no_proxy_client();
+            let _ = bilibili::api::logout(&client, &account.to_account()).await;
+        }
     }
-    Ok(state.db.remove_account(&platform, &uid).await?)
+    state.db.remove_account(&platform, &uid).await?;
+
+    if let Some(account) = account_row {
+        let is_guest = account.uid.starts_with("guest:") || account.uid.starts_with("cookie_");
+        if is_guest {
+            let mut config = state.config.write().await;
+            let before = config.guest_accounts.len();
+            config.guest_accounts.retain(|entry| {
+                entry.platform != account.platform
+                    || normalize_cookie_string_for_compare(&entry.cookies)
+                        != normalize_cookie_string_for_compare(&account.cookies)
+            });
+            if config.guest_accounts.len() != before {
+                config.save();
+            }
+        } else {
+            let mut config = state.config.write().await;
+            let before = config.login_accounts.len();
+            config
+                .login_accounts
+                .retain(|entry| entry.platform != account.platform);
+            if config.login_accounts.len() != before {
+                config.save();
+            }
+            let mut paths = vec![resolve_accounts_file_write_path()];
+            if let Some(roaming_path) = resolve_roaming_accounts_file_path() {
+                if !paths.iter().any(|path| path == &roaming_path) {
+                    paths.push(roaming_path);
+                }
+            }
+            remove_login_account_by_platform_from_paths(&paths, &account.platform);
+        }
+    }
+
+    Ok(())
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]
@@ -1306,18 +1742,26 @@ pub async fn get_douyin_webview_cookies(state: state_type!()) -> Result<WebviewC
         }
     }
 
-    let cookie_list = cookie_map
-        .iter()
-        .map(|(name, value)| CookieItem {
-            name: name.clone(),
-            value: value.clone(),
+    let cookie_str = {
+        let raw = cookie_map
+            .iter()
+            .map(|(name, value)| format!("{name}={value}"))
+            .collect::<Vec<_>>()
+            .join("; ");
+        filter_kuaishou_cookie_header(&raw)
+    };
+    let cookie_list = cookie_str
+        .split(';')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .filter_map(|part| {
+            let (name, value) = part.split_once('=')?;
+            Some(CookieItem {
+                name: name.to_string(),
+                value: value.to_string(),
+            })
         })
         .collect::<Vec<_>>();
-    let cookie_str = cookie_map
-        .iter()
-        .map(|(name, value)| format!("{name}={value}"))
-        .collect::<Vec<_>>()
-        .join("; ");
 
     if cookie_str.is_empty() {
         return Err("未读取到 Cookie，请先在内置浏览器完成登录".to_string());
@@ -1398,6 +1842,8 @@ pub async fn get_kuaishou_webview_cookies(state: state_type!()) -> Result<Webvie
         "https://live.kuaishou.com/",
         "https://live.kuaishou.com/live",
         "https://live.kuaishou.com/u/1",
+        "https://live.kuaishou.com/live_api/baseuser/userinfo",
+        "https://live.kuaishou.com/live_api/baseuser/userFollowCount",
         "https://www.kuaishou.com",
         "https://www.kuaishou.com/",
         "https://www.kuaishou.com/live",
@@ -1437,7 +1883,11 @@ pub async fn get_kuaishou_webview_cookies(state: state_type!()) -> Result<Webvie
         }
     }
 
-    ensure_kuaishou_base_cookies(&mut cookie_map);
+    // Remove sensitive login-only fields that should not be stored.
+    remove_cookie_keys_ci(
+        &mut cookie_map,
+        &["_did", "passtoken", "passToken"],
+    );
 
     let cookie_list = cookie_map
         .iter()
@@ -1455,44 +1905,6 @@ pub async fn get_kuaishou_webview_cookies(state: state_type!()) -> Result<Webvie
     if cookie_str.is_empty() {
         return Err("未读取到 Cookie，请先在内置浏览器完成登录".to_string());
     }
-    let has_login = cookie_map.contains_key("userId")
-        || cookie_map.contains_key("kuaishou.live.web_st")
-        || cookie_map.contains_key("kuaishou.live.web_ph")
-        || cookie_map.contains_key("kwssectoken")
-        || cookie_map_lower.contains_key("userid")
-        || cookie_map_lower.contains_key("kuaishou.live.web_st")
-        || cookie_map_lower.contains_key("kuaishou.live.web_ph")
-        || cookie_map_lower.contains_key("kwssectoken");
-    if !has_login {
-        log::warn!("[Account] Kuaishou webview cookies missing login tokens.");
-    }
-    let required_keys = [
-        "userId",
-        "kuaishou.live.web_st",
-        "kuaishou.live.web_ph",
-        "kwssectoken",
-        "clientid",
-        "client_key",
-        "kpn",
-        "did",
-        "didv",
-        "kwpsecproductname",
-        "kwfv1",
-        "kwscode",
-    ];
-    let mut missing = Vec::new();
-    for key in required_keys {
-        if !cookie_map.contains_key(key) && !cookie_map_lower.contains_key(&key.to_ascii_lowercase()) {
-            missing.push(key);
-        }
-    }
-    if !missing.is_empty() {
-        log::warn!(
-            "[Account] Kuaishou webview cookies missing keys: {}",
-            missing.join(",")
-        );
-    }
-
     return build_webview_cookie_result("kuaishou", cookie_str, cookie_list).await;
 }
 
@@ -2411,18 +2823,12 @@ async fn get_kuaishou_webview_guest_cookies(
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
 
-    // Remove device identifiers for guest mode
-    remove_cookie_keys_ci(
-        &mut cookie_map,
-        &["did", "didv", "kwpsecproductname"],
-    );
-
     let mut cookie_pairs: Vec<String> = cookie_map
         .iter()
         .map(|(name, value)| format!("{name}={value}"))
         .collect();
     cookie_pairs.sort();
-    let cookie_str = cookie_pairs.join("; ");
+    let cookie_str = filter_kuaishou_cookie_header(&cookie_pairs.join("; "));
         
     if cookie_str.is_empty() {
         if created {
@@ -2485,10 +2891,10 @@ async fn refresh_guest_accounts_inner(
     state: &crate::state::State,
     reason: Option<&str>,
     force: bool,
-) -> Result<(), String> {
+) -> Result<Vec<PlatformType>, String> {
     let _guard = match try_begin_guest_refresh(force, reason) {
         Some(guard) => guard,
-        None => return Ok(()),
+        None => return Ok(Vec::new()),
     };
 
     if let Some(reason) = reason {
@@ -2497,12 +2903,12 @@ async fn refresh_guest_accounts_inner(
 
     let old_entries_snapshot = state.config.read().await.guest_accounts.clone();
     let mut updates: Vec<(String, String)> = Vec::new();
-    let updates_final: Vec<(String, String)>;
     let mut attempt: u8 = 0;
     let max_attempts: u8 = 2;
     let mut last_guest_labels: Vec<String> = Vec::new();
 
-    loop {
+    let mut changed_platforms: Vec<String> = Vec::new();
+    let updates_final: Vec<(String, String)> = loop {
         attempt = attempt.saturating_add(1);
         updates.clear();
         last_guest_labels.clear();
@@ -2573,6 +2979,15 @@ async fn refresh_guest_accounts_inner(
                         .or_else(|_| std::env::var("TIKTOK_USER_AGENT"))
                         .unwrap_or_default();
                     let ua = fallback_ua.trim();
+                    if !ua.is_empty() {
+                        builder = builder.user_agent(ua);
+                    }
+                }
+                if label.starts_with("kuaishou-") {
+                    let ua = std::env::var("KUAISHOU_WEBVIEW_USER_AGENT")
+                        .or_else(|_| std::env::var("KUAISHOU_USER_AGENT"))
+                        .unwrap_or_else(|_| random_kuaishou_user_agent());
+                    let ua = ua.trim();
                     if !ua.is_empty() {
                         builder = builder.user_agent(ua);
                     }
@@ -2708,7 +3123,7 @@ async fn refresh_guest_accounts_inner(
                 tokio::time::sleep(Duration::from_millis(800)).await;
                 continue;
             }
-            return Err("??????????? Cookie????????".to_string());
+            return Err("未获取到访客 Cookie，请稍后重试".to_string());
         }
 
         let mut changed_updates = Vec::new();
@@ -2727,6 +3142,11 @@ async fn refresh_guest_accounts_inner(
         }
 
         if changed_updates.is_empty() {
+            if force {
+                log::info!("[Account] Guest cookies unchanged, force overwrite enabled");
+                changed_platforms.clear();
+                break updates.clone();
+            }
             if attempt < max_attempts {
                 log::warn!(
                     "[Account] Guest cookies unchanged, retrying (attempt {}/{})",
@@ -2736,12 +3156,15 @@ async fn refresh_guest_accounts_inner(
                 tokio::time::sleep(Duration::from_millis(800)).await;
                 continue;
             }
-            return Err("?? Cookie ?????????".to_string());
+            return Err("访客 Cookie 未变化，请稍后再试".to_string());
         }
 
-        updates_final = changed_updates;
-        break;
-    }
+        changed_platforms = changed_updates
+            .iter()
+            .map(|(platform, _)| platform.clone())
+            .collect();
+        break changed_updates;
+    };
 
     let updated_entries = {
         let mut config = state.config.write().await;
@@ -2762,12 +3185,14 @@ async fn refresh_guest_accounts_inner(
     };
     let (updated_entries, old_entries) = updated_entries;
 
-    let mut accounts =
-        load_accounts_file_or_example().map(|(accounts, _)| accounts).unwrap_or_default();
-    accounts.guest_accounts = updated_entries.clone();
-    let path = resolve_accounts_file_write_path();
-    if let Err(err) = write_accounts_file(&path, &accounts) {
-        log::warn!("Failed to write accounts file {:?}: {}", path, err);
+    {
+        let (mut accounts_file, _) = load_accounts_file_or_example()
+            .unwrap_or_else(|| (AccountsFile::default(), resolve_accounts_file_write_path()));
+        accounts_file.guest_accounts = updated_entries.clone();
+        let path = resolve_accounts_file_write_path();
+        if let Err(err) = write_accounts_file(&path, &accounts_file) {
+            log::warn!("Failed to write guest accounts file {:?}: {}", path, err);
+        }
     }
 
     for old in old_entries {
@@ -2782,6 +3207,7 @@ async fn refresh_guest_accounts_inner(
     let config_snapshot = state.config.read().await.clone();
     ensure_guest_accounts(&state.db, &config_snapshot).await;
     sync_tiktok_webview_cookies(&state.db, &config_snapshot).await;
+    let _ = state.app_handle.emit("accounts-updated", ());
 
     // Double check: close any active guest windows
     let active_windows = state.app_handle.webview_windows();
@@ -2792,24 +3218,50 @@ async fn refresh_guest_accounts_inner(
         }
     }
 
-    Ok(())
+    let mut changed_types = Vec::new();
+    for platform in changed_platforms {
+        match PlatformType::from_str(&platform) {
+            Ok(parsed) => changed_types.push(parsed),
+            Err(_) => log::warn!("Unknown platform in guest refresh result: {}", platform),
+        }
+    }
+
+    Ok(changed_types)
 }
 #[cfg(not(feature = "gui"))]
 async fn refresh_guest_accounts_inner(
     _state: &crate::state::State,
     _reason: Option<&str>,
     _force: bool,
-) -> Result<(), String> {
+) -> Result<Vec<PlatformType>, String> {
     Err("Guest cookie refresh requires GUI mode".to_string())
 }
 
 pub async fn refresh_guest_accounts(state: state_type!()) -> Result<(), String> {
-    refresh_guest_accounts_inner(&state, None, false).await
+    refresh_guest_accounts_inner(&state, None, false).await.map(|_| ())
 }
 
-pub async fn refresh_guest_accounts_on_demand(state: State, reason: String) -> Result<(), String> {
+#[allow(dead_code)]
+pub async fn refresh_guest_accounts_on_demand(
+    state: state_type!(),
+    reason: String,
+) -> Result<Vec<PlatformType>, String> {
     let reason_ref = reason.as_str();
     refresh_guest_accounts_inner(&state, Some(reason_ref), true).await
+}
+
+#[cfg(feature = "gui")]
+pub async fn refresh_guest_accounts_on_demand_owned(
+    state: crate::state::State,
+    reason: String,
+) -> Result<Vec<PlatformType>, String> {
+    let reason_ref = reason.as_str();
+    refresh_guest_accounts_inner(&state, Some(reason_ref), true).await
+}
+
+#[cfg_attr(feature = "gui", tauri::command)]
+pub async fn refresh_guest_accounts_force(state: state_type!()) -> Result<(), String> {
+    refresh_guest_accounts_inner(&state, Some("manual"), true).await.map(|_| ())
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]
@@ -2832,6 +3284,7 @@ pub async fn get_qr_status(
                     code: qr_status.code,
                     cookies: qr_status.cookies,
                     message: None,
+                    extra: None,
                 })
             }
             Err(e) => Err(e.to_string()),
@@ -2848,6 +3301,7 @@ pub async fn get_qr_status(
                     code: qr_status.code,
                     cookies: qr_status.cookies,
                     message: Some(qr_status.message),
+                    extra: None,
                 })
             }
             Err(e) => Err(e.to_string()),
@@ -2859,15 +3313,36 @@ pub async fn get_qr_status(
             let cookie = parts.next();
             match kuaishou::api::get_qr_status(&client, token, signature, cookie).await {
                 Ok(qr_status) => {
+                    let user_id = qr_status
+                        .user_id
+                        .clone()
+                        .or_else(|| {
+                            get_item_from_cookies_ci("userId", &qr_status.cookies)
+                                .ok()
+                                .map(|v| v.trim().to_string())
+                        })
+                        .filter(|v| !v.is_empty());
+                    let user_name = qr_status.user_name.clone().filter(|v| !v.trim().is_empty());
+                    let user_avatar = qr_status.user_avatar.clone().filter(|v| !v.trim().is_empty());
+                    let cookies = filter_kuaishou_cookie_header(&qr_status.cookies);
+                    let extra = user_id.map(|uid| {
+                        let user_info = UserInfo {
+                            user_id: uid,
+                            user_name: user_name.clone().unwrap_or_default(),
+                            user_avatar: user_avatar.clone().unwrap_or_default(),
+                        };
+                        build_account_extra_json(cookie_list_from_header(&cookies), &user_info)
+                    });
                     log::warn!(
                         "[Account] kuaishou qr_status code={}, cookies_len={}",
                         qr_status.code,
-                        qr_status.cookies.len()
+                        cookies.len()
                     );
                     Ok(PlatformQrStatus {
                         code: qr_status.code,
-                        cookies: qr_status.cookies,
+                        cookies,
                         message: qr_status.message,
+                        extra,
                     })
                 }
                 Err(e) => Err(e.to_string()),
@@ -2885,6 +3360,7 @@ pub async fn get_qr_status(
                     code: qr_status.code,
                     cookies: qr_status.cookies,
                     message: Some(qr_status.message),
+                    extra: None,
                 })
             }
             Err(e) => Err(e.to_string()),
@@ -2968,11 +3444,29 @@ pub async fn ensure_guest_accounts(db: &Database, config: &Config) {
                 continue;
             }
         };
-        let existing = accounts.iter().find(|account| {
-            account.platform == platform.as_str() && account.cookies.trim() == cookies
-        });
+        let mut existing = accounts
+            .iter()
+            .find(|account| account.platform == platform.as_str() && account.cookies.trim() == cookies)
+            .cloned();
 
-        if let Some(existing) = existing {
+        if let Some(ref ex) = existing {
+            if platform == PlatformType::Kuaishou {
+                let expected_uid = format!("guest:cookie_{:x}", md5::compute(cookies));
+                if ex.uid != expected_uid {
+                    log::info!(
+                        "Updating Kuaishou guest uid from {} to {}",
+                        ex.uid,
+                        expected_uid
+                    );
+                    if let Err(e) = db.remove_account(platform.as_str(), &ex.uid).await {
+                        log::warn!("Failed to remove outdated guest uid for kuaishou: {}", e);
+                    }
+                    existing = None;
+                }
+            }
+        }
+
+        if let Some(ref existing) = existing {
             // Update cookies if they differ only by whitespace to keep DB clean
             if existing.cookies != cookies {
                  let mut updated = existing.clone();
@@ -3013,7 +3507,7 @@ pub async fn ensure_guest_accounts(db: &Database, config: &Config) {
                     platform.as_str(),
                     e
                 );
-                if let Some(existing) = existing {
+                if let Some(existing) = existing.as_ref() {
                     if let Err(e) = db.remove_account(platform.as_str(), &existing.uid).await {
                         log::warn!(
                             "Failed to remove invalid guest account for {}: {}",
@@ -3025,6 +3519,49 @@ pub async fn ensure_guest_accounts(db: &Database, config: &Config) {
             }
         }
     }
+}
+
+pub async fn load_guest_accounts_from_db(db: &Database) -> Vec<DefaultAccountConfig> {
+    let accounts = match db.get_accounts().await {
+        Ok(accounts) => accounts,
+        Err(e) => {
+            log::warn!("Failed to load accounts for guest hydration: {}", e);
+            return Vec::new();
+        }
+    };
+
+    let mut per_platform: std::collections::HashMap<String, (String, String, String)> =
+        std::collections::HashMap::new();
+
+    for account in accounts {
+        let is_guest = account.uid.starts_with("guest:") || account.uid.starts_with("cookie_");
+        if !is_guest {
+            continue;
+        }
+        let cookies = account.cookies.trim();
+        if cookies.is_empty() {
+            continue;
+        }
+        let created_at = account.created_at.clone();
+        let entry = per_platform
+            .entry(account.platform.clone())
+            .or_insert_with(|| (cookies.to_string(), account.extra.clone(), created_at.clone()));
+        if created_at > entry.2 {
+            *entry = (cookies.to_string(), account.extra.clone(), created_at);
+        }
+    }
+
+    let mut guest_accounts: Vec<DefaultAccountConfig> = per_platform
+        .into_iter()
+        .map(|(platform, (cookies, extra, _))| DefaultAccountConfig {
+            platform,
+            cookies,
+            extra,
+        })
+        .collect();
+
+    guest_accounts.sort_by(|a, b| a.platform.cmp(&b.platform));
+    guest_accounts
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]
@@ -3161,6 +3698,7 @@ pub struct PlatformQrStatus {
     pub code: u8,
     pub cookies: String,
     pub message: Option<String>,
+    pub extra: Option<String>,
 }
 
 #[cfg(test)]
@@ -3263,11 +3801,15 @@ pub fn start_guest_cookie_refresh_timer(state: crate::state::State) {
                 log::debug!("[Account] Guest mode disabled, skipping cookie refresh");
                 continue;
             }
-            
-            log::info!("[Account] Starting periodic guest cookie refresh...");
+
+            // Add a small random delay to avoid fixed refresh patterns
+            let jitter_secs = rand::thread_rng().gen_range(5..=20);
+            tokio::time::sleep(Duration::from_secs(jitter_secs)).await;
+
+            log::info!("[Account] Starting periodic guest cookie refresh (forced)...");
             let start = std::time::Instant::now();
-            match refresh_guest_accounts_inner(&state, Some("timer"), false).await {
-                Ok(()) => {
+            match refresh_guest_accounts_inner(&state, Some("timer"), true).await {
+                Ok(_) => {
                     log::info!("[Account] Periodic guest cookie refresh completed successfully in {:?}", start.elapsed());
                 }
                 Err(e) => {

@@ -3,6 +3,8 @@
   import { scale, fade } from "svelte/transition";
   import { Textarea } from "flowbite-svelte";
   import QRCode from "qrcode";
+  import { listen } from "@tauri-apps/api/event";
+  import { onDestroy } from "svelte";
   import type { AccountItem, AccountInfo } from "../lib/db";
   import { Ellipsis, Plus, Check } from "lucide-svelte";
 
@@ -30,9 +32,36 @@
       account.avatar = avatar_url;
     }
     account_info = new_account_info;
+    await update_config();
+  }
+
+  async function update_config() {
+    try {
+      const cfg = await invoke("get_config");
+      use_guest_accounts = !!(cfg as any)?.use_guest_accounts;
+    } catch {
+      use_guest_accounts = false;
+    }
   }
 
   update_accounts();
+  update_config();
+
+  let unlisten_accounts = null;
+  if (TAURI_ENV) {
+    listen("accounts-updated", async () => {
+      await update_accounts();
+    }).then((unlisten) => {
+      unlisten_accounts = unlisten;
+    });
+  }
+
+  onDestroy(() => {
+    if (unlisten_accounts) {
+      unlisten_accounts();
+      unlisten_accounts = null;
+    }
+  });
 
   let addModal = false;
   let activeTab = "qr"; // 'qr' | 'manual'
@@ -58,6 +87,8 @@
   let webview_cookie_poll_timer = null;
   let webview_cookie_poll_attempts = 0;
   let webview_cookie_extra = "";
+  let use_guest_accounts = false;
+  let guest_refreshing = false;
 
   let manualModal = false;
 
@@ -256,20 +287,16 @@ function toggleDropdown(uid) {
         qr_error = "已暂停轮询，请点击刷新二维码";
         return;
       }
-      let qr_status: { code: number; cookies: string; message?: string } = await invoke(
+      let qr_status: { code: number; cookies: string; message?: string; extra?: string } = await invoke(
         "get_qr_status",
         { platform: selectedPlatform, qrcodeKey: oauth_key }
       );
       if (qr_status.code == 0) {
         clearInterval(check_interval);
-        await invoke("add_account", {
-          cookies: qr_status.cookies,
-          platform: selectedPlatform,
-        });
         await invoke("update_login_account", {
           cookies: qr_status.cookies,
           platform: selectedPlatform,
-          extra: webview_cookie_extra || undefined,
+          extra: qr_status.extra || webview_cookie_extra || undefined,
         });
         await update_accounts();
         addModal = false;
@@ -502,6 +529,21 @@ function platform_avatar(platform: string) {
     }
   }
 
+  async function force_refresh_guest_cookies() {
+    if (!use_guest_accounts || guest_refreshing) {
+      return;
+    }
+    guest_refreshing = true;
+    try {
+      await invoke("refresh_guest_accounts_force");
+      await update_accounts();
+    } catch (e) {
+      alert("强制刷新访客 Cookie 失败：" + e);
+    } finally {
+      guest_refreshing = false;
+    }
+  }
+
 </script>
 
 <svelte:window
@@ -523,24 +565,35 @@ function platform_avatar(platform: string) {
         </div>
       </div>
       <div class="text-[11px] text-center text-gray-500 dark:text-gray-400 leading-tight">
-        <p>启用访客模式，无需登录账号即可录制各平台直播；</p>
-        <p>如需使用手动登录账号，请先在设置中关闭访客模式；</p>
+        <p>访客与登录模式可同时开启，录制时优先使用已登录账号；</p>
+        <p>未命中登录账号时自动回退访客账号；</p>
         <p>登录账号可解锁 4K或蓝光原画质直播，但容易风控；</p>
         <p>「B站/快手」支持直接扫码登录，其余平台请点击手动 Cookie 后使用内置浏览器登录；</p>
       </div>
-      <button
-        on:click={() => {
-          addModal = true;
-          activeTab = default_tab(selectedPlatform);
-          if (activeTab === "qr" && supports_qr(selectedPlatform)) {
-            requestAnimationFrame(handle_qr);
-          }
-        }}
-        class="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors flex items-center space-x-2"
-      >
-        <Plus class="w-5 h-5 icon-white" />
-        <span>添加账号</span>
-      </button>
+      <div class="flex items-center space-x-3">
+        {#if use_guest_accounts}
+          <button
+            on:click={force_refresh_guest_cookies}
+            disabled={guest_refreshing}
+            class="px-4 py-2 rounded-lg border-2 border-yellow-400 text-yellow-400 hover:bg-yellow-400/10 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+          >
+            {guest_refreshing ? "刷新中..." : "强制刷新"}
+          </button>
+        {/if}
+        <button
+          on:click={() => {
+            addModal = true;
+            activeTab = default_tab(selectedPlatform);
+            if (activeTab === "qr" && supports_qr(selectedPlatform)) {
+              requestAnimationFrame(handle_qr);
+            }
+          }}
+          class="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors flex items-center space-x-2"
+        >
+          <Plus class="w-5 h-5 icon-white" />
+          <span>添加账号</span>
+        </button>
+      </div>
     </div>
 
     <!-- Account List -->

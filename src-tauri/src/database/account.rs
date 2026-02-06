@@ -1,4 +1,5 @@
 use recorder::account::Account;
+use serde_json;
 
 use super::Database;
 use super::DatabaseError;
@@ -17,15 +18,95 @@ pub struct AccountRow {
 
 impl AccountRow {
     pub fn to_account(&self) -> Account {
+        let cookies = merge_kuaishou_extra_cookies(
+            &self.platform,
+            &self.cookies,
+            &self.extra,
+        );
         Account {
             platform: self.platform.clone(),
             id: self.uid.clone(),
             name: self.name.clone(),
             avatar: self.avatar.clone(),
             csrf: self.csrf.clone(),
-            cookies: self.cookies.clone(),
+            cookies,
         }
     }
+}
+
+fn merge_kuaishou_extra_cookies(platform: &str, cookies: &str, extra: &str) -> String {
+    if platform.to_ascii_lowercase() != "kuaishou" {
+        return cookies.to_string();
+    }
+    if extra.trim().is_empty() {
+        return filter_kuaishou_cookie_header(cookies);
+    }
+    let mut map = std::collections::HashMap::<String, String>::new();
+    for part in cookies.split(';').map(str::trim) {
+        if part.is_empty() {
+            continue;
+        }
+        if let Some((k, v)) = part.split_once('=') {
+            map.insert(k.trim().to_string(), v.trim().to_string());
+        }
+    }
+
+    let parsed: serde_json::Value = match serde_json::from_str(extra) {
+        Ok(v) => v,
+        Err(_) => return cookies.to_string(),
+    };
+    let Some(items) = parsed
+        .get("cookie_info")
+        .and_then(|v| v.get("cookies"))
+        .and_then(|v| v.as_array())
+    else {
+        return cookies.to_string();
+    };
+
+    for item in items {
+        let name = item.get("name").and_then(|v| v.as_str()).unwrap_or("");
+        let value = item.get("value").and_then(|v| v.as_str()).unwrap_or("");
+        if name.is_empty() || value.is_empty() {
+            continue;
+        }
+        map.entry(name.to_string()).or_insert_with(|| value.to_string());
+    }
+
+    if map.is_empty() {
+        return filter_kuaishou_cookie_header(cookies);
+    }
+    let merged = map
+        .iter()
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect::<Vec<_>>()
+        .join("; ");
+    filter_kuaishou_cookie_header(&merged)
+}
+
+fn filter_kuaishou_cookie_header(cookies: &str) -> String {
+    let allow = [
+        "kwssectoken",
+        "kuaishou.live.web_st",
+        "kuaishou.live.web_ph",
+        "did",
+        "didv",
+        "userid",
+    ];
+    let mut kept = Vec::new();
+    for part in cookies.split(';').map(str::trim) {
+        if part.is_empty() {
+            continue;
+        }
+        let Some((k, v)) = part.split_once('=') else {
+            continue;
+        };
+        let key = k.trim();
+        let key_lower = key.to_ascii_lowercase();
+        if allow.iter().any(|item| *item == key_lower) {
+            kept.push(format!("{}={}", key, v.trim()));
+        }
+    }
+    kept.join("; ")
 }
 
 // accounts

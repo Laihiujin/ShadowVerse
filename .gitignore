@@ -52,3 +52,5 @@ README.md
 src-tauri/cublasLt64_12.dll
 src-tauri/cudart64_12.dll
 src-tauri/cublas64_12.dll
+_tmp_kuaishou_fetch.py
+_tmp_kuaishou_cdp.py

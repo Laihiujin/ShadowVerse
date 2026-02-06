@@ -49,3 +49,27 @@ impl From<HuyaClientError> for String {
         err.to_string()
     }
 }
+
+pub fn is_guest_cookie_block_error(err: &HuyaClientError) -> bool {
+    match err {
+        HuyaClientError::InvalidCookie => true,
+        HuyaClientError::SecurityControlError => true,
+        HuyaClientError::InvalidResponseStatus { status } => {
+            matches!(status.as_u16(), 401 | 403 | 429)
+        }
+        HuyaClientError::ApiError(error) | HuyaClientError::UploadError { err: error } => {
+            let lower = error.to_ascii_lowercase();
+            lower.contains("cookie")
+                || lower.contains("login")
+                || lower.contains("invalid")
+                || lower.contains("expired")
+                || lower.contains("token")
+                || lower.contains("blocked")
+                || lower.contains("forbidden")
+                || lower.contains("rate")
+                || lower.contains("too many")
+                || lower.contains("captcha")
+        }
+        _ => false,
+    }
+}

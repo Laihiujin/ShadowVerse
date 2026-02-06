@@ -8,6 +8,7 @@ use crate::database::Database;
 use crate::recorder_manager::RecorderManagerError;
 use recorder::entry::EntryStore;
 use recorder::platforms::PlatformType;
+use m3u8_rs::parse_media_playlist;
 
 fn is_safe_path_component(value: &str) -> bool {
     if value.is_empty() || value.ends_with(' ') || value.ends_with('.') {
@@ -18,6 +19,175 @@ fn is_safe_path_component(value: &str) -> bool {
 
 fn is_disabled_platform(platform: &str) -> bool {
     matches!(platform, "xiaohongshu" | "weibo")
+}
+
+async fn compute_record_stats(
+    record_path: &PathBuf,
+) -> Result<(f64, u64), Box<dyn std::error::Error>> {
+    let mut duration = 0.0f64;
+    let mut size = 0u64;
+
+    let entry_file = record_path.join("entries.log");
+    if entry_file.exists() {
+        if let Some(path_str) = record_path.to_str() {
+            let entry_store = EntryStore::new(path_str).await;
+            if !entry_store.is_empty() {
+                duration = entry_store.total_duration();
+                size = entry_store.total_size();
+            }
+        }
+    }
+
+    if duration <= 0.0 {
+        for playlist_name in ["playlist.m3u8", "tmp.m3u8"] {
+            let playlist_path = record_path.join(playlist_name);
+            if !playlist_path.exists() {
+                continue;
+            }
+            if let Ok(bytes) = tokio::fs::read(&playlist_path).await {
+                if let Ok((_, playlist)) = parse_media_playlist(&bytes) {
+                    duration = playlist
+                        .segments
+                        .iter()
+                        .map(|s| s.duration as f64)
+                        .sum::<f64>();
+                    if duration > 0.0 {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    if size == 0 {
+        let mut stack = vec![record_path.clone()];
+        while let Some(dir) = stack.pop() {
+            let mut entries = tokio::fs::read_dir(&dir).await?;
+            while let Some(entry) = entries.next_entry().await? {
+                let file_type = entry.file_type().await?;
+                if file_type.is_dir() {
+                    stack.push(entry.path());
+                    continue;
+                }
+                if !file_type.is_file() {
+                    continue;
+                }
+                let name = match entry.file_name().to_str() {
+                    Some(name) => name.to_lowercase(),
+                    None => continue,
+                };
+                if name == "playlist.m3u8"
+                    || name == "entries.log"
+                    || name == "tmp.m3u8"
+                    || name == "cover.jpg"
+                    || name.ends_with(".ass")
+                    || name.ends_with(".srt")
+                    || name.ends_with(".txt")
+                    || name.ends_with(".json")
+                    || name.ends_with(".jpg")
+                    || name.ends_with(".png")
+                {
+                    continue;
+                }
+                let meta = entry.metadata().await?;
+                size = size.saturating_add(meta.len());
+            }
+        }
+    }
+
+    Ok((duration, size))
+}
+
+pub async fn try_rebuild_archives_from_cache_scan(
+    db: &Arc<Database>,
+    cache_path: PathBuf,
+) -> Result<(usize, usize), Box<dyn std::error::Error>> {
+    let mut added = 0usize;
+    let mut updated = 0usize;
+    let mut entries = match tokio::fs::read_dir(&cache_path).await {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok((0, 0)),
+        Err(err) => return Err(err.into()),
+    };
+    while let Some(platform_entry) = entries.next_entry().await? {
+        if !platform_entry.file_type().await?.is_dir() {
+            continue;
+        }
+        let platform_name = match platform_entry.file_name().to_str() {
+            Some(name) => name.to_string(),
+            None => continue,
+        };
+        if is_disabled_platform(&platform_name) {
+            continue;
+        }
+        let platform = match PlatformType::from_str(platform_name.as_str()) {
+            Ok(platform) => platform,
+            Err(_) => continue,
+        };
+        let mut room_dirs = tokio::fs::read_dir(platform_entry.path()).await?;
+        while let Some(room_entry) = room_dirs.next_entry().await? {
+            if !room_entry.file_type().await?.is_dir() {
+                continue;
+            }
+            let room_id = match room_entry.file_name().to_str() {
+                Some(id) => id.to_string(),
+                None => continue,
+            };
+            if !is_safe_path_component(&room_id) {
+                log::warn!("Skip rebuild archives for unsafe room id: {}", room_id);
+                continue;
+            }
+            let mut live_dirs = tokio::fs::read_dir(room_entry.path()).await?;
+            while let Some(live_entry) = live_dirs.next_entry().await? {
+                if !live_entry.file_type().await?.is_dir() {
+                    continue;
+                }
+                let live_id = match live_entry.file_name().to_str() {
+                    Some(id) => id.to_string(),
+                    None => continue,
+                };
+                if !is_safe_path_component(&live_id) {
+                    continue;
+                }
+                let mut record = db.get_record(&room_id, &live_id).await.ok();
+                if record.is_none() {
+                    record = Some(
+                        db.add_record(
+                            platform,
+                            &live_id,
+                            &live_id,
+                            &room_id,
+                            &format!("UnknownLive {live_id}"),
+                            None,
+                        )
+                        .await?,
+                    );
+                    added += 1;
+                }
+
+                let (mut duration, mut size) =
+                    compute_record_stats(&live_entry.path()).await?;
+                if let Some(existing) = record.as_ref() {
+                    if duration <= 0.0 {
+                        duration = existing.length;
+                    }
+                    if size == 0 && existing.size > 0 {
+                        size = existing.size as u64;
+                    }
+                    if (duration > 0.0 || size > 0)
+                        && (existing.length != duration || existing.size != size as i64)
+                    {
+                        db.update_record_stats(&live_id, duration, size).await?;
+                        updated += 1;
+                    }
+                } else if duration > 0.0 || size > 0 {
+                    db.update_record_stats(&live_id, duration, size).await?;
+                    updated += 1;
+                }
+            }
+        }
+    }
+    Ok((added, updated))
 }
 
 pub async fn try_rebuild_archives(
