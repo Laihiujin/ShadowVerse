@@ -452,7 +452,11 @@ impl RecorderManager {
                     );
                     #[cfg(feature = "gui")]
                     {
-                        let state = self.app_handle.state::<crate::state::State>().clone();
+                        let state = self
+                            .app_handle
+                            .state::<crate::state::State>()
+                            .inner()
+                            .clone();
                         let refresh_reason =
                             format!("{}: {}", platform.as_str(), reason);
                         tokio::spawn(async move {

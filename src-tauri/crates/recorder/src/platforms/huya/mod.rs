@@ -5,7 +5,7 @@ pub mod url_builder;
 use crate::account::Account;
 use crate::core::hls_recorder::{construct_stream_from_variant, HlsRecorder};
 use crate::core::{Codec, Format};
-use crate::errors::{is_guest_cookie_block_error, RecorderError};
+use crate::errors::RecorderError;
 use crate::events::RecorderEvent;
 use crate::platforms::huya::extractor::StreamInfo;
 use crate::traits::RecorderTrait;
@@ -20,6 +20,7 @@ use tokio::sync::{broadcast, Mutex, RwLock};
 
 use crate::danmu::DanmuStorage;
 use crate::platforms::PlatformType;
+use crate::platforms::huya::errors::HuyaClientError;
 
 pub type HuyaRecorder = Recorder<HuyaExtra>;
 
@@ -123,7 +124,7 @@ impl HuyaRecorder {
                 true
             }
             Err(e) => {
-                if self.account.is_guest() && is_guest_cookie_block_error(&e) {
+                if self.account.is_guest() && is_huya_guest_cookie_block_error(&e) {
                     let _ = self.event_channel.send(
                         RecorderEvent::GuestCookieRefreshRequested {
                             platform: PlatformType::Huya,
@@ -208,6 +209,42 @@ impl HuyaRecorder {
         }
 
         Ok(())
+    }
+}
+
+fn is_huya_guest_cookie_block_error(err: &HuyaClientError) -> bool {
+    match err {
+        HuyaClientError::InvalidCookie | HuyaClientError::SecurityControlError => true,
+        HuyaClientError::InvalidResponseStatus { status } => {
+            matches!(status.as_u16(), 401 | 403 | 429)
+        }
+        HuyaClientError::ApiError(message) | HuyaClientError::ExtractorError(message) => {
+            let lower = message.to_string().to_ascii_lowercase();
+            lower.contains("cookie")
+                || lower.contains("login")
+                || lower.contains("invalid")
+                || lower.contains("expired")
+                || lower.contains("token")
+                || lower.contains("blocked")
+                || lower.contains("forbidden")
+                || lower.contains("rate")
+                || lower.contains("too many")
+                || lower.contains("captcha")
+        }
+        HuyaClientError::InvalidResponseJson { resp } => {
+            let lower = resp.to_string().to_ascii_lowercase();
+            lower.contains("cookie")
+                || lower.contains("login")
+                || lower.contains("invalid")
+                || lower.contains("expired")
+                || lower.contains("token")
+                || lower.contains("blocked")
+                || lower.contains("forbidden")
+                || lower.contains("rate")
+                || lower.contains("too many")
+                || lower.contains("captcha")
+        }
+        _ => false,
     }
 }
 

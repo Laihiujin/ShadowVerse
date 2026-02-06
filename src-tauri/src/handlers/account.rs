@@ -2497,7 +2497,7 @@ async fn refresh_guest_accounts_inner(
 
     let old_entries_snapshot = state.config.read().await.guest_accounts.clone();
     let mut updates: Vec<(String, String)> = Vec::new();
-    let mut updates_final: Vec<(String, String)> = Vec::new();
+    let updates_final: Vec<(String, String)>;
     let mut attempt: u8 = 0;
     let max_attempts: u8 = 2;
     let mut last_guest_labels: Vec<String> = Vec::new();
@@ -2807,10 +2807,7 @@ pub async fn refresh_guest_accounts(state: state_type!()) -> Result<(), String> 
     refresh_guest_accounts_inner(&state, None, false).await
 }
 
-pub async fn refresh_guest_accounts_on_demand(
-    state: state_type!(),
-    reason: String,
-) -> Result<(), String> {
+pub async fn refresh_guest_accounts_on_demand(state: State, reason: String) -> Result<(), String> {
     let reason_ref = reason.as_str();
     refresh_guest_accounts_inner(&state, Some(reason_ref), true).await
 }
