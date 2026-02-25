@@ -4,7 +4,7 @@ resolver = "2"
 
 [package]
 name = "shadowverse"
-version = "3.19.1"
+version = "3.19.3"
 description = "ShadowVerse"
 authors = ["Laihiujin+Xinrea"]
 license = ""

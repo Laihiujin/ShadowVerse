@@ -15,17 +15,22 @@ jobs:
           - platform: "macos-latest" # for Intel based macs.
             args: "--target x86_64-apple-darwin"
             target: "x86_64-apple-darwin"
+            cmake_arch_flags: ""  # x86_64 does NOT support -march=armv8-a
           - platform: "macos-latest" # for Apple Silicon macs.
             args: "--target aarch64-apple-darwin"
             target: "aarch64-apple-darwin"
+            cmake_arch_flags: "-march=armv8-a"  # ARM64 only
           - platform: "ubuntu-22.04"
             args: ""
+            cmake_arch_flags: ""
           - platform: "windows-latest"
             args: "--features cuda"
             features: "cuda"
+            cmake_arch_flags: ""
           - platform: "windows-latest"
             args: ""
             features: "cpu"
+            cmake_arch_flags: ""
 
     runs-on: ${{ matrix.platform }}
     steps:
@@ -103,8 +108,9 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CMAKE_OSX_DEPLOYMENT_TARGET: "13.3"
-          CMAKE_C_FLAGS: ${{ matrix.platform == 'macos-latest' && '-march=armv8-a' || '' }}
-          CMAKE_CXX_FLAGS: ${{ matrix.platform == 'macos-latest' && '-march=armv8-a' || '' }}
+          # Only set ARM arch flags for the aarch64 target; x86_64 does NOT support -march=armv8-a
+          CMAKE_C_FLAGS: ${{ matrix.cmake_arch_flags }}
+          CMAKE_CXX_FLAGS: ${{ matrix.cmake_arch_flags }}
           GGML_METAL_EMBED_LIBRARY: ${{ matrix.platform == 'macos-latest' && '1' || '' }}
           CMAKE_CUDA_ARCHITECTURES: "75"
           WHISPER_BACKEND: ${{ matrix.features }}

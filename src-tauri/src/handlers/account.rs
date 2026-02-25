@@ -142,6 +142,7 @@ fn write_login_account_to_paths(
     }
 }
 
+#[allow(dead_code)]
 fn remove_login_account_from_paths(paths: &[PathBuf], platform: &str, cookies: &str) {
     for path in paths {
         let mut accounts = load_accounts_file_from_path(path);
@@ -174,6 +175,7 @@ fn remove_login_account_by_platform_from_paths(paths: &[PathBuf], platform: &str
     }
 }
 
+#[allow(dead_code)]
 fn strip_cookie_fields(cookies: &str, fields: &[&str]) -> String {
     let mut kept: Vec<String> = Vec::new();
     for part in cookies.split(';') {
@@ -356,6 +358,7 @@ fn extract_kuaishou_kww(cookies: &str) -> Option<String> {
     None
 }
 
+#[allow(dead_code)]
 fn gen_kuaishou_web_did() -> String {
     let mut rng = rand::thread_rng();
     let mut bytes = [0u8; 16];
@@ -367,6 +370,7 @@ fn gen_kuaishou_web_did() -> String {
     format!("web_{hex}")
 }
 
+#[allow(dead_code)]
 fn ensure_kuaishou_base_cookies(cookie_map: &mut std::collections::HashMap<String, String>) {
     if !cookie_map.contains_key("did") {
         cookie_map.insert("did".to_string(), gen_kuaishou_web_did());

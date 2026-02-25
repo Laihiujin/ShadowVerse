@@ -311,7 +311,7 @@ fn append_cookie_pair(mut header: String, key: &str, value: &str) -> String {
 fn ensure_kuaishou_request_cookie(cookies: &str) -> String {
     let normalized = normalize_cookie_header(cookies);
     let filtered = filter_kuaishou_cookie_header(&normalized);
-    let mut ensured = if filtered.is_empty() {
+    let ensured = if filtered.is_empty() {
         let did = gen_web_did();
         let didv = Utc::now().timestamp_millis();
         format!("did={did}; didv={didv}")

@@ -92,6 +92,7 @@ impl Database {
         .await?)
     }
 
+    #[allow(dead_code)]
     pub async fn remove_archive(&self, room_id: &str) -> Result<(), DatabaseError> {
         let lock = self.db.read().await.clone().unwrap();
         let _ = sqlx::query("DELETE FROM records WHERE room_id = $1")
