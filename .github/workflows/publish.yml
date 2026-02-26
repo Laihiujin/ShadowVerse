@@ -1,0 +1,147 @@
+name: Publish
+
+on:
+  push:
+    tags:
+      - "v*"
+
+# 关键：必须有 contents: write 才能创建 Release
+permissions:
+  contents: write
+
+jobs:
+  publish-tauri:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # macOS arm64 (Apple Silicon)
+          - platform: macos-latest
+            args: "--target aarch64-apple-darwin"
+            rust-target: aarch64-apple-darwin
+            label: macos-arm64
+
+          # macOS x86_64 (Intel)
+          - platform: macos-latest
+            args: "--target x86_64-apple-darwin"
+            rust-target: x86_64-apple-darwin
+            label: macos-x64
+
+          # Ubuntu
+          - platform: ubuntu-22.04
+            args: ""
+            rust-target: ""
+            label: linux-x64
+
+          # Windows CPU-only
+          - platform: windows-latest
+            args: "--features gui"
+            rust-target: ""
+            label: windows-cpu
+
+          # Windows CUDA
+          - platform: windows-latest
+            args: "--features gui,cuda"
+            rust-target: ""
+            label: windows-cuda
+
+    runs-on: ${{ matrix.platform }}
+    name: Publish (${{ matrix.label }})
+
+    steps:
+      # ✅ 关键修复：fetch-depth: 0 确保拉取完整 git 历史和所有 tag
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # 调试用：确认 tag 和 remote 正确
+      - name: Debug git info
+        shell: bash
+        run: |
+          git describe --tags --always
+          git remote -v
+          echo "Current tag: ${GITHUB_REF#refs/tags/}"
+
+      # ---------- Node.js ----------
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install yarn
+        run: npm install -g yarn
+
+      - name: Install frontend dependencies
+        run: yarn install --frozen-lockfile
+
+      # ---------- Rust ----------
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          # 跨平台编译 macOS 需要额外的 target
+          targets: ${{ matrix.rust-target }}
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "./src-tauri -> target"
+
+      # ---------- Linux 系统依赖 ----------
+      - name: Install Linux system dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libssl-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            cmake \
+            clang \
+            llvm
+
+      # ---------- macOS 依赖 ----------
+      - name: Install macOS dependencies (cmake/llvm for whisper-rs)
+        if: matrix.platform == 'macos-latest'
+        run: |
+          brew install cmake llvm
+
+      # ---------- Windows 依赖 ----------
+      - name: Install Windows dependencies (cmake/llvm for whisper-rs)
+        if: matrix.platform == 'windows-latest'
+        run: |
+          choco install cmake llvm -y --no-progress
+          echo "C:\Program Files\LLVM\bin" >> $GITHUB_PATH
+          echo "C:\Program Files\CMake\bin" >> $GITHUB_PATH
+        shell: bash
+
+      # ---------- Windows CUDA Toolkit ----------
+      - name: Install CUDA Toolkit (Windows CUDA only)
+        if: matrix.platform == 'windows-latest' && contains(matrix.args, 'cuda')
+        uses: Jimver/cuda-toolkit@v0.2.19
+        with:
+          cuda: "12.4.0"
+          method: network
+          sub-packages: '["nvcc", "cudart"]'
+
+      # ---------- 构建 & 发布 ----------
+      - name: Build and publish Tauri app
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # CUDA 环境变量（仅 Windows CUDA 生效）
+          CUDA_PATH: ${{ matrix.platform == 'windows-latest' && contains(matrix.args, 'cuda') && env.CUDA_PATH || '' }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: "ShadowVerse ${{ github.ref_name }}"
+          releaseBody: |
+            ## ShadowVerse ${{ github.ref_name }}
+
+            See the [CHANGELOG](https://github.com/${{ github.repository }}/releases) for more details.
+          releaseDraft: true
+          prerelease: false
+          args: ${{ matrix.args }}
