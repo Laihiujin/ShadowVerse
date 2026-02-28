@@ -42,6 +42,7 @@ impl KuaishouSign {
 
 /// Generate Kuaishou web DID (Device ID) for guest mode  
 /// Format: web_<32 hex characters>
+#[allow(dead_code)]
 pub fn gen_kuaishou_web_did() -> String {
     let mut rng = rand::rng();
     let hex: String = (0..32)

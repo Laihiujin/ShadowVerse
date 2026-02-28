@@ -351,6 +351,8 @@ fn filter_kuaishou_cookie_header(cookies: &str) -> String {
         "did",
         "didv",
         "userid",
+        "kwscode",
+        "kwfv1",
     ];
     let mut kept = Vec::new();
     for part in cookies.split(';').map(str::trim) {
