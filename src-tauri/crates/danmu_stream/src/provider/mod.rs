@@ -1,6 +1,6 @@
 mod bilibili;
 mod douyin;
-mod kuaishou;
+pub mod kuaishou;
 
 use async_trait::async_trait;
 use tokio::sync::mpsc;

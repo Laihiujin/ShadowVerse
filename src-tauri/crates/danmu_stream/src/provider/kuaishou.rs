@@ -291,10 +291,27 @@ impl KuaishouDanmu {
         room_id: String,
         stop: Arc<RwLock<bool>>,
     ) -> Result<(), DanmuStreamError> {
-        while let Some(Ok(msg)) = read.next().await {
+        while let Some(msg_result) = read.next().await {
             if *stop.read().await {
                 info!("Stopping Kuaishou danmu stream");
                 break;
+            }
+
+            let msg = match msg_result {
+                Ok(m) => m,
+                Err(e) => {
+                    warn!("Kuaishou WS read error: {}", e);
+                    break;
+                }
+            };
+
+            // Only process binary frames; skip text/ping/pong/close
+            if !msg.is_binary() {
+                if msg.is_close() {
+                    info!("Kuaishou WS closed by server");
+                    break;
+                }
+                continue;
             }
 
             let data = msg.into_data();
@@ -302,15 +319,24 @@ impl KuaishouDanmu {
                 continue;
             }
 
-            let socket_msg = SocketMessage::decode(&*data).map_err(|e| {
-                DanmuStreamError::MessageParseError {
-                    err: e.to_string(),
+            // Protobuf decode failure → skip this message, don't crash the loop
+            let socket_msg = match SocketMessage::decode(&*data) {
+                Ok(m) => m,
+                Err(e) => {
+                    warn!("Kuaishou danmu: failed to decode SocketMessage: {}", e);
+                    continue;
                 }
-            })?;
+            };
 
             let payload = match CompressionType::try_from(socket_msg.compression_type).ok() {
                 Some(CompressionType::None) | Some(CompressionType::Unknown) => socket_msg.payload,
-                Some(CompressionType::Gzip) => gunzip(&socket_msg.payload)?,
+                Some(CompressionType::Gzip) => match gunzip(&socket_msg.payload) {
+                    Ok(decompressed) => decompressed,
+                    Err(e) => {
+                        warn!("Kuaishou danmu: gzip decompress failed: {}", e);
+                        continue;
+                    }
+                },
                 Some(CompressionType::Aes) => {
                     warn!("Kuaishou payload uses AES compression, skipping");
                     continue;
@@ -320,11 +346,13 @@ impl KuaishouDanmu {
 
             if PayloadType::try_from(socket_msg.payload_type).ok() == Some(PayloadType::ScFeedPush)
             {
-                let feed = ScWebFeedPush::decode(&*payload).map_err(|e| {
-                    DanmuStreamError::MessageParseError {
-                        err: e.to_string(),
+                let feed = match ScWebFeedPush::decode(&*payload) {
+                    Ok(f) => f,
+                    Err(e) => {
+                        warn!("Kuaishou danmu: failed to decode ScWebFeedPush: {}", e);
+                        continue;
                     }
-                })?;
+                };
                 for comment in feed.comment_feeds {
                     let user = comment.user.unwrap_or_default();
                     let user_id = user.principal_id.parse::<u64>().unwrap_or(0);
@@ -345,10 +373,10 @@ impl KuaishouDanmu {
                         color,
                         timestamp: ts,
                     };
-                    tx.send(DanmuMessageType::DanmuMessage(danmu))
-                        .map_err(|e| DanmuStreamError::WebsocketError {
-                            err: e.to_string(),
-                        })?;
+                    if tx.send(DanmuMessageType::DanmuMessage(danmu)).is_err() {
+                        // Receiver dropped, stop
+                        return Ok(());
+                    }
                 }
             }
         }
@@ -466,9 +494,10 @@ impl KuaishouDanmu {
             });
         }
 
-        // ── Step 3: For logged-in users, call livedetail without sign ──
-        if has_web_st && !live_stream_id.is_empty() {
-            info!("Kuaishou danmu: logged-in mode, calling livedetail (no sign) for id={}", live_stream_id);
+        // ── Step 3: Call livedetail via principalId (works for both guest and login) ──
+        // This is the most reliable way to get liveStreamId when HTML extraction fails.
+        {
+            info!("Kuaishou danmu: calling livedetail via principalId={}", self.room_id);
             if let Ok(resp) = self
                 .client
                 .get("https://live.kuaishou.com/live_api/liveroom/livedetail")
@@ -505,10 +534,11 @@ impl KuaishouDanmu {
                     websocket_urls = extract_ws_urls_from_text(&ld_text);
                 }
                 info!(
-                    "Kuaishou danmu livedetail (status {}): token_present={}, ws_urls={}",
+                    "Kuaishou danmu livedetail (status {}): token_present={}, ws_urls={}, liveStreamId_present={}",
                     ld_status,
                     !token.is_empty(),
-                    websocket_urls.len()
+                    websocket_urls.len(),
+                    !live_stream_id.is_empty()
                 );
             }
         }
@@ -946,7 +976,7 @@ fn extract_ws_token_from_text(text: &str) -> Option<String> {
 
 fn extract_ws_urls_from_text(text: &str) -> Vec<String> {
     let mut urls = Vec::new();
-    let re = Regex::new(r#"wss://livejs-ws-group\d+\.gifshow\.com/websocket"#).ok();
+    let re = Regex::new(r#"(?i)wss://(?:livejs-ws-group\d+\.gifshow\.com|live-ws-pg-group\d+\.kuaishou\.com)/websocket"#).ok();
     if let Some(re) = re {
         for cap in re.captures_iter(text) {
             if let Some(m) = cap.get(0) {

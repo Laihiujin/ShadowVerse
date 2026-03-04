@@ -6415,7 +6415,7 @@ dependencies = [
 
 [[package]]
 name = "shadowverse"
-version = "3.19.3"
+version = "3.19.7"
 dependencies = [
  "aead",
  "aes-gcm",

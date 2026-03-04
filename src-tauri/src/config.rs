@@ -86,6 +86,8 @@ pub struct Config {
 pub struct AutoGenerateConfig {
     pub enabled: bool,
     pub encode_danmu: bool,
+    #[serde(default)]
+    pub delete_cache_after_clip: bool,
 }
 
 #[derive(Deserialize, Serialize, Clone)]
@@ -253,6 +255,7 @@ fn default_auto_generate_config() -> AutoGenerateConfig {
     AutoGenerateConfig {
         enabled: false,
         encode_danmu: false,
+        delete_cache_after_clip: false,
     }
 }
 

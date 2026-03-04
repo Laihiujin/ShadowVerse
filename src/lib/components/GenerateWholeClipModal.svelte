@@ -8,24 +8,32 @@
   export let showModal = false;
   export let archive: RecordItem | null = null;
   export let roomId: string;
-  export const platform: string = "";
+  export let platform: string = "";
 
   const dispatch = createEventDispatcher();
 
   let wholeClipArchives: RecordItem[] = [];
   let selectedLiveIds: string[] = [];
   $: selectedArchives = wholeClipArchives.filter((archiveItem) =>
-    selectedLiveIds.includes(archiveItem.live_id)
+    selectedLiveIds.includes(archiveItem.live_id),
   );
   $: allSelected =
     wholeClipArchives.length > 0 &&
     selectedLiveIds.length === wholeClipArchives.length;
   let isLoading = false;
   let encodeDanmu = false;
+  let deleteCacheAfterClip = false;
 
   // 当modal显示且有archive时，加载相关片段
   $: if (showModal && archive) {
     loadWholeClipArchives(roomId, archive.parent_id);
+  }
+  // 当archive变化时重置并重新加载
+  $: if (archive) {
+    if (!showModal) {
+      wholeClipArchives = [];
+      selectedLiveIds = [];
+    }
   }
 
   async function loadWholeClipArchives(roomId: string, parentId: string) {
@@ -44,7 +52,7 @@
       for (const archive of sameParentArchives) {
         archive.cover = await get_static_url(
           "cache",
-          `${archive.platform}/${archive.room_id}/${archive.live_id}/cover.jpg`
+          `${archive.platform}/${archive.room_id}/${archive.live_id}/cover.jpg`,
         );
       }
 
@@ -57,10 +65,27 @@
 
       wholeClipArchives = sameParentArchives;
       selectedLiveIds = sameParentArchives
-        .filter((archiveItem) => archiveItem.parent_id === parentId)
+        .filter((archiveItem) => {
+          if (!parentId) {
+            // If parentId is empty, collect only this specific archive and any direct children (if parent_id matches this archive's live_id)
+            return (
+              archiveItem.live_id === archive?.live_id ||
+              archiveItem.parent_id === archive?.live_id
+            );
+          }
+          // Otherwise, collect everything belonging to this parent
+          return (
+            archiveItem.parent_id === parentId ||
+            archiveItem.live_id === parentId
+          );
+        })
         .map((archiveItem) => archiveItem.live_id);
-      if (selectedLiveIds.length === 0 && sameParentArchives.length > 0) {
-        selectedLiveIds = [sameParentArchives[0].live_id];
+      if (
+        selectedLiveIds.length === 0 &&
+        sameParentArchives.length > 0 &&
+        archive
+      ) {
+        selectedLiveIds = [archive.live_id];
       }
     } catch (error) {
       console.error("Failed to load whole clip archives:", error);
@@ -78,6 +103,7 @@
       }
       await invoke("generate_whole_clip", {
         encodeDanmu: encodeDanmu,
+        deleteCacheAfterClip: deleteCacheAfterClip,
         platform: archive.platform,
         roomId: archive.room_id,
         parentId: archive.parent_id,
@@ -157,7 +183,9 @@
       selectedLiveIds = [];
       return;
     }
-    selectedLiveIds = wholeClipArchives.map((archiveItem) => archiveItem.live_id);
+    selectedLiveIds = wholeClipArchives.map(
+      (archiveItem) => archiveItem.live_id,
+    );
   }
 </script>
 
@@ -227,7 +255,9 @@
               </div>
             {:else}
               <div class="flex items-center justify-between pb-3">
-                <label class="flex items-center space-x-2 text-sm text-gray-600 dark:text-gray-400">
+                <label
+                  class="flex items-center space-x-2 text-sm text-gray-600 dark:text-gray-400"
+                >
                   <input
                     type="checkbox"
                     class="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
@@ -249,7 +279,8 @@
                       type="checkbox"
                       class="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
                       checked={selectedLiveIds.includes(archiveItem.live_id)}
-                      on:change={() => toggleArchiveSelection(archiveItem.live_id)}
+                      on:change={() =>
+                        toggleArchiveSelection(archiveItem.live_id)}
                     />
                     <div
                       class="flex-shrink-0 w-8 h-8 rounded-full bg-blue-500 flex items-center justify-center text-white text-sm font-medium"
@@ -277,7 +308,7 @@
                         class="text-xs text-gray-500 dark:text-gray-400 mt-1"
                       >
                         {formatTimestamp(archiveItem.created_at)} · {formatDuration(
-                          archiveItem.length
+                          archiveItem.length,
                         )} · {formatSize(archiveItem.size)}
                       </div>
                     </div>
@@ -304,17 +335,16 @@
                   共 {selectedArchives.length} 个片段 · 总时长 {formatDuration(
                     selectedArchives.reduce(
                       (sum, archiveItem) => sum + archiveItem.length,
-                      0
-                    )
+                      0,
+                    ),
                   )} · 总大小 {formatSize(
                     selectedArchives.reduce(
                       (sum, archiveItem) => sum + archiveItem.size,
-                      0
-                    )
+                      0,
+                    ),
                   )}
                 </div>
 
-                <!-- 压制弹幕选项 -->
                 <div
                   class="mt-4 pt-4 border-t border-blue-200 dark:border-blue-700"
                 >
@@ -337,6 +367,33 @@
                       <input
                         type="checkbox"
                         bind:checked={encodeDanmu}
+                        class="sr-only peer"
+                      />
+                      <div
+                        class="w-11 h-6 bg-blue-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 dark:peer-focus:ring-blue-800 rounded-full peer dark:bg-blue-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-blue-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-blue-600 peer-checked:bg-blue-600"
+                      ></div>
+                    </label>
+                  </div>
+
+                  <div class="flex items-center justify-between mt-4">
+                    <div class="flex-1">
+                      <div
+                        class="text-sm font-medium text-blue-900 dark:text-blue-100"
+                      >
+                        完成后删除缓存
+                      </div>
+                      <div
+                        class="text-xs text-blue-700 dark:text-blue-300 mt-1"
+                      >
+                        生成完整切片后，自动删除参与合成的录播片段缓存以节省空间
+                      </div>
+                    </div>
+                    <label
+                      class="relative inline-flex items-center cursor-pointer"
+                    >
+                      <input
+                        type="checkbox"
+                        bind:checked={deleteCacheAfterClip}
                         class="sr-only peer"
                       />
                       <div

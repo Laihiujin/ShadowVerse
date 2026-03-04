@@ -565,6 +565,7 @@ impl RecorderManager {
                         .generate_whole_clip(
                             Some(&reporter),
                             self_clone.config.read().await.auto_generate.encode_danmu,
+                            self_clone.config.read().await.auto_generate.delete_cache_after_clip,
                             platform.as_str().to_string(),
                             &room_id,
                             live_record.parent_id,
@@ -1934,6 +1935,7 @@ impl RecorderManager {
         &self,
         reporter: Option<&ProgressReporter>,
         encode_danmu: bool,
+        delete_cache_after_clip: bool,
         platform: String,
         room_id: &str,
         parent_id: String,
@@ -2066,6 +2068,25 @@ impl RecorderManager {
             events::new_webhook_event(events::CLIP_GENERATED, events::Payload::Clip(video.clone()));
         if let Err(e) = self.webhook_poster.post_event(&event).await {
             log::error!("Post webhook event error: {e}");
+        }
+
+        if delete_cache_after_clip {
+            for rl in playlists {
+                let live_id = rl.live_id.clone();
+                // Remove DB record
+                if let Err(e) = self.db.remove_record(&live_id).await {
+                    log::error!("[{room_id}][{live_id}] Failed to remove DB record: {}", e);
+                }
+                
+                // Remove physical files
+                let cache_path = self.config.read().await.cache.clone();
+                let work_dir = CachePath::new(PathBuf::from(cache_path), platform, room_id, &live_id);
+                if let Err(e) = tokio::fs::remove_dir_all(work_dir.full_path()).await {
+                    log::error!("[{room_id}][{live_id}] Failed to remove archive cache dir: {}", e);
+                } else {
+                    log::info!("[{room_id}][{live_id}] Archive cache deleted successfully");
+                }
+            }
         }
 
         Ok(())

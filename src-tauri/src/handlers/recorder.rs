@@ -974,12 +974,13 @@ pub async fn fetch_hls(state: state_type!(), uri: String) -> Result<Vec<u8>, Str
 pub async fn generate_whole_clip(
     state: state_type!(),
     encode_danmu: bool,
+    delete_cache_after_clip: bool,
     platform: String,
     room_id: String,
     parent_id: String,
     live_ids: Option<Vec<String>>,
 ) -> Result<TaskRow, String> {
-    log::info!("Generate whole clip for {platform} {room_id} {parent_id}");
+    log::info!("Generate whole clip for {platform} {room_id} {parent_id}, delete_cache={delete_cache_after_clip}");
 
     let task = state
         .db
@@ -992,6 +993,7 @@ pub async fn generate_whole_clip(
                 "parent_id": parent_id,
                 "live_ids": live_ids,
                 "encode_danmu": encode_danmu,
+                "delete_cache_after_clip": delete_cache_after_clip,
             })
             .to_string(),
         )
@@ -1022,6 +1024,7 @@ pub async fn generate_whole_clip(
                     .generate_whole_clip(
                         Some(&reporter),
                         encode_danmu,
+                        delete_cache_after_clip,
                         platform,
                         &room_id,
                         parent_id,

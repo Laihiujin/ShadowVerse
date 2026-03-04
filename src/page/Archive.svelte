@@ -115,7 +115,7 @@
       if (!room_cover_fallback.has(archive.room_id)) {
         room_cover_fallback.set(
           archive.room_id,
-          default_cover(archive.platform)
+          default_cover(archive.platform),
         );
       }
     }
@@ -138,7 +138,8 @@
       return;
     }
     const fallback =
-      room_cover_fallback.get(archive.room_id) || default_cover(archive.platform);
+      room_cover_fallback.get(archive.room_id) ||
+      default_cover(archive.platform);
     target.src = fallback;
   }
 
@@ -165,10 +166,9 @@
     try {
       if (!autoRoomInfoRefreshDone) {
         autoRoomInfoRefreshDone = true;
-        invoke("refresh_archive_room_info")
-          .catch((error) => {
-            console.warn("Failed to refresh archive room info:", error);
-          });
+        invoke("refresh_archive_room_info").catch((error) => {
+          console.warn("Failed to refresh archive room info:", error);
+        });
       }
 
       // 获取所有直播间列表
@@ -191,7 +191,7 @@
         for (const archive of batch) {
           archive.cover = await get_static_url(
             "cache",
-            `${archive.platform}/${archive.room_id}/${archive.live_id}/cover.jpg`
+            `${archive.platform}/${archive.room_id}/${archive.live_id}/cover.jpg`,
           );
         }
         allArchives = [...allArchives, ...batch];
@@ -223,7 +223,7 @@
         }
       }
       roomOptions = Array.from(roomOptionMap.values()).sort((a, b) =>
-        a.label.localeCompare(b.label)
+        a.label.localeCompare(b.label),
       );
 
       allArchives.sort((a, b) => {
@@ -302,7 +302,7 @@
     // Apply room filter
     if (selectedRoomId !== null) {
       filtered = filtered.filter(
-        (archive) => archive.room_id === selectedRoomId
+        (archive) => archive.room_id === selectedRoomId,
       );
     }
 
@@ -427,11 +427,10 @@
         return `https://www.huya.com/${roomId}`;
       case "kuaishou":
         return `https://live.kuaishou.com/u/${roomId}`;
-      case "tiktok":
-        {
-          const handle = roomId.startsWith("@") ? roomId : `@${roomId}`;
-          return `https://www.tiktok.com/${handle}/live`;
-        }
+      case "tiktok": {
+        const handle = roomId.startsWith("@") ? roomId : `@${roomId}`;
+        return `https://www.tiktok.com/${handle}/live`;
+      }
       case "youtube":
         return `https://www.youtube.com/channel/${roomId}`;
       default:
@@ -475,7 +474,7 @@
       selectedArchives.clear();
     } else {
       currentArchives.forEach((archive) =>
-        selectedArchives.add(archive.live_id)
+        selectedArchives.add(archive.live_id),
       );
     }
     selectedArchives = selectedArchives; // Trigger reactivity
@@ -557,7 +556,9 @@
   }
 </script>
 
-<div class="flex-1 p-6 overflow-auto custom-scrollbar-light bg-gray-50 dark:bg-black">
+<div
+  class="flex-1 p-6 overflow-auto custom-scrollbar-light bg-gray-50 dark:bg-black"
+>
   <div class="space-y-6">
     <!-- Header -->
     <div class="flex justify-between items-center">
@@ -968,7 +969,8 @@
                           alt="封面"
                           class="w-12 h-8 rounded object-cover flex-shrink-0"
                           on:load={(e) => handle_archive_cover_load(e, archive)}
-                          on:error={(e) => handle_archive_cover_error(e, archive)}
+                          on:error={(e) =>
+                            handle_archive_cover_error(e, archive)}
                         />
                       {/if}
                       <span
@@ -1100,3 +1102,13 @@
     </div>
   </div>
 {/if}
+
+<GenerateWholeClipModal
+  bind:showModal={showWholeClipModal}
+  archive={wholeClipArchive}
+  roomId={wholeClipArchive?.room_id || ""}
+  platform={wholeClipArchive?.platform || ""}
+  on:generated={() => {
+    loadArchives();
+  }}
+/>

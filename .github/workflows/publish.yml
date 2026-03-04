@@ -16,13 +16,13 @@ jobs:
       matrix:
         include:
           # macOS arm64 (Apple Silicon)
-          - platform: macos-latest
+          - platform: macos-14
             args: "--target aarch64-apple-darwin"
             rust-target: aarch64-apple-darwin
             label: macos-arm64
 
           # macOS x86_64 (Intel)
-          - platform: macos-latest
+          - platform: macos-13
             args: "--target x86_64-apple-darwin"
             rust-target: x86_64-apple-darwin
             label: macos-x64
@@ -127,6 +127,19 @@ jobs:
           cuda: "12.4.0"
           method: network
           sub-packages: '["nvcc", "cudart"]'
+
+      # ---------- Rename Product Name (Windows) ----------
+      - name: Rename productName for Windows CPU
+        if: matrix.platform == 'windows-latest' && !contains(matrix.args, 'cuda')
+        shell: powershell
+        run: |
+          (Get-Content src-tauri\tauri.conf.json) -replace '"productName": "ShadowVerse"', '"productName": "ShadowVerse-CPU"' | Set-Content src-tauri\tauri.conf.json
+          
+      - name: Rename productName for Windows CUDA
+        if: matrix.platform == 'windows-latest' && contains(matrix.args, 'cuda')
+        shell: powershell
+        run: |
+          (Get-Content src-tauri\tauri.conf.json) -replace '"productName": "ShadowVerse"', '"productName": "ShadowVerse-CUDA"' | Set-Content src-tauri\tauri.conf.json
 
       # ---------- 构建 & 发布 ----------
       - name: Build and publish Tauri app

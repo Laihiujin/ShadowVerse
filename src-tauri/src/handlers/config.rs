@@ -364,10 +364,12 @@ pub async fn update_auto_generate(
     state: state_type!(),
     enabled: bool,
     encode_danmu: bool,
+    delete_cache_after_clip: bool,
 ) -> Result<(), String> {
     let mut config = state.config.write().await;
     config.auto_generate.enabled = enabled;
     config.auto_generate.encode_danmu = encode_danmu;
+    config.auto_generate.delete_cache_after_clip = delete_cache_after_clip;
     config.save();
     Ok(())
 }
