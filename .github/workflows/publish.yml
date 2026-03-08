@@ -106,7 +106,7 @@ jobs:
 
       # ---------- macOS 依赖 ----------
       - name: Install macOS dependencies (cmake/llvm for whisper-rs)
-        if: matrix.platform == 'macos-latest'
+        if: startsWith(matrix.platform, 'macos-')
         run: |
           brew install cmake llvm
 
@@ -146,6 +146,12 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           # CUDA 环境变量（仅 Windows CUDA 生效）
           CUDA_PATH: ${{ matrix.platform == 'windows-latest' && contains(matrix.args, 'cuda') && env.CUDA_PATH || '' }}
         with:

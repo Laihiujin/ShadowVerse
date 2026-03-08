@@ -26,6 +26,13 @@ jobs:
     runs-on: macos-latest
     permissions:
       contents: write
+    env:
+      APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
     
     steps:
       - name: Checkout repository
@@ -78,8 +85,19 @@ jobs:
             src-tauri/target/x86_64-apple-darwin/release/bundle/macos/ShadowVerse.app/Contents/MacOS/ShadowVerse \
             -output src-tauri/target/universal-apple-darwin/release/bundle/macos/ShadowVerse.app/Contents/MacOS/ShadowVerse
           
-          # Create DMG for universal binary
-          yarn tauri build --target universal-apple-darwin || true
+          # Re-sign universal app after lipo (lipo invalidates old signature)
+          UNIVERSAL_APP="src-tauri/target/universal-apple-darwin/release/bundle/macos/ShadowVerse.app"
+          if [ -n "${APPLE_SIGNING_IDENTITY}" ]; then
+            codesign --force --deep --options runtime --sign "${APPLE_SIGNING_IDENTITY}" "$UNIVERSAL_APP"
+          else
+            codesign --force --deep --sign - "$UNIVERSAL_APP"
+          fi
+          codesign --verify --deep --strict --verbose=2 "$UNIVERSAL_APP"
+          
+          # Create DMG for universal app bundle
+          UNIVERSAL_DMG="src-tauri/target/universal-apple-darwin/release/bundle/macos/ShadowVerse_universal.dmg"
+          rm -f "$UNIVERSAL_DMG"
+          hdiutil create -volname "ShadowVerse" -srcfolder "$UNIVERSAL_APP" -ov -format UDZO "$UNIVERSAL_DMG"
 
       - name: Get version
         id: version
@@ -96,27 +114,50 @@ jobs:
       - name: Rename DMG files
         run: |
           VERSION=${{ steps.version.outputs.version }}
+          find_final_dmg() {
+            local dir="$1"
+            find "$dir" -maxdepth 1 -type f -name "ShadowVerse*.dmg" ! -name "rw.*" | sort | tail -n 1
+          }
           
           # Find and rename aarch64 DMG
-          AARCH64_DMG=$(find src-tauri/target/aarch64-apple-darwin/release/bundle/macos -name "ShadowVerse*.dmg" | head -1)
+          AARCH64_DMG=$(find_final_dmg "src-tauri/target/aarch64-apple-darwin/release/bundle/macos")
           if [ -n "$AARCH64_DMG" ]; then
             cp "$AARCH64_DMG" "src-tauri/target/aarch64-apple-darwin/release/bundle/macos/ShadowVerse_${VERSION}_aarch64.dmg"
             echo "Created: ShadowVerse_${VERSION}_aarch64.dmg"
           fi
           
           # Find and rename x86_64 DMG
-          X86_64_DMG=$(find src-tauri/target/x86_64-apple-darwin/release/bundle/macos -name "ShadowVerse*.dmg" | head -1)
+          X86_64_DMG=$(find_final_dmg "src-tauri/target/x86_64-apple-darwin/release/bundle/macos")
           if [ -n "$X86_64_DMG" ]; then
             cp "$X86_64_DMG" "src-tauri/target/x86_64-apple-darwin/release/bundle/macos/ShadowVerse_${VERSION}_x86_64.dmg"
             echo "Created: ShadowVerse_${VERSION}_x86_64.dmg"
           fi
           
           # Find and rename universal DMG
-          UNIVERSAL_DMG=$(find src-tauri/target/universal-apple-darwin/release/bundle/macos -name "ShadowVerse*.dmg" | head -1)
+          UNIVERSAL_DMG=$(find_final_dmg "src-tauri/target/universal-apple-darwin/release/bundle/macos")
           if [ -n "$UNIVERSAL_DMG" ]; then
             cp "$UNIVERSAL_DMG" "src-tauri/target/universal-apple-darwin/release/bundle/macos/ShadowVerse_${VERSION}_universal.dmg"
             echo "Created: ShadowVerse_${VERSION}_universal.dmg"
           fi
+
+      - name: Validate app signatures and DMG integrity
+        run: |
+          for APP in \
+            src-tauri/target/aarch64-apple-darwin/release/bundle/macos/ShadowVerse.app \
+            src-tauri/target/x86_64-apple-darwin/release/bundle/macos/ShadowVerse.app \
+            src-tauri/target/universal-apple-darwin/release/bundle/macos/ShadowVerse.app; do
+            if [ -d "$APP" ]; then
+              codesign --verify --deep --strict --verbose=2 "$APP"
+            fi
+          done
+          for DMG in \
+            src-tauri/target/aarch64-apple-darwin/release/bundle/macos/ShadowVerse_${{ steps.version.outputs.version }}_aarch64.dmg \
+            src-tauri/target/x86_64-apple-darwin/release/bundle/macos/ShadowVerse_${{ steps.version.outputs.version }}_x86_64.dmg \
+            src-tauri/target/universal-apple-darwin/release/bundle/macos/ShadowVerse_${{ steps.version.outputs.version }}_universal.dmg; do
+            if [ -f "$DMG" ]; then
+              hdiutil verify "$DMG"
+            fi
+          done
 
       - name: Upload Apple Silicon DMG
         if: github.event_name == 'push' || github.event.inputs.target == 'aarch64-apple-darwin' || github.event.inputs.target == 'universal'
