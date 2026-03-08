@@ -291,6 +291,12 @@ function toggleDropdown(uid) {
         "get_qr_status",
         { platform: selectedPlatform, qrcodeKey: oauth_key }
       );
+      if (selectedPlatform === "kuaishou" && qr_status.cookies?.trim()) {
+        const parts = oauth_key.split("|");
+        if (parts.length >= 2) {
+          oauth_key = `${parts[0]}|${parts[1]}|${qr_status.cookies.trim()}`;
+        }
+      }
       if (qr_status.code == 0) {
         clearInterval(check_interval);
         await invoke("update_login_account", {

@@ -10,12 +10,12 @@ use async_trait::async_trait;
 use flate2::read::GzDecoder;
 use futures_util::{SinkExt, StreamExt};
 use log::{error, info, warn};
+use prost::Message;
 use rand::{distr::Alphanumeric, Rng};
 use regex::Regex;
 use reqwest::cookie::CookieStore;
 use reqwest::header::{HeaderMap, HeaderValue};
 use serde_json::Value;
-use prost::Message;
 use tokio::{
     sync::{mpsc, RwLock},
     time::sleep,
@@ -43,7 +43,8 @@ type WsWriteType = futures_util::stream::SplitSink<
 const KUAISHOU_USER_AGENT: &str =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 const KUAISHOU_ACCEPT_LANGUAGE: &str = "zh-CN,zh;q=0.9,en;q=0.8";
-const KUAISHOU_SEC_CH_UA: &str = "\"Not)A;Brand\";v=\"8\", \"Chromium\";v=\"120\", \"Google Chrome\";v=\"120\"";
+const KUAISHOU_SEC_CH_UA: &str =
+    "\"Not)A;Brand\";v=\"8\", \"Chromium\";v=\"120\", \"Google Chrome\";v=\"120\"";
 const KUAISHOU_SEC_CH_UA_PLATFORM: &str = "\"Windows\"";
 const HEARTBEAT_INTERVAL_SECS: u64 = 20;
 
@@ -67,10 +68,7 @@ pub struct KuaishouDanmu {
 impl DanmuProvider for KuaishouDanmu {
     async fn new(cookie: &str, room_id: &str) -> Result<Self, DanmuStreamError> {
         let mut headers = HeaderMap::new();
-        headers.insert(
-            "User-Agent",
-            HeaderValue::from_static(KUAISHOU_USER_AGENT),
-        );
+        headers.insert("User-Agent", HeaderValue::from_static(KUAISHOU_USER_AGENT));
         headers.insert("Accept", HeaderValue::from_static("*/*"));
         headers.insert(
             "Accept-Language",
@@ -198,11 +196,9 @@ impl KuaishouDanmu {
             .to_string();
         info!("Kuaishou danmu ws url selected: {}", ws_url);
 
-        let (conn, _) = connect_async(&ws_url).await.map_err(|e| {
-            DanmuStreamError::WebsocketError {
-                err: e.to_string(),
-            }
-        })?;
+        let (conn, _) = connect_async(&ws_url)
+            .await
+            .map_err(|e| DanmuStreamError::WebsocketError { err: e.to_string() })?;
 
         let (write, read) = conn.split();
         *self.write.write().await = Some(write);
@@ -277,7 +273,7 @@ impl KuaishouDanmu {
 
             if let Some(write) = write.write().await.as_mut() {
                 write
-                .send(WsMessage::binary(msg.encode_to_vec()))
+                    .send(WsMessage::binary(msg.encode_to_vec()))
                     .await
                     .map_err(|e| DanmuStreamError::WebsocketError { err: e.to_string() })?;
             }
@@ -497,7 +493,10 @@ impl KuaishouDanmu {
         // ── Step 3: Call livedetail via principalId (works for both guest and login) ──
         // This is the most reliable way to get liveStreamId when HTML extraction fails.
         {
-            info!("Kuaishou danmu: calling livedetail via principalId={}", self.room_id);
+            info!(
+                "Kuaishou danmu: calling livedetail via principalId={}",
+                self.room_id
+            );
             if let Ok(resp) = self
                 .client
                 .get("https://live.kuaishou.com/live_api/liveroom/livedetail")
@@ -545,7 +544,10 @@ impl KuaishouDanmu {
 
         // ── Step 4: Try websocketinfo again if we now have a live_stream_id ──
         if (token.is_empty() || websocket_urls.is_empty()) && !live_stream_id.is_empty() {
-            info!("Kuaishou danmu: retrying websocketinfo with id={}", live_stream_id);
+            info!(
+                "Kuaishou danmu: retrying websocketinfo with id={}",
+                live_stream_id
+            );
             if let Ok((t, urls)) = self
                 .fetch_websocketinfo_no_sign(
                     &referer,
@@ -632,7 +634,10 @@ impl KuaishouDanmu {
             .get(&url)
             .header("Referer", "https://live.kuaishou.com/")
             .header("Origin", "https://live.kuaishou.com")
-            .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+            .header(
+                "Accept",
+                "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            )
             .header("Accept-Language", KUAISHOU_ACCEPT_LANGUAGE)
             .header("Sec-Fetch-Dest", "document")
             .header("Sec-Fetch-Mode", "navigate")
@@ -645,8 +650,7 @@ impl KuaishouDanmu {
         if !status.is_success() {
             info!(
                 "Kuaishou danmu fetch web html status: {} for {}",
-                status,
-                url
+                status, url
             );
         }
         Ok(response.text().await?)
@@ -701,7 +705,8 @@ impl KuaishouDanmu {
         let ws_status = ws_resp.status();
         let ws_info = ws_resp.text().await?;
         // Use lenient parser: result=2 is guest/basic-access and may still contain valid data
-        let ws_data = parse_response_data(&ws_info).unwrap_or_else(|_| serde_json::Value::Object(Default::default()));
+        let ws_data = parse_response_data(&ws_info)
+            .unwrap_or_else(|_| serde_json::Value::Object(Default::default()));
         let mut token = extract_ws_token(&ws_data).unwrap_or_default();
         let mut websocket_urls = extract_websocket_urls(&ws_data);
         if token.is_empty() {
@@ -723,7 +728,6 @@ impl KuaishouDanmu {
         Ok((token, websocket_urls))
     }
 }
-
 
 fn extract_kww(cookie: &str) -> Option<String> {
     if cookie.trim().is_empty() {
@@ -755,8 +759,7 @@ fn extract_hxfalcon(html: &str) -> Option<String> {
 }
 
 fn extract_livedetail_from_html(html: &str) -> Option<Value> {
-    let re =
-        Regex::new(r#""playList"\s*:\s*\[([\s\S]*?)\](?=,\s*"loading"|$)"#).ok()?;
+    let re = Regex::new(r#""playList"\s*:\s*\[([\s\S]*?)\](?=,\s*"loading"|$)"#).ok()?;
     let raw = re
         .captures(html)
         .and_then(|caps| caps.get(1))
@@ -775,9 +778,8 @@ fn extract_livedetail_from_html(html: &str) -> Option<Value> {
 }
 
 fn parse_response_data(text: &str) -> Result<Value, DanmuStreamError> {
-    let root: Value = serde_json::from_str(text).map_err(|e| DanmuStreamError::MessageParseError {
-        err: e.to_string(),
-    })?;
+    let root: Value = serde_json::from_str(text)
+        .map_err(|e| DanmuStreamError::MessageParseError { err: e.to_string() })?;
 
     let data = root.get("data").unwrap_or(&root);
 
@@ -799,7 +801,6 @@ fn parse_response_data(text: &str) -> Result<Value, DanmuStreamError> {
 
     Ok(root)
 }
-
 
 fn extract_initial_state(html_str: &str) -> Option<String> {
     let patterns = [
@@ -876,7 +877,6 @@ fn extract_ws_token_from_html(html_str: &str) -> Option<String> {
     None
 }
 
-
 fn extract_live_stream_id_from_cookie(cookie: &str) -> Option<String> {
     let re = Regex::new(r"(?i)(?:^|;\s*)liveStreamId=([^;]+)").ok()?;
     re.captures(cookie)
@@ -923,7 +923,12 @@ fn extract_live_stream_id(data: &Value) -> Option<String> {
 }
 
 fn extract_ws_token(data: &Value) -> Option<String> {
-    let token_keys = ["token", "websocketToken", "webSocketToken", "websocket_token"];
+    let token_keys = [
+        "token",
+        "websocketToken",
+        "webSocketToken",
+        "websocket_token",
+    ];
 
     if let Some(token) = extract_string_field(data, &token_keys) {
         return Some(token);
@@ -1108,7 +1113,10 @@ fn extract_websocket_urls(data: &Value) -> Vec<String> {
         if let Some(url) = candidate.as_str() {
             push_ws_url(&mut urls, url);
         }
-        if let Some(list) = candidate.get("webSocketAddresses").and_then(|v| v.as_array()) {
+        if let Some(list) = candidate
+            .get("webSocketAddresses")
+            .and_then(|v| v.as_array())
+        {
             collect_ws_urls_from_list(list, &mut urls);
         }
         if let Some(list) = candidate.get("websocketUrls").and_then(|v| v.as_array()) {
@@ -1137,9 +1145,7 @@ fn gunzip(data: &[u8]) -> Result<Vec<u8>, DanmuStreamError> {
     let mut out = Vec::new();
     decoder
         .read_to_end(&mut out)
-        .map_err(|e| DanmuStreamError::MessageParseError {
-            err: e.to_string(),
-        })?;
+        .map_err(|e| DanmuStreamError::MessageParseError { err: e.to_string() })?;
     Ok(out)
 }
 

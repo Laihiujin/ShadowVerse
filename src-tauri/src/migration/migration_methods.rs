@@ -6,15 +6,17 @@ use base64::Engine;
 
 use crate::database::Database;
 use crate::recorder_manager::RecorderManagerError;
+use m3u8_rs::parse_media_playlist;
 use recorder::entry::EntryStore;
 use recorder::platforms::PlatformType;
-use m3u8_rs::parse_media_playlist;
 
 fn is_safe_path_component(value: &str) -> bool {
     if value.is_empty() || value.ends_with(' ') || value.ends_with('.') {
         return false;
     }
-    !value.chars().any(|c| matches!(c, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*'))
+    !value
+        .chars()
+        .any(|c| matches!(c, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*'))
 }
 
 fn is_disabled_platform(platform: &str) -> bool {
@@ -165,8 +167,7 @@ pub async fn try_rebuild_archives_from_cache_scan(
                     added += 1;
                 }
 
-                let (mut duration, mut size) =
-                    compute_record_stats(&live_entry.path()).await?;
+                let (mut duration, mut size) = compute_record_stats(&live_entry.path()).await?;
                 if let Some(existing) = record.as_ref() {
                     if duration <= 0.0 {
                         duration = existing.length;

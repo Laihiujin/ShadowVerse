@@ -54,11 +54,13 @@ pub fn update_tiktok_config(
         None => return Ok(()),
     };
     let path = root.join("qr_login.toml");
-    
+
     // Read existing
     let raw = fs::read_to_string(&path).unwrap_or_default();
-    let mut parsed: TomlValue = raw.parse().unwrap_or_else(|_| TomlValue::Table(Default::default()));
-    
+    let mut parsed: TomlValue = raw
+        .parse()
+        .unwrap_or_else(|_| TomlValue::Table(Default::default()));
+
     let table = match table_mut(&mut parsed) {
         Some(table) => table,
         None => return Ok(()),
@@ -67,7 +69,7 @@ pub fn update_tiktok_config(
     let tiktok = table
         .entry("tiktok")
         .or_insert_with(|| TomlValue::Table(Default::default()));
-    
+
     let mut changed = false;
     if let Some(tiktok_table) = tiktok.as_table_mut() {
         if let Some(v) = device_id {
@@ -95,7 +97,10 @@ pub fn update_tiktok_config(
                 if force_update {
                     changed |= set_or_update(tiktok_table, "ttwid_migration_ticket", v);
                 } else {
-                    tiktok_table.insert("ttwid_migration_ticket".to_string(), TomlValue::String(v.to_string()));
+                    tiktok_table.insert(
+                        "ttwid_migration_ticket".to_string(),
+                        TomlValue::String(v.to_string()),
+                    );
                     changed = true;
                 }
             }
@@ -106,7 +111,7 @@ pub fn update_tiktok_config(
         let serialized = toml::to_string_pretty(&parsed).unwrap_or(raw);
         fs::write(path, serialized)?;
     }
-    
+
     Ok(())
 }
 
@@ -120,11 +125,13 @@ pub fn update_kuaishou_config(
         None => return Ok(()),
     };
     let path = root.join("qr_login.toml");
-    
+
     // Read existing
     let raw = fs::read_to_string(&path).unwrap_or_default();
-    let mut parsed: TomlValue = raw.parse().unwrap_or_else(|_| TomlValue::Table(Default::default()));
-    
+    let mut parsed: TomlValue = raw
+        .parse()
+        .unwrap_or_else(|_| TomlValue::Table(Default::default()));
+
     let table = match table_mut(&mut parsed) {
         Some(table) => table,
         None => return Ok(()),
@@ -133,7 +140,7 @@ pub fn update_kuaishou_config(
     let kuaishou = table
         .entry("kuaishou")
         .or_insert_with(|| TomlValue::Table(Default::default()));
-    
+
     let mut changed = false;
     if let Some(kuaishou_table) = kuaishou.as_table_mut() {
         if let Some(v) = did {
@@ -146,7 +153,7 @@ pub fn update_kuaishou_config(
                     // The original code used `insert` directly:
                     // kuaishou_table.insert("device_id".to_string(), TomlValue::String(v.to_string()));
                     // So it WAS overwriting.
-                    // Wait, `kuaishou_table.insert` definitely overwrites. 
+                    // Wait, `kuaishou_table.insert` definitely overwrites.
                     // Let's keep `set_or_update` to be safe and `changed` tracking.
                     changed |= set_or_update(kuaishou_table, "device_id", v);
                 }
@@ -160,10 +167,9 @@ pub fn update_kuaishou_config(
         let serialized = toml::to_string_pretty(&parsed).unwrap_or(raw);
         fs::write(path, serialized)?;
     }
-    
+
     Ok(())
 }
-
 
 fn read_string(table: &toml::value::Table, key: &str) -> Option<String> {
     table
@@ -204,7 +210,9 @@ pub fn ensure_qr_login_defaults(path: &Path) -> Result<(), std::io::Error> {
         return Ok(());
     }
     let raw = fs::read_to_string(path)?;
-    let mut parsed: TomlValue = raw.parse().unwrap_or_else(|_| TomlValue::Table(Default::default()));
+    let mut parsed: TomlValue = raw
+        .parse()
+        .unwrap_or_else(|_| TomlValue::Table(Default::default()));
     let table = match table_mut(&mut parsed) {
         Some(table) => table,
         None => return Ok(()),
@@ -244,9 +252,12 @@ pub fn ensure_qr_login_defaults(path: &Path) -> Result<(), std::io::Error> {
     ] {
         changed |= set_if_empty(douyin_table, key, "");
     }
-    
+
     // Ensure critical Douyin params are set if using automatic construction
-    if read_string(douyin_table, "params_raw").unwrap_or_default().is_empty() {
+    if read_string(douyin_table, "params_raw")
+        .unwrap_or_default()
+        .is_empty()
+    {
         changed |= set_if_empty(douyin_table, "aid", "6383");
         changed |= set_if_empty(douyin_table, "device_platform", "web_app");
         changed |= set_if_empty(douyin_table, "service", "https://www.douyin.com");
@@ -263,22 +274,28 @@ pub fn ensure_qr_login_defaults(path: &Path) -> Result<(), std::io::Error> {
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36",
         );
         // Generate valid-looking defaults instead of empty strings
-        if read_string(tiktok_table, "device_id").unwrap_or_default().is_empty() {
+        if read_string(tiktok_table, "device_id")
+            .unwrap_or_default()
+            .is_empty()
+        {
             let did = super::utils::gen_random_numeric(19);
             tiktok_table.insert("device_id".to_string(), TomlValue::String(did));
             changed = true;
         } else {
-             changed |= set_if_empty(tiktok_table, "device_id", "");
+            changed |= set_if_empty(tiktok_table, "device_id", "");
         }
 
-        if read_string(tiktok_table, "verify_fp").unwrap_or_default().is_empty() {
+        if read_string(tiktok_table, "verify_fp")
+            .unwrap_or_default()
+            .is_empty()
+        {
             let fp = super::utils::gen_tiktok_verify_fp();
             tiktok_table.insert("verify_fp".to_string(), TomlValue::String(fp));
             changed = true;
         } else {
-             changed |= set_if_empty(tiktok_table, "verify_fp", "");
+            changed |= set_if_empty(tiktok_table, "verify_fp", "");
         }
-        
+
         changed |= set_if_empty(tiktok_table, "ms_token", "");
         changed |= set_if_empty(tiktok_table, "ttwid_migration_ticket", "");
     }
@@ -313,10 +330,10 @@ pub fn fetch_kuaishou_overrides() -> Option<std::collections::HashMap<String, St
     if !path.exists() {
         return None;
     }
-    
+
     let raw = fs::read_to_string(path).ok()?;
     let parsed: TomlValue = raw.parse().ok()?;
-    
+
     let mut map = std::collections::HashMap::new();
     if let Some(table) = parsed.get("kuaishou").and_then(|v| v.as_table()) {
         for (k, v) in table {
@@ -325,21 +342,25 @@ pub fn fetch_kuaishou_overrides() -> Option<std::collections::HashMap<String, St
             }
         }
     }
-    
-    if map.is_empty() { None } else { Some(map) }
+
+    if map.is_empty() {
+        None
+    } else {
+        Some(map)
+    }
 }
 
 pub fn get_or_create_kuaishou_did() -> String {
     if let Some(overrides) = fetch_kuaishou_overrides() {
         if let Some(did) = overrides.get("device_id").filter(|v| !v.is_empty()) {
-             return did.clone();
+            return did.clone();
         }
     }
-    
+
     // Generate new DID
     let did = crate::reverse_generate::kuaishou_sign::gen_kuaishou_web_did();
     // Save it
     let _ = update_kuaishou_config(Some(&did), None, true);
-    
+
     did
 }

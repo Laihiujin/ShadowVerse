@@ -58,9 +58,7 @@ fn parse_feed_override(extra: &str) -> Option<String> {
     if trimmed.is_empty() {
         return None;
     }
-    if trimmed.starts_with("http://")
-        || trimmed.starts_with("https://")
-    {
+    if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
         return Some(trimmed.to_string());
     }
     None
@@ -79,7 +77,11 @@ pub type TikTokRecorder = Recorder<TikTokExtra>;
 #[async_trait]
 impl crate::traits::StreamInfoProvider for TikTokExtra {
     async fn get_resolution(&self) -> Option<String> {
-        self.stream_info.read().await.as_ref().and_then(|info| info.resolution.clone())
+        self.stream_info
+            .read()
+            .await
+            .as_ref()
+            .and_then(|info| info.resolution.clone())
     }
 }
 
@@ -95,10 +97,7 @@ impl TikTokRecorder {
     ) -> Result<Self, RecorderError> {
         let mut default_headers = reqwest::header::HeaderMap::new();
         default_headers.insert("Referer", "https://www.tiktok.com/".parse().unwrap());
-        default_headers.insert(
-            "User-Agent",
-            TIKTOK_USER_AGENT.parse().unwrap(),
-        );
+        default_headers.insert("User-Agent", TIKTOK_USER_AGENT.parse().unwrap());
 
         let proxy_url = api::proxy_url_from_env();
         let client = if let Some(proxy_url) = proxy_url.as_deref() {
@@ -190,9 +189,6 @@ impl TikTokRecorder {
         TikTokProtocol::Hls
     }
 
-
-
-
     async fn resolve_danmu_room_id(&self) -> Result<String, RecorderError> {
         if self.is_room_id_numeric() {
             return Ok(self.room_id.clone());
@@ -249,8 +245,13 @@ impl TikTokRecorder {
         let url = self.build_live_url();
         let feed_override = self.extra.feed_url_override.as_deref();
 
-        match api::get_room_info_with_feed_override(&self.client, &self.account, &url, feed_override)
-            .await
+        match api::get_room_info_with_feed_override(
+            &self.client,
+            &self.account,
+            &url,
+            feed_override,
+        )
+        .await
         {
             Ok(room_info) => {
                 *self.room_info.write().await = RoomInfo {
@@ -309,13 +310,15 @@ impl TikTokRecorder {
                         .await
                     {
                         Ok(info) => Ok(info),
-                        Err(_) => api::get_stream_url_with_feed_override(
-                            &self.client,
-                            &self.account,
-                            &url,
-                            feed_override,
-                        )
-                        .await,
+                        Err(_) => {
+                            api::get_stream_url_with_feed_override(
+                                &self.client,
+                                &self.account,
+                                &url,
+                                feed_override,
+                            )
+                            .await
+                        }
                     }
                 } else {
                     api::get_stream_url_with_feed_override(
@@ -350,12 +353,12 @@ impl TikTokRecorder {
             }
             Err(e) => {
                 if self.account.is_guest() && is_guest_cookie_block_error(&e) {
-                    let _ = self.event_channel.send(
-                        RecorderEvent::GuestCookieRefreshRequested {
+                    let _ = self
+                        .event_channel
+                        .send(RecorderEvent::GuestCookieRefreshRequested {
                             platform: PlatformType::TikTok,
                             reason: format!("tiktok guest cookie blocked: {}", e),
-                        },
-                    );
+                        });
                 }
                 self.log_error(&format!("Update room status failed: {}", e));
                 pre_live_status
@@ -369,13 +372,8 @@ impl TikTokRecorder {
             if self.quit.load(Ordering::Relaxed) {
                 return Ok(());
             }
-            match api::fetch_danmu_json(
-                &self.client,
-                &self.account,
-                &room_id,
-                cursor.as_deref(),
-            )
-            .await
+            match api::fetch_danmu_json(&self.client, &self.account, &room_id, cursor.as_deref())
+                .await
             {
                 Ok(result) => {
                     if let Some(next) = result.next_cursor {
@@ -395,8 +393,7 @@ impl TikTokRecorder {
                             storage.add_line(ts, &message).await;
                         }
                     }
-                    let mut interval_ms =
-                        result.fetch_interval_ms.unwrap_or(1000).clamp(250, 5000);
+                    let mut interval_ms = result.fetch_interval_ms.unwrap_or(1000).clamp(250, 5000);
                     if let Some(override_ms) = Self::parse_poll_override() {
                         interval_ms = override_ms.clamp(200, 5000);
                     } else if interval_ms >= 2000 {
@@ -508,7 +505,8 @@ impl TikTokRecorder {
                     }
                     return Ok(());
                 }
-                let error = flv_error.unwrap_or_else(|| "FLV failed and HLS unavailable".to_string());
+                let error =
+                    flv_error.unwrap_or_else(|| "FLV failed and HLS unavailable".to_string());
                 return Err(RecorderError::ApiError { error });
             }
         }
@@ -516,14 +514,10 @@ impl TikTokRecorder {
         // Prefer HLS stream by default if available
         let stream_url = hls_url.clone().ok_or(RecorderError::NoStreamAvailable)?;
 
-        let hls_stream = construct_stream_from_variant(
-            live_id,
-            &stream_url,
-            Format::TS,
-            Codec::Avc,
-        )
-        .await
-        .map_err(|_| RecorderError::NoStreamAvailable)?;
+        let hls_stream =
+            construct_stream_from_variant(live_id, &stream_url, Format::TS, Codec::Avc)
+                .await
+                .map_err(|_| RecorderError::NoStreamAvailable)?;
 
         let hls_recorder = HlsRecorder::new(
             self.room_id.to_string(),
@@ -604,8 +598,7 @@ impl RecorderTrait<TikTokExtra> for TikTokRecorder {
                                         .extra
                                         .should_continue
                                         .store(true, Ordering::Relaxed);
-                                    self_clone
-                                        .log_info(&format!("Stream expired at {}", expire));
+                                    self_clone.log_info(&format!("Stream expired at {}", expire));
                                 }
                                 _ => {
                                     self_clone.log_error(&format!("Update entries error: {}", e));

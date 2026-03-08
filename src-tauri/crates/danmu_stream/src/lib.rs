@@ -1,7 +1,7 @@
 pub mod danmu_stream;
 mod http_client;
-pub mod provider;
 pub mod kuaishou_sign;
+pub mod provider;
 
 use thiserror::Error;
 

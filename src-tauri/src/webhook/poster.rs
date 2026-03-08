@@ -16,7 +16,7 @@
 //! # }
 //!
 //! ## Custom Configuration
-//! 
+//!
 //!     retry_attempts: 5,
 //!     retry_delay: Duration::from_secs(2),
 //!     headers: None,

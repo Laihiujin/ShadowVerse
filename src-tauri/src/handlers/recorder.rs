@@ -170,11 +170,7 @@ pub async fn add_recorder(
     if platform == PlatformType::Kuaishou {
         let normalized = normalize_kuaishou_room_id(&room_id);
         if normalized != room_id {
-            log::info!(
-                "Normalized kuaishou room id: {} -> {}",
-                room_id,
-                normalized
-            );
+            log::info!("Normalized kuaishou room id: {} -> {}", room_id, normalized);
             room_id = normalized;
         }
     }
@@ -194,11 +190,7 @@ pub async fn add_recorder(
         }
         let normalized = normalize_tiktok_room_id(&room_id);
         if normalized != room_id {
-            log::info!(
-                "Normalized tiktok room id: {} -> {}",
-                room_id,
-                normalized
-            );
+            log::info!("Normalized tiktok room id: {} -> {}", room_id, normalized);
             room_id = normalized;
         }
     }
@@ -247,12 +239,8 @@ pub async fn add_recorder(
                 Ok(Account::default())
             }
         }
-        PlatformType::Weibo => {
-            Err("微博暂未支持".to_string())
-        }
-        PlatformType::Xiaohongshu => {
-            Err("小红书暂未支持".to_string())
-        }
+        PlatformType::Weibo => Err("微博暂未支持".to_string()),
+        PlatformType::Xiaohongshu => Err("小红书暂未支持".to_string()),
         _ => Err("不支持的平台".to_string()),
     };
 
@@ -786,10 +774,7 @@ pub struct RefreshRoomInfoResult {
     pub rooms_failed: usize,
 }
 
-fn build_account_from_config(
-    config: &crate::config::Config,
-    platform: &str,
-) -> Account {
+fn build_account_from_config(config: &crate::config::Config, platform: &str) -> Account {
     let mut cookies = String::new();
     if config.use_login_accounts {
         if let Some(entry) = config
@@ -822,7 +807,9 @@ fn is_unknown_title(title: &str) -> bool {
 }
 
 #[cfg_attr(feature = "gui", tauri::command)]
-pub async fn refresh_archive_room_info(state: state_type!()) -> Result<RefreshRoomInfoResult, String> {
+pub async fn refresh_archive_room_info(
+    state: state_type!(),
+) -> Result<RefreshRoomInfoResult, String> {
     let config_snapshot = state.config.read().await.clone();
     let client = reqwest::Client::new();
     let rooms = state
@@ -840,24 +827,20 @@ pub async fn refresh_archive_room_info(state: state_type!()) -> Result<RefreshRo
         let account = build_account_from_config(&config_snapshot, &platform_lower);
 
         let room_info = match platform_lower.as_str() {
-            "bilibili" => {
-                bilibili::api::get_room_info(&client, &account, &room_id)
-                    .await
-                    .ok()
-                    .map(|info| recorder::RoomInfo {
-                        platform: "bilibili".to_string(),
-                        room_id: room_id.clone(),
-                        room_title: info.room_title,
-                        room_cover: info.room_cover_url,
-                        status: info.live_status == 1,
-                    })
-            }
-            "huya" => {
-                huya::api::get_room_info(&client, &account, &room_id)
-                    .await
-                    .ok()
-                    .map(|(_user, room, _stream)| room)
-            }
+            "bilibili" => bilibili::api::get_room_info(&client, &account, &room_id)
+                .await
+                .ok()
+                .map(|info| recorder::RoomInfo {
+                    platform: "bilibili".to_string(),
+                    room_id: room_id.clone(),
+                    room_title: info.room_title,
+                    room_cover: info.room_cover_url,
+                    status: info.live_status == 1,
+                }),
+            "huya" => huya::api::get_room_info(&client, &account, &room_id)
+                .await
+                .ok()
+                .map(|(_user, room, _stream)| room),
             "kuaishou" => {
                 let url = if room_id.starts_with("http") {
                     room_id.clone()
@@ -1108,7 +1091,12 @@ pub async fn fix_archive_covers(state: state_type!()) -> Result<usize, String> {
                     .await
                 {
                     Ok(_) => {
-                        log::info!("Fixed cover for {}/{}: {}", platform.as_str(), room_id, record.live_id);
+                        log::info!(
+                            "Fixed cover for {}/{}: {}",
+                            platform.as_str(),
+                            room_id,
+                            record.live_id
+                        );
                         fixed_count += 1;
                     }
                     Err(e) => {

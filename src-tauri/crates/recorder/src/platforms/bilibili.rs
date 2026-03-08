@@ -125,13 +125,18 @@ impl BiliRecorder {
                 if self.user_info.read().await.user_id != room_info.user_id {
                     let user_id = room_info.user_id;
                     // Try get_user_info first, fallback to get_anchor_info if it fails (e.g. -352 风控)
-                    let user_info = match api::get_user_info(&self.client, &self.account, &user_id).await {
-                        Ok(info) => Ok(info),
-                        Err(e) => {
-                            log::warn!("[{}]get_user_info failed ({}), trying get_anchor_info fallback", self.room_id, e);
-                            api::get_anchor_info(&self.client, &self.account, &user_id).await
-                        }
-                    };
+                    let user_info =
+                        match api::get_user_info(&self.client, &self.account, &user_id).await {
+                            Ok(info) => Ok(info),
+                            Err(e) => {
+                                log::warn!(
+                                "[{}]get_user_info failed ({}), trying get_anchor_info fallback",
+                                self.room_id,
+                                e
+                            );
+                                api::get_anchor_info(&self.client, &self.account, &user_id).await
+                            }
+                        };
                     if let Ok(user_info) = user_info {
                         *self.user_info.write().await = UserInfo {
                             user_id: user_id.to_string(),
@@ -243,12 +248,12 @@ impl BiliRecorder {
             }
             Err(e) => {
                 if self.account.is_guest() && is_guest_cookie_block_error(&e) {
-                    let _ = self.event_channel.send(
-                        RecorderEvent::GuestCookieRefreshRequested {
+                    let _ = self
+                        .event_channel
+                        .send(RecorderEvent::GuestCookieRefreshRequested {
                             platform: PlatformType::BiliBili,
                             reason: format!("bilibili guest cookie blocked: {}", e),
-                        },
-                    );
+                        });
                 }
                 log::error!("[{}]Update room status failed: {}", &self.room_id, e);
                 // may encounter internet issues, not sure whether the stream is closed or started, just remain

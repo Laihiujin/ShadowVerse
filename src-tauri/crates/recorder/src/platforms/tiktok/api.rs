@@ -3,23 +3,23 @@ use crate::account::Account;
 use crate::errors::RecorderError;
 use crate::reverse_generate::x_bogus::XBogus;
 use crate::reverse_generate::x_gnarly;
+use base64::{engine::general_purpose, Engine as _};
 use chrono::Utc;
 use rand::Rng;
 use regex::Regex;
 use reqwest::header::{HeaderMap, LOCATION};
 use reqwest::redirect::Policy;
 use reqwest::{Client, Proxy, Url};
-use sha2::{Digest, Sha256};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicI64, Ordering};
-use url::form_urlencoded::Serializer;
-use base64::{engine::general_purpose, Engine as _};
 use toml::Value as TomlValue;
+use url::form_urlencoded::Serializer;
 
 const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36";
 const FEED_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36";
@@ -52,7 +52,11 @@ fn tiktok_api_allowed() -> bool {
 fn set_tiktok_cooldown(reason: &str) {
     let until = Utc::now().timestamp() + TIKTOK_COOLDOWN_SECS;
     TIKTOK_COOLDOWN_UNTIL.store(until, Ordering::Relaxed);
-    log::info!("[TikTok] API cooldown set ({}s): {}", TIKTOK_COOLDOWN_SECS, reason);
+    log::info!(
+        "[TikTok] API cooldown set ({}s): {}",
+        TIKTOK_COOLDOWN_SECS,
+        reason
+    );
 }
 
 #[derive(Clone, Debug)]
@@ -164,9 +168,7 @@ pub fn build_proxy_client(proxy_url: &str) -> Result<Client, RecorderError> {
 }
 
 fn extract_script_json(html_str: &str, script_id: &str) -> Option<String> {
-    let pattern = format!(
-        r#"(?s)<script[^>]*id=['"]{script_id}['"][^>]*>(.*?)</script>"#
-    );
+    let pattern = format!(r#"(?s)<script[^>]*id=['"]{script_id}['"][^>]*>(.*?)</script>"#);
     let regex = Regex::new(&pattern).ok()?;
     regex
         .captures(html_str)
@@ -175,9 +177,7 @@ fn extract_script_json(html_str: &str, script_id: &str) -> Option<String> {
 }
 
 fn parse_first_json_value(raw: &str) -> Option<Value> {
-    let start = raw
-        .find('{')
-        .or_else(|| raw.find('['))?;
+    let start = raw.find('{').or_else(|| raw.find('['))?;
     let candidate = &raw[start..];
     let mut deserializer = serde_json::Deserializer::from_str(candidate);
     Value::deserialize(&mut deserializer).ok()
@@ -201,9 +201,12 @@ fn is_waf_wait_page(html_str: &str) -> bool {
         || lower.contains("please wait")
 }
 
-
 fn extract_state_value(html_str: &str) -> Option<Value> {
-    let script_ids = ["SIGI_STATE", "__UNIVERSAL_DATA_FOR_REHYDRATION__", "__NEXT_DATA__"];
+    let script_ids = [
+        "SIGI_STATE",
+        "__UNIVERSAL_DATA_FOR_REHYDRATION__",
+        "__NEXT_DATA__",
+    ];
     for script_id in script_ids {
         if let Some(json_str) = extract_script_json(html_str, script_id) {
             if let Some(parsed) = parse_first_json_value(&json_str) {
@@ -229,13 +232,13 @@ fn extract_state_value(html_str: &str) -> Option<Value> {
 
     for pattern in patterns {
         if let Ok(regex) = Regex::new(pattern) {
-             if let Some(cap) = regex.captures(html_str) {
-                 if let Some(json_str) = cap.get(1) {
-                     if let Some(parsed) = parse_first_json_value(json_str.as_str()) {
-                         return Some(parsed);
-                     }
-                 }
-             }
+            if let Some(cap) = regex.captures(html_str) {
+                if let Some(json_str) = cap.get(1) {
+                    if let Some(parsed) = parse_first_json_value(json_str.as_str()) {
+                        return Some(parsed);
+                    }
+                }
+            }
         }
     }
 
@@ -415,10 +418,19 @@ fn mssdk_url() -> String {
 fn apply_tiktok_extra_headers(headers: &mut HeaderMap) {
     let mappings = [
         ("TIKTOK_X_MSSDK_INFO", "x-mssdk-info"),
-        ("TIKTOK_TT_TICKET_GUARD_ITERATION_VERSION", "tt-ticket-guard-iteration-version"),
-        ("TIKTOK_TT_TICKET_GUARD_PUBLIC_KEY", "tt-ticket-guard-public-key"),
+        (
+            "TIKTOK_TT_TICKET_GUARD_ITERATION_VERSION",
+            "tt-ticket-guard-iteration-version",
+        ),
+        (
+            "TIKTOK_TT_TICKET_GUARD_PUBLIC_KEY",
+            "tt-ticket-guard-public-key",
+        ),
         ("TIKTOK_TT_TICKET_GUARD_VERSION", "tt-ticket-guard-version"),
-        ("TIKTOK_TT_TICKET_GUARD_WEB_VERSION", "tt-ticket-guard-web-version"),
+        (
+            "TIKTOK_TT_TICKET_GUARD_WEB_VERSION",
+            "tt-ticket-guard-web-version",
+        ),
     ];
     if let Ok(value) = env::var("TIKTOK_TT_TICKET_GUARD_CLIENT_DATA") {
         let value = value.trim();
@@ -448,9 +460,15 @@ fn apply_tiktok_extra_headers(headers: &mut HeaderMap) {
 
 fn apply_browser_headers(headers: &mut HeaderMap, mobile: bool) {
     let defaults = [
-        ("accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"),
+        (
+            "accept",
+            "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        ),
         ("accept-language", "en-US,en;q=0.9"),
-        ("sec-ch-ua", "\"Chromium\";v=\"141\", \"Not?A_Brand\";v=\"8\", \"Google Chrome\";v=\"141\""),
+        (
+            "sec-ch-ua",
+            "\"Chromium\";v=\"141\", \"Not?A_Brand\";v=\"8\", \"Google Chrome\";v=\"141\"",
+        ),
         ("sec-ch-ua-mobile", if mobile { "?1" } else { "?0" }),
         ("sec-ch-ua-platform", "\"Windows\""),
         ("sec-fetch-dest", "document"),
@@ -480,7 +498,10 @@ fn build_feed_headers(account: &Account) -> HeaderMap {
     let mut headers = HeaderMap::new();
     headers.insert("user-agent", FEED_USER_AGENT.parse().unwrap());
     headers.insert("accept", "*/*".parse().unwrap());
-    headers.insert("accept-language", "zh-CN,zh;q=0.9,en;q=0.8".parse().unwrap());
+    headers.insert(
+        "accept-language",
+        "zh-CN,zh;q=0.9,en;q=0.8".parse().unwrap(),
+    );
     headers.insert("origin", "https://www.tiktok.com".parse().unwrap());
     headers.insert(
         "sec-ch-ua",
@@ -508,7 +529,10 @@ fn build_im_headers(account: &Account) -> HeaderMap {
         env::var("TIKTOK_FEED_USER_AGENT").unwrap_or_else(|_| FEED_USER_AGENT.to_string());
     headers.insert("user-agent", user_agent.parse().unwrap());
     headers.insert("accept", "application/json".parse().unwrap());
-    headers.insert("accept-language", "zh-CN,zh;q=0.9,en;q=0.8".parse().unwrap());
+    headers.insert(
+        "accept-language",
+        "zh-CN,zh;q=0.9,en;q=0.8".parse().unwrap(),
+    );
     headers.insert(
         "sec-ch-ua",
         "\"Not)A;Brand\";v=\"8\", \"Chromium\";v=\"138\", \"Google Chrome\";v=\"138\""
@@ -533,7 +557,10 @@ fn build_check_alive_headers(account: &Account, referer: &str) -> HeaderMap {
     let mut headers = HeaderMap::new();
     headers.insert("user-agent", FEED_USER_AGENT.parse().unwrap());
     headers.insert("accept", "*/*".parse().unwrap());
-    headers.insert("accept-language", "zh-CN,zh;q=0.9,en;q=0.8".parse().unwrap());
+    headers.insert(
+        "accept-language",
+        "zh-CN,zh;q=0.9,en;q=0.8".parse().unwrap(),
+    );
     headers.insert("origin", "https://www.tiktok.com".parse().unwrap());
     headers.insert(
         "sec-ch-ua",
@@ -588,15 +615,7 @@ fn extract_chat_text(value: &Value) -> Option<String> {
         "chat",
     ];
     const NESTED_KEYS: [&str; 9] = [
-        "message",
-        "payload",
-        "data",
-        "content",
-        "text",
-        "comment",
-        "msg",
-        "body",
-        "extras",
+        "message", "payload", "data", "content", "text", "comment", "msg", "body", "extras",
     ];
 
     fn inner(value: &Value, depth: usize) -> Option<String> {
@@ -771,7 +790,10 @@ fn build_account_info_headers(account: &Account, referer: &str) -> HeaderMap {
     let mut headers = HeaderMap::new();
     headers.insert("user-agent", FEED_USER_AGENT.parse().unwrap());
     headers.insert("accept", "*/*".parse().unwrap());
-    headers.insert("accept-language", "zh-CN,zh;q=0.9,en;q=0.8".parse().unwrap());
+    headers.insert(
+        "accept-language",
+        "zh-CN,zh;q=0.9,en;q=0.8".parse().unwrap(),
+    );
     headers.insert("origin", "https://www.tiktok.com".parse().unwrap());
     headers.insert(
         "sec-ch-ua",
@@ -799,7 +821,10 @@ fn build_room_enter_headers(account: &Account, referer: &str) -> HeaderMap {
     let mut headers = HeaderMap::new();
     headers.insert("user-agent", FEED_USER_AGENT.parse().unwrap());
     headers.insert("accept", "*/*".parse().unwrap());
-    headers.insert("accept-language", "zh-CN,zh;q=0.9,en;q=0.8".parse().unwrap());
+    headers.insert(
+        "accept-language",
+        "zh-CN,zh;q=0.9,en;q=0.8".parse().unwrap(),
+    );
     headers.insert("origin", "https://www.tiktok.com".parse().unwrap());
     headers.insert(
         "sec-ch-ua",
@@ -842,9 +867,7 @@ fn cookie_value_from_account(account: &Account, key: &str) -> Option<String> {
     if account.cookies.is_empty() {
         return None;
     }
-    parse_cookie_header(&account.cookies)
-        .get(key)
-        .cloned()
+    parse_cookie_header(&account.cookies).get(key).cloned()
 }
 
 fn apply_feed_template(template: &str, referer: &str, account: &Account) -> String {
@@ -943,8 +966,7 @@ fn resolve_x_gnarly(query: &str, body: &str, user_agent: &str) -> Option<String>
     if query.trim().is_empty() {
         return None;
     }
-    let signing_ua = read_tiktok_web_value("user_agent")
-        .unwrap_or_else(|| user_agent.to_string());
+    let signing_ua = read_tiktok_web_value("user_agent").unwrap_or_else(|| user_agent.to_string());
     Some(x_gnarly::sign(query, body, &signing_ua))
 }
 
@@ -1139,8 +1161,8 @@ fn build_room_enter_url(referer: &str, account: &Account, body: &str) -> String 
         .ok()
         .filter(|v| !v.trim().is_empty())
         .unwrap_or_else(gen_device_id);
-    let root_referer =
-        env::var("TIKTOK_FEED_ROOT_REFERER").unwrap_or_else(|_| "https://www.google.com/".to_string());
+    let root_referer = env::var("TIKTOK_FEED_ROOT_REFERER")
+        .unwrap_or_else(|_| "https://www.google.com/".to_string());
     let verify_fp = env::var("TIKTOK_FEED_VERIFY_FP")
         .ok()
         .filter(|v| !v.trim().is_empty())
@@ -1213,8 +1235,8 @@ fn build_account_info_url(account: &Account, referer: &str) -> String {
         .ok()
         .filter(|v| !v.trim().is_empty())
         .unwrap_or_else(gen_device_id);
-    let root_referer =
-        env::var("TIKTOK_FEED_ROOT_REFERER").unwrap_or_else(|_| "https://www.google.com/".to_string());
+    let root_referer = env::var("TIKTOK_FEED_ROOT_REFERER")
+        .unwrap_or_else(|_| "https://www.google.com/".to_string());
     let verify_fp = env::var("TIKTOK_FEED_VERIFY_FP")
         .ok()
         .filter(|v| !v.trim().is_empty())
@@ -1258,8 +1280,10 @@ fn build_account_info_url(account: &Account, referer: &str) -> String {
         ("webcast_language".to_string(), "zh-Hans".to_string()),
         ("msToken".to_string(), ms_token),
     ];
-    let mut url =
-        format!("https://www.tiktok.com/passport/web/account/info/?{}", build_query(&params));
+    let mut url = format!(
+        "https://www.tiktok.com/passport/web/account/info/?{}",
+        build_query(&params)
+    );
     if url.contains("X-Bogus=") {
         url = strip_empty_query_params(&url);
         return url;
@@ -1297,9 +1321,14 @@ fn prepare_feed_url(mut url: String) -> Result<String, RecorderError> {
 
     if url.contains("{x_bogus}") {
         let x_gnarly_fallback = env::var("TIKTOK_FEED_X_GNARLY").unwrap_or_default();
-        let sign_seed = url
-            .replace("{x_bogus}", "0")
-            .replace("{x_gnarly}", if x_gnarly_fallback.is_empty() { "0" } else { x_gnarly_fallback.as_str() });
+        let sign_seed = url.replace("{x_bogus}", "0").replace(
+            "{x_gnarly}",
+            if x_gnarly_fallback.is_empty() {
+                "0"
+            } else {
+                x_gnarly_fallback.as_str()
+            },
+        );
         let sign_target = if let Ok(mut parsed) = Url::parse(&sign_seed) {
             let mut serializer = Serializer::new(String::new());
             for (key, value) in parsed.query_pairs() {
@@ -1602,11 +1631,7 @@ async fn fetch_cookies_with_redirects(
         let resp = client.get(&current).headers(request_headers).send().await?;
         let extra = collect_cookie_map(resp.headers());
         if !extra.is_empty() {
-            let names = extra
-                .keys()
-                .cloned()
-                .collect::<Vec<String>>()
-                .join(", ");
+            let names = extra.keys().cloned().collect::<Vec<String>>().join(", ");
             log::info!(
                 "[TikTok] QR redirect step {}: {} set-cookie keys: {}",
                 step,
@@ -1628,8 +1653,7 @@ async fn fetch_cookies_with_redirects(
                 if location.is_empty() {
                     break;
                 }
-                if let Ok(next_url) = Url::parse(&current).and_then(|base| base.join(location))
-                {
+                if let Ok(next_url) = Url::parse(&current).and_then(|base| base.join(location)) {
                     log::info!(
                         "[TikTok] QR redirect step {}: location -> {}",
                         step,
@@ -1655,10 +1679,7 @@ async fn fetch_cookies_with_redirects(
     Ok(collected)
 }
 
-async fn follow_login_chain(
-    headers: &HeaderMap,
-    target: &str,
-) -> Result<String, RecorderError> {
+async fn follow_login_chain(headers: &HeaderMap, target: &str) -> Result<String, RecorderError> {
     log::info!("[TikTok] QR follow login chain: {}", target);
     let mut cookie_map = fetch_cookies_with_redirects(headers, target).await?;
     if let Some(next_url) = extract_next_url(target) {
@@ -1676,54 +1697,70 @@ pub async fn get_qr_login(client: &Client) -> Result<TikTokQrInfo, RecorderError
     } else {
         client.clone()
     };
-    
+
     // Load overrides defaults
-    let overrides = crate::reverse_generate::tiktok_web::fetch_tiktok_overrides().unwrap_or_default();
-    
-    let mut device_id = overrides.get("device_id").filter(|v| !v.is_empty())
+    let overrides =
+        crate::reverse_generate::tiktok_web::fetch_tiktok_overrides().unwrap_or_default();
+
+    let mut device_id = overrides
+        .get("device_id")
+        .filter(|v| !v.is_empty())
         .map(|v| v.to_string())
         .unwrap_or_default();
-    let mut verify_fp = overrides.get("verify_fp").filter(|v| !v.is_empty())
+    let mut verify_fp = overrides
+        .get("verify_fp")
+        .filter(|v| !v.is_empty())
         .map(|v| v.to_string())
         .unwrap_or_default();
-    let mut ttwid_ticket = overrides.get("ttwid_migration_ticket").filter(|v| !v.is_empty())
+    let mut ttwid_ticket = overrides
+        .get("ttwid_migration_ticket")
+        .filter(|v| !v.is_empty())
         .map(|v| v.to_string())
         .unwrap_or_default();
-        
+
     // If critical parameters are missing, scrape them from guest state
     if device_id.is_empty() || verify_fp.is_empty() || ttwid_ticket.is_empty() {
         if let Ok(state) = fetch_guest_state(&request_client, &Account::default()).await {
-             if device_id.is_empty() { device_id = state.device_id.clone(); }
-             if verify_fp.is_empty() { verify_fp = state.verify_fp.clone(); }
-             if ttwid_ticket.is_empty() { ttwid_ticket = state.ttwid.clone(); }
-             
-             // Persist discovered values
-             let _ = crate::reverse_generate::qr_login::update_tiktok_config(
-                 Some(&device_id),
-                 Some(&verify_fp),
-                 Some(&ttwid_ticket),
-                 true
-             );
+            if device_id.is_empty() {
+                device_id = state.device_id.clone();
+            }
+            if verify_fp.is_empty() {
+                verify_fp = state.verify_fp.clone();
+            }
+            if ttwid_ticket.is_empty() {
+                ttwid_ticket = state.ttwid.clone();
+            }
+
+            // Persist discovered values
+            let _ = crate::reverse_generate::qr_login::update_tiktok_config(
+                Some(&device_id),
+                Some(&verify_fp),
+                Some(&ttwid_ticket),
+                true,
+            );
         }
     }
-    
-    // Fallbacks if scrape failed
-    if device_id.is_empty() { device_id = gen_device_id(); }
-    if verify_fp.is_empty() { verify_fp = crate::platforms::douyin::params::gen_verify_fp(); }
 
-    
+    // Fallbacks if scrape failed
+    if device_id.is_empty() {
+        device_id = gen_device_id();
+    }
+    if verify_fp.is_empty() {
+        verify_fp = crate::platforms::douyin::params::gen_verify_fp();
+    }
+
     // Initial cookies bootstrap (using what we have)
     let mut cookies = HashMap::new();
     if !ttwid_ticket.is_empty() {
         cookies.insert("ttwid".to_string(), ttwid_ticket.clone());
     }
     cookies.insert("s_v_web_id".to_string(), verify_fp.clone());
-    
+
     // Check if ms_token is overridden
     if let Some(token) = overrides.get("ms_token").filter(|v| !v.is_empty()) {
         cookies.insert("msToken".to_string(), token.to_string());
     }
-    
+
     // Determine ms_token to use
     let mut ms_token = cookies
         .get("msToken")
@@ -1732,12 +1769,14 @@ pub async fn get_qr_login(client: &Client) -> Result<TikTokQrInfo, RecorderError
 
     let params = build_qr_params(None, &device_id, &verify_fp, &ms_token);
     let query = build_query(&params);
-    let url = format!(
-        "https://www.tiktok.com/passport/web/get_qrcode/?{query}"
-    );
+    let url = format!("https://www.tiktok.com/passport/web/get_qrcode/?{query}");
 
     let headers = build_passport_headers(&cookies);
-    let resp = request_client.get(url).headers(headers.clone()).send().await?;
+    let resp = request_client
+        .get(url)
+        .headers(headers.clone())
+        .send()
+        .await?;
     if let Some(ms_header) = resp.headers().get("x-ms-token") {
         if let Ok(value) = ms_header.to_str() {
             ms_token = value.to_string();
@@ -1779,30 +1818,32 @@ pub async fn get_qr_login(client: &Client) -> Result<TikTokQrInfo, RecorderError
     };
 
     let mut oauth_key = format!("{token}|{device_id}|{verify_fp}|{ms_token}");
-    
+
     // Check for overridden ticket or from response
-    let ticket = overrides.get("ttwid_migration_ticket").filter(|v| !v.is_empty())
+    let ticket = overrides
+        .get("ttwid_migration_ticket")
+        .filter(|v| !v.is_empty())
         .map(|v| v.as_str())
         .unwrap_or(&ttwid_ticket);
-        
+
     if !ticket.is_empty() {
         oauth_key.push('|');
         oauth_key.push_str(ticket);
     }
-    
+
     // Attempt to persist if we got a new ttwid
     let migration_ticket = overrides
         .get("ttwid_migration_ticket")
         .map(|v| v.as_str())
         .unwrap_or("");
-        
+
     if !ttwid_ticket.is_empty() && migration_ticket.is_empty() {
-             let _ = crate::reverse_generate::qr_login::update_tiktok_config(
-                None,
-                None,
-                Some(&ttwid_ticket),
-                true
-            );
+        let _ = crate::reverse_generate::qr_login::update_tiktok_config(
+            None,
+            None,
+            Some(&ttwid_ticket),
+            true,
+        );
     }
 
     Ok(TikTokQrInfo {
@@ -1828,36 +1869,48 @@ pub async fn fetch_guest_state(
     let url = "https://www.tiktok.com/";
     let headers = build_page_headers(url, USER_AGENT, false);
     let response = client.get(url).headers(headers).send().await?;
-    
+
     if !response.status().is_success() {
-         log::warn!("[TikTok] Failed to fetch homepage: status {}", response.status());
+        log::warn!(
+            "[TikTok] Failed to fetch homepage: status {}",
+            response.status()
+        );
     }
-    
+
     let cookies = collect_cookie_map(response.headers());
     let ttwid = cookies.get("ttwid").cloned().unwrap_or_default();
     let ssid = cookies.get("ssid").cloned().unwrap_or_default();
     let verify_fp = cookies.get("s_v_web_id").cloned().unwrap_or_default();
-    
+
     let html = response.text().await.unwrap_or_default();
-    
+
     // Attempt to extract device_id from SIGI_STATE or cookie
     let mut device_id = String::new();
-    
+
     if let Some(state_value) = extract_state_value(&html) {
-         // Try to find device_id in typical locations within SIGI_STATE
-         if let Some(did) = state_value.get("AppContext").and_then(|v| v.get("wid")).and_then(|v| v.as_str()) {
-             device_id = did.to_string();
-         } else if let Some(did) = state_value.get("device_id").and_then(|v| v.as_str()) {
-             device_id = did.to_string();
-         }
+        // Try to find device_id in typical locations within SIGI_STATE
+        if let Some(did) = state_value
+            .get("AppContext")
+            .and_then(|v| v.get("wid"))
+            .and_then(|v| v.as_str())
+        {
+            device_id = did.to_string();
+        } else if let Some(did) = state_value.get("device_id").and_then(|v| v.as_str()) {
+            device_id = did.to_string();
+        }
     }
-    
+
     if device_id.is_empty() {
-         // Fallback to random if server didn't provide one
+        // Fallback to random if server didn't provide one
         device_id = gen_device_id();
     }
-    
-    log::info!("[TikTok] Guest state: ttwid={}, verify_fp={}, did={}", ttwid, verify_fp, device_id);
+
+    log::info!(
+        "[TikTok] Guest state: ttwid={}, verify_fp={}, did={}",
+        ttwid,
+        verify_fp,
+        device_id
+    );
 
     Ok(TikTokGuestState {
         ttwid,
@@ -1891,10 +1944,10 @@ pub async fn get_qr_login_status(
     } else {
         client.clone()
     };
-    
+
     // Initial cookies bootstrap
     let cookies = bootstrap_tiktok_cookies(&request_client, verify_fp, Some(ms_token)).await;
-    
+
     let params = build_qr_params(Some(token), device_id, verify_fp, ms_token);
     let query = build_query(&params);
     let mut headers = build_passport_headers(&cookies);
@@ -1914,22 +1967,27 @@ pub async fn get_qr_login_status(
     ];
     let mut response_cookies = cookies.clone();
     let mut json: Option<serde_json::Value> = None;
-    
+
     // Attempt request parameters
     for host in hosts {
         let url = format!("{host}/passport/web/check_qrconnect/?{query}");
-        if let Ok(resp) = request_client.get(&url).headers(headers.clone()).send().await {
-             merge_cookie_maps(&mut response_cookies, collect_cookie_map(resp.headers()));
-             if let Ok(current) = resp.json::<serde_json::Value>().await {
-                 let is_error = current.get("message").and_then(Value::as_str) == Some("error");
-                 if is_error {
-                     log::warn!("[TikTok] QR check failed on {}: {}", host, current);
-                     json = Some(current);
-                     continue;
-                 }
-                 json = Some(current);
-                 break;
-             }
+        if let Ok(resp) = request_client
+            .get(&url)
+            .headers(headers.clone())
+            .send()
+            .await
+        {
+            merge_cookie_maps(&mut response_cookies, collect_cookie_map(resp.headers()));
+            if let Ok(current) = resp.json::<serde_json::Value>().await {
+                let is_error = current.get("message").and_then(Value::as_str) == Some("error");
+                if is_error {
+                    log::warn!("[TikTok] QR check failed on {}: {}", host, current);
+                    json = Some(current);
+                    continue;
+                }
+                json = Some(current);
+                break;
+            }
         }
     }
     let json = json.unwrap_or_else(|| serde_json::json!({}));
@@ -1970,12 +2028,8 @@ pub async fn get_qr_login_status(
 
     let status_value = match json.get("data") {
         Some(Value::Array(items)) => items.first().and_then(|item| {
-            let status = item
-                .get("status")
-                .and_then(value_to_string);
-            let target = item
-                .get("target")
-                .and_then(value_to_string);
+            let status = item.get("status").and_then(value_to_string);
+            let target = item.get("target").and_then(value_to_string);
             status.map(|s| (s, target))
         }),
         Some(Value::Object(obj)) => {
@@ -2263,7 +2317,10 @@ fn extract_stream_candidates_from_stream_data(stream_data_raw: &str) -> Vec<Stre
         Some(value) => value,
         None => return Vec::new(),
     };
-    let data = match stream_data_value.get("data").and_then(|value| value.as_object()) {
+    let data = match stream_data_value
+        .get("data")
+        .and_then(|value| value.as_object())
+    {
         Some(value) => value,
         None => return Vec::new(),
     };
@@ -2406,11 +2463,7 @@ fn resolve_uri(base: &str, uri: &str) -> Option<String> {
     base_url.join(uri).ok().map(|url| url.to_string())
 }
 
-async fn check_hls_stream_accessible(
-    client: &Client,
-    headers: &HeaderMap,
-    m3u8_url: &str,
-) -> bool {
+async fn check_hls_stream_accessible(client: &Client, headers: &HeaderMap, m3u8_url: &str) -> bool {
     let response = match client.get(m3u8_url).headers(headers.clone()).send().await {
         Ok(resp) => resp,
         Err(_) => return false,
@@ -2566,7 +2619,7 @@ fn extract_first_url(value: &Value) -> Option<String> {
             }
         }
         Value::Array(list) => list.first().and_then(|v| v.as_str()).map(|s| s.to_string()),
-        _ => None
+        _ => None,
     }
 }
 
@@ -2574,10 +2627,7 @@ fn extract_first_string(value: &Value) -> Option<String> {
     match value {
         Value::String(s) => Some(s.clone()),
         Value::Array(list) => list.iter().find_map(|v| v.as_str()).map(|s| s.to_string()),
-        Value::Object(map) => map
-            .values()
-            .find_map(|v| v.as_str())
-            .map(|s| s.to_string()),
+        Value::Object(map) => map.values().find_map(|v| v.as_str()).map(|s| s.to_string()),
         _ => None,
     }
 }
@@ -2685,8 +2735,12 @@ fn extract_room_info_from_live_room(
     url: &str,
 ) -> Option<RoomInfo> {
     let live_room_map = live_room_info.as_object()?;
-    let user_map = live_room_map.get("user").and_then(|value| value.as_object());
-    let live_room_map = live_room_map.get("liveRoom").and_then(|value| value.as_object());
+    let user_map = live_room_map
+        .get("user")
+        .and_then(|value| value.as_object());
+    let live_room_map = live_room_map
+        .get("liveRoom")
+        .and_then(|value| value.as_object());
 
     let user_name = user_map
         .and_then(|map| get_string_field(map, &["nickname", "nickName", "name", "userName"]))
@@ -2700,7 +2754,7 @@ fn extract_room_info_from_live_room(
     let title = live_room_map
         .and_then(|map| get_string_field(map, &["title", "roomTitle"]))
         .unwrap_or_default();
-    
+
     let user_avatar = user_map
         .and_then(|map| map.get("avatarThumb"))
         .and_then(|v| extract_first_url(v))
@@ -2784,9 +2838,9 @@ fn find_room_info(value: &Value) -> Option<SigiRoomInfo> {
     match value {
         Value::Object(map) => {
             if let Some(room_info_value) = map.get("roomInfo") {
-                if let Ok(room_info) = serde_json::from_value::<SigiRoomInfo>(
-                    room_info_value.clone(),
-                ) {
+                if let Ok(room_info) =
+                    serde_json::from_value::<SigiRoomInfo>(room_info_value.clone())
+                {
                     return Some(room_info);
                 }
             }
@@ -2868,7 +2922,17 @@ fn find_stream_url(value: &Value) -> Option<SigiStreamUrl> {
 
 fn extract_room_id_from_room_data(room_data: &Value) -> Option<String> {
     let map = room_data.as_object()?;
-    get_string_field(map, &["id_str", "id", "room_id", "roomId", "live_room_id", "liveRoomId"])
+    get_string_field(
+        map,
+        &[
+            "id_str",
+            "id",
+            "room_id",
+            "roomId",
+            "live_room_id",
+            "liveRoomId",
+        ],
+    )
 }
 
 fn owner_matches_handle(owner: &Map<String, Value>, handle: &str) -> bool {
@@ -3149,9 +3213,7 @@ async fn get_room_id_from_room_enter(
         .get("data")
         .and_then(|value| value.get("living_room_attrs"))
         .and_then(|value| value.as_object())
-        .and_then(|map| {
-            get_string_field(map, &["room_id_str", "room_id", "roomId", "roomIdStr"])
-        });
+        .and_then(|map| get_string_field(map, &["room_id_str", "room_id", "roomId", "roomIdStr"]));
 
     if let Some(room_id) = room_id.as_ref() {
         log::info!(
@@ -3197,7 +3259,11 @@ async fn fetch_room_info_api(
     }
 
     if let Ok(preview) = serde_json::to_string(&json) {
-        log::info!("[TikTok] room info response (room_id={}): {}", room_id, preview);
+        log::info!(
+            "[TikTok] room info response (room_id={}): {}",
+            room_id,
+            preview
+        );
     }
 
     Ok(json)
@@ -3317,8 +3383,12 @@ async fn get_stream_url_from_room_info_api(
         .get("stream_url")
         .or_else(|| room_data.get("streamUrl"));
     let mut info = StreamInfo {
-        hls_url: stream_url.and_then(|v| v.get("hls_pull_url")).and_then(extract_first_string),
-        rtmp_url: stream_url.and_then(|v| v.get("rtmp_pull_url")).and_then(extract_first_string),
+        hls_url: stream_url
+            .and_then(|v| v.get("hls_pull_url"))
+            .and_then(extract_first_string),
+        rtmp_url: stream_url
+            .and_then(|v| v.get("rtmp_pull_url"))
+            .and_then(extract_first_string),
         resolution: None,
     };
     if info.rtmp_url.is_none() {
@@ -3544,7 +3614,8 @@ pub async fn get_room_info_with_feed_override(
     {
         match get_room_id_from_feed(client, account, url, feed_override).await {
             Ok(room_id) => {
-                if let Ok(room_info) = get_room_info_by_room_id(client, account, &room_id, url).await
+                if let Ok(room_info) =
+                    get_room_info_by_room_id(client, account, &room_id, url).await
                 {
                     return Ok(room_info);
                 }
@@ -3556,18 +3627,9 @@ pub async fn get_room_info_with_feed_override(
     }
     if force_mobile_fallback() {
         let mobile_url = to_mobile_url(url);
-        log::warn!(
-            "TikTok forced mobile room info: {}",
-            mobile_url
-        );
-        return get_room_info_with_profile(
-            client,
-            account,
-            &mobile_url,
-            MOBILE_USER_AGENT,
-            true,
-        )
-        .await;
+        log::warn!("TikTok forced mobile room info: {}", mobile_url);
+        return get_room_info_with_profile(client, account, &mobile_url, MOBILE_USER_AGENT, true)
+            .await;
     }
     match get_room_info_with_profile(client, account, url, USER_AGENT, false).await {
         Ok(info) => Ok(info),
@@ -3768,18 +3830,9 @@ pub async fn get_stream_url_with_feed_override(
     }
     if force_mobile_fallback() {
         let mobile_url = to_mobile_url(url);
-        log::warn!(
-            "TikTok forced mobile stream: {}",
-            mobile_url
-        );
-        return get_stream_url_with_profile(
-            client,
-            account,
-            &mobile_url,
-            MOBILE_USER_AGENT,
-            true,
-        )
-        .await;
+        log::warn!("TikTok forced mobile stream: {}", mobile_url);
+        return get_stream_url_with_profile(client, account, &mobile_url, MOBILE_USER_AGENT, true)
+            .await;
     }
     match get_stream_url_with_profile(client, account, url, USER_AGENT, false).await {
         Ok(info) => Ok(info),
@@ -3814,10 +3867,7 @@ mod tests {
     #[test]
     fn mobile_url_rewrite() {
         let web = "https://www.tiktok.com/@abc/live?x=1";
-        assert_eq!(
-            to_mobile_url(web),
-            "https://m.tiktok.com/@abc/live?x=1"
-        );
+        assert_eq!(to_mobile_url(web), "https://m.tiktok.com/@abc/live?x=1");
         let mobile = "https://m.tiktok.com/@abc/live?x=1";
         assert_eq!(to_mobile_url(mobile), mobile);
     }
@@ -3880,7 +3930,8 @@ pub async fn get_user_info(
     // Check for region block
     if html_str.contains("We regret to inform you that we have discontinued operating TikTok") {
         return Err(RecorderError::ApiError {
-            error: "TikTok is not available in this region. Please use a different proxy.".to_string(),
+            error: "TikTok is not available in this region. Please use a different proxy."
+                .to_string(),
         });
     }
 
@@ -3906,10 +3957,18 @@ pub async fn get_user_info(
     if let Some(user_module) = state.get("UserModule").and_then(|u| u.get("users")) {
         if let Some(obj) = user_module.as_object() {
             if let Some((_, user_val)) = obj.iter().next() {
-                let user_id = get_string_field(user_val.as_object().unwrap_or(&Map::new()), &["id", "secUid"]).unwrap_or_default();
-                let user_name = get_string_field(user_val.as_object().unwrap_or(&Map::new()), &["nickname", "uniqueId"]).unwrap_or_default();
+                let user_id = get_string_field(
+                    user_val.as_object().unwrap_or(&Map::new()),
+                    &["id", "secUid"],
+                )
+                .unwrap_or_default();
+                let user_name = get_string_field(
+                    user_val.as_object().unwrap_or(&Map::new()),
+                    &["nickname", "uniqueId"],
+                )
+                .unwrap_or_default();
                 let user_avatar = find_avatar_url(user_val).unwrap_or_default();
-                
+
                 if !user_id.is_empty() && !user_name.is_empty() {
                     return Ok(crate::UserInfo {
                         user_id,
@@ -3994,15 +4053,28 @@ pub async fn check_cookie_available(
 
 fn find_current_user_info(value: &Value) -> Option<crate::UserInfo> {
     // 1. In SIGI_STATE, the current user is often under "AppContext" or "UserModule"
-    if let Some(user) = value.get("AppContext").and_then(|a| a.get("appContext")).and_then(|c| c.get("user")) {
-        let user_id = get_string_field(user.as_object().unwrap_or(&Map::new()), &["uid", "id"]).unwrap_or_default();
-        let user_name = get_string_field(user.as_object().unwrap_or(&Map::new()), &["nickname", "uniqueId"]).unwrap_or_default();
+    if let Some(user) = value
+        .get("AppContext")
+        .and_then(|a| a.get("appContext"))
+        .and_then(|c| c.get("user"))
+    {
+        let user_id = get_string_field(user.as_object().unwrap_or(&Map::new()), &["uid", "id"])
+            .unwrap_or_default();
+        let user_name = get_string_field(
+            user.as_object().unwrap_or(&Map::new()),
+            &["nickname", "uniqueId"],
+        )
+        .unwrap_or_default();
         let user_avatar = find_avatar_url(user).unwrap_or_default();
-        
+
         if !user_id.is_empty() {
             return Some(crate::UserInfo {
                 user_id: user_id.clone(),
-                user_name: if user_name.is_empty() { user_id.clone() } else { user_name },
+                user_name: if user_name.is_empty() {
+                    user_id.clone()
+                } else {
+                    user_name
+                },
                 user_avatar,
             });
         }
@@ -4011,18 +4083,32 @@ fn find_current_user_info(value: &Value) -> Option<crate::UserInfo> {
     // 2. In __UNIVERSAL_DATA_FOR_REHYDRATION__, it's under webapp.user-info
     if let Some(obj) = value.as_object() {
         for val in obj.values() {
-            if let Some(user) = val.get("__DEFAULT_SCOPE__")
+            if let Some(user) = val
+                .get("__DEFAULT_SCOPE__")
                 .and_then(|s| s.get("webapp.user-info"))
                 .and_then(|u| u.get("data"))
-                .and_then(|d| d.get("user")) {
-                let user_id = get_string_field(user.as_object().unwrap_or(&Map::new()), &["uid", "id", "secUid"]).unwrap_or_default();
-                let user_name = get_string_field(user.as_object().unwrap_or(&Map::new()), &["nickname", "uniqueId"]).unwrap_or_default();
+                .and_then(|d| d.get("user"))
+            {
+                let user_id = get_string_field(
+                    user.as_object().unwrap_or(&Map::new()),
+                    &["uid", "id", "secUid"],
+                )
+                .unwrap_or_default();
+                let user_name = get_string_field(
+                    user.as_object().unwrap_or(&Map::new()),
+                    &["nickname", "uniqueId"],
+                )
+                .unwrap_or_default();
                 let user_avatar = find_avatar_url(user).unwrap_or_default();
-                
+
                 if !user_id.is_empty() {
                     return Some(crate::UserInfo {
                         user_id: user_id.clone(),
-                        user_name: if user_name.is_empty() { user_id.clone() } else { user_name },
+                        user_name: if user_name.is_empty() {
+                            user_id.clone()
+                        } else {
+                            user_name
+                        },
                         user_avatar,
                     });
                 }
@@ -4046,7 +4132,10 @@ async fn get_user_info_from_passport(
 
     if !response.status().is_success() {
         return Err(RecorderError::ApiError {
-            error: format!("Failed to fetch TikTok passport info, status: {}", response.status()),
+            error: format!(
+                "Failed to fetch TikTok passport info, status: {}",
+                response.status()
+            ),
         });
     }
 
@@ -4080,11 +4169,7 @@ async fn get_user_info_from_passport_account(
     client: &reqwest::Client,
     account: &Account,
 ) -> Result<crate::UserInfo, RecorderError> {
-    let handle = account
-        .name
-        .trim()
-        .trim_start_matches('@')
-        .to_string();
+    let handle = account.name.trim().trim_start_matches('@').to_string();
     let handle = if handle.is_empty() {
         account.id.trim().trim_start_matches('@').to_string()
     } else {
@@ -4105,17 +4190,17 @@ async fn get_user_info_from_passport_account(
     }
 
     let json: Value = response.json().await?;
-    let data = json.get("data").and_then(|d| d.as_object()).ok_or_else(|| {
-        RecorderError::ApiError {
+    let data = json
+        .get("data")
+        .and_then(|d| d.as_object())
+        .ok_or_else(|| RecorderError::ApiError {
             error: "User info not found in account info response".to_string(),
-        }
-    })?;
+        })?;
 
-    let user_id = get_string_field(data, &["user_id_str", "user_id", "uid", "id"])
+    let user_id =
+        get_string_field(data, &["user_id_str", "user_id", "uid", "id"]).unwrap_or_default();
+    let user_name = get_string_field(data, &["screen_name", "username", "unique_id", "nickname"])
         .unwrap_or_default();
-    let user_name =
-        get_string_field(data, &["screen_name", "username", "unique_id", "nickname"])
-            .unwrap_or_default();
     let user_avatar = data
         .get("avatar_url")
         .and_then(Value::as_str)
@@ -4142,7 +4227,11 @@ async fn get_user_info_from_passport_account(
 }
 
 /// Download file from URL to local path
-pub async fn download_file(client: &Client, url: &str, path: &std::path::Path) -> Result<(), RecorderError> {
+pub async fn download_file(
+    client: &Client,
+    url: &str,
+    path: &std::path::Path,
+) -> Result<(), RecorderError> {
     if url.is_empty() {
         return Ok(());
     }

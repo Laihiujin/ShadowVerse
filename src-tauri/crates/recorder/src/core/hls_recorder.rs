@@ -184,9 +184,7 @@ impl HlsRecorder {
                         let _ = self.playlist.lock().await.close().await;
                         return Err(e);
                     }
-                    RecorderError::InvalidResponseStatus { status }
-                        if status.is_server_error() =>
-                    {
+                    RecorderError::InvalidResponseStatus { status } if status.is_server_error() => {
                         log::warn!(
                             "[{}]Playlist fetch failed with {}, retrying",
                             self.room_id,
@@ -342,8 +340,7 @@ impl HlsRecorder {
                 Err(RecorderError::InvalidResponseStatus { status })
                     if status == reqwest::StatusCode::NOT_FOUND =>
                 {
-                    let end_sequence =
-                        playlist_sequence + media_playlist.segments.len() as u64;
+                    let end_sequence = playlist_sequence + media_playlist.segments.len() as u64;
                     let is_last = segment_sequence + 1 >= end_sequence;
                     if is_last {
                         log::warn!(
@@ -530,8 +527,7 @@ async fn download(
                     if fallback_url == url {
                         continue;
                     }
-                    let fallback_result =
-                        download_inner(client, fallback_url, path, headers).await;
+                    let fallback_result = download_inner(client, fallback_url, path, headers).await;
                     if let Ok(size) = fallback_result {
                         return Ok(size);
                     }
@@ -550,9 +546,8 @@ async fn download(
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
 
-    Err(last_err.unwrap_or_else(|| {
-        RecorderError::IoError(std::io::Error::other("Download failed"))
-    }))
+    Err(last_err
+        .unwrap_or_else(|| RecorderError::IoError(std::io::Error::other("Download failed"))))
 }
 
 pub async fn construct_stream_from_variant(

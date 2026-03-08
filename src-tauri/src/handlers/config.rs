@@ -7,7 +7,6 @@ use recorder::platforms::PlatformType;
 use tauri::Manager;
 
 #[cfg(feature = "gui")]
-
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn get_config(state: state_type!()) -> Result<Config, ()> {
     let mut config = state.config.read().await.clone();
@@ -47,7 +46,15 @@ pub async fn import_cache_from_path(
     let candidate = source.join("cache");
     if candidate.is_dir() {
         let mut has_platform = false;
-        for platform in ["bilibili", "douyin", "kuaishou", "huya", "tiktok", "weibo", "xiaohongshu"] {
+        for platform in [
+            "bilibili",
+            "douyin",
+            "kuaishou",
+            "huya",
+            "tiktok",
+            "weibo",
+            "xiaohongshu",
+        ] {
             if candidate.join(platform).is_dir() {
                 has_platform = true;
                 break;
@@ -66,7 +73,15 @@ pub async fn import_cache_from_path(
         }
     }
 
-    let platforms = ["bilibili", "douyin", "kuaishou", "huya", "tiktok", "weibo", "xiaohongshu"];
+    let platforms = [
+        "bilibili",
+        "douyin",
+        "kuaishou",
+        "huya",
+        "tiktok",
+        "weibo",
+        "xiaohongshu",
+    ];
     if should_copy {
         for platform in platforms {
             let src_dir = source.join(platform);
@@ -82,11 +97,10 @@ pub async fn import_cache_from_path(
 
     let (added, updated) =
         crate::migration::migration_methods::try_rebuild_archives_from_cache_scan(
-        &state.db,
-        target,
-    )
-    .await
-    .map_err(|e| e.to_string())?;
+            &state.db, target,
+        )
+        .await
+        .map_err(|e| e.to_string())?;
 
     Ok(ImportCacheResult { added, updated })
 }
@@ -408,16 +422,16 @@ pub async fn update_use_guest_accounts(
     } else {
         // First, get the current guest accounts for deletion BEFORE clearing
         let config_snapshot = state.config.read().await.clone();
-        
+
         // Delete guest accounts from database using the ORIGINAL config (before clearing)
         crate::handlers::account::remove_guest_accounts(&state.db, &config_snapshot).await;
-        
+
         // Now clear guest accounts from config
         let mut config = state.config.write().await;
         config.guest_accounts.clear();
         config.save();
         drop(config);
-        
+
         // Clear guest account cookies from accounts.toml file (keep the structure)
         let accounts_path = crate::config::resolve_accounts_file_write_path();
         if let Some((mut accounts_file, _)) = crate::config::load_accounts_file_or_example() {
@@ -427,7 +441,10 @@ pub async fn update_use_guest_accounts(
                 guest_account.extra.clear();
             }
             if let Err(e) = crate::config::write_accounts_file(&accounts_path, &accounts_file) {
-                log::error!("Failed to clear guest account cookies from accounts.toml: {}", e);
+                log::error!(
+                    "Failed to clear guest account cookies from accounts.toml: {}",
+                    e
+                );
             } else {
                 log::info!("Cleared guest account cookies from accounts.toml");
             }
@@ -528,7 +545,10 @@ pub async fn clear_webview_data(state: state_type!()) -> Result<(), String> {
     if errors.is_empty() {
         Ok(())
     } else {
-        Err(format!("Failed to clear browsing data: {}", errors.join("; ")))
+        Err(format!(
+            "Failed to clear browsing data: {}",
+            errors.join("; ")
+        ))
     }
 }
 

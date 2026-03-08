@@ -4,8 +4,8 @@ use sm3::{Digest, Sm3};
 
 const END_STRING: &str = "cus";
 const UA_CODE: [u8; 32] = [
-    76, 98, 15, 131, 97, 245, 224, 133, 122, 199, 241, 166, 79, 34, 90, 191, 128, 126, 122,
-    98, 66, 11, 14, 40, 49, 110, 110, 173, 67, 96, 138, 252,
+    76, 98, 15, 131, 97, 245, 224, 133, 122, 199, 241, 166, 79, 34, 90, 191, 128, 126, 122, 98, 66,
+    11, 14, 40, 49, 110, 110, 173, 67, 96, 138, 252,
 ];
 
 const STR_S4: &str = "Dkdpgh2ZmsQB80/MfvV36XI1R45-WUAlEixNLwoqYTOPuzKFjJnry79HbGcaStCe";
@@ -21,8 +21,7 @@ impl ABogus {
         let browser = platform
             .map(Self::generate_browser_info)
             .unwrap_or_else(|| {
-                "1536|742|1536|864|0|0|0|0|1536|864|1536|864|1536|742|24|24|MacIntel"
-                    .to_string()
+                "1536|742|1536|864|0|0|0|0|1536|864|1536|864|1536|742|24|24|MacIntel".to_string()
             });
         let browser_len = browser.len();
         let browser_code = browser.bytes().collect();
@@ -140,15 +139,7 @@ impl ABogus {
         Self::random_list(random_num, 170, 85, 1, 0, 5, 0)
     }
 
-    fn random_list(
-        random_num: Option<f64>,
-        a: u8,
-        b: u8,
-        d: u8,
-        e: u8,
-        f: u8,
-        g: u8,
-    ) -> [u8; 4] {
+    fn random_list(random_num: Option<f64>, a: u8, b: u8, d: u8, e: u8, f: u8, g: u8) -> [u8; 4] {
         let r = random_num.unwrap_or_else(|| rand::random::<f64>() * 10000.0);
         let r_int = r as u32;
         let v1 = (r_int & 255) as u8;
@@ -180,9 +171,8 @@ impl ABogus {
         r: u8,
     ) -> Vec<u8> {
         vec![
-            44, a, 0, 0, 0, 0, 24, b, n, 0, c, d, 0, 0, 0, 1, 0, 239, e, o, f,
-            g, 0, 0, 0, 0, h, 0, 0, 14, i, j, 0, k, m, 3, p, 1, q, 1, r, 0, 0,
-            0,
+            44, a, 0, 0, 0, 0, 24, b, n, 0, c, d, 0, 0, 0, 1, 0, 239, e, o, f, g, 0, 0, 0, 0, h, 0,
+            0, 14, i, j, 0, k, m, 3, p, 1, q, 1, r, 0, 0, 0,
         ]
     }
 
@@ -208,12 +198,7 @@ impl ABogus {
             };
             let n = (b0 << 16) | (b1 << 8) | b2;
 
-            for (shift, mask) in [
-                (18, 0xFC0000),
-                (12, 0x03F000),
-                (6, 0x0FC0),
-                (0, 0x3F),
-            ] {
+            for (shift, mask) in [(18, 0xFC0000), (12, 0x03F000), (6, 0x0FC0), (0, 0x3F)] {
                 if shift == 6 && i + 1 >= data.len() {
                     break;
                 }

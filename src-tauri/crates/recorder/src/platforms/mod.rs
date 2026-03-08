@@ -2,9 +2,9 @@ pub mod bilibili;
 pub mod douyin;
 pub mod huya;
 pub mod kuaishou;
-pub mod xiaohongshu;
 pub mod tiktok;
 pub mod weibo;
+pub mod xiaohongshu;
 use std::hash::{Hash, Hasher};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

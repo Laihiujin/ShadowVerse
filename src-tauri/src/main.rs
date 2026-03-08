@@ -47,9 +47,9 @@ use std::os::windows::fs::MetadataExt;
 
 #[cfg(feature = "gui")]
 use {
+    sqlx::Row,
     tauri::{Manager, WindowEvent},
     tauri_plugin_sql::{Migration, MigrationKind},
-    sqlx::Row,
 };
 
 #[cfg(feature = "headless")]
@@ -92,10 +92,7 @@ async fn open_log_file(log_dir: &Path) -> Result<File, Box<dyn std::error::Error
 #[cfg(target_os = "windows")]
 fn choose_windows_output_path(default_output: &Path) -> PathBuf {
     let default_str = default_output.to_string_lossy();
-    let default_drive = default_str
-        .chars()
-        .next()
-        .map(|c| c.to_ascii_uppercase());
+    let default_drive = default_str.chars().next().map(|c| c.to_ascii_uppercase());
     if default_drive != Some('C') {
         return default_output.to_path_buf();
     }
@@ -103,9 +100,7 @@ fn choose_windows_output_path(default_output: &Path) -> PathBuf {
     for drive in b'D'..=b'Z' {
         let root = format!("{}:\\", drive as char);
         if Path::new(&root).exists() {
-            return PathBuf::from(root)
-                .join("cn.ShadowVerse")
-                .join("output");
+            return PathBuf::from(root).join("cn.ShadowVerse").join("output");
         }
     }
 
@@ -115,10 +110,7 @@ fn choose_windows_output_path(default_output: &Path) -> PathBuf {
 #[cfg(target_os = "windows")]
 fn choose_windows_cache_path(default_cache: &Path) -> PathBuf {
     let default_str = default_cache.to_string_lossy();
-    let default_drive = default_str
-        .chars()
-        .next()
-        .map(|c| c.to_ascii_uppercase());
+    let default_drive = default_str.chars().next().map(|c| c.to_ascii_uppercase());
     if default_drive != Some('C') {
         return default_cache.to_path_buf();
     }
@@ -126,9 +118,7 @@ fn choose_windows_cache_path(default_cache: &Path) -> PathBuf {
     for drive in b'D'..=b'Z' {
         let root = format!("{}:\\", drive as char);
         if Path::new(&root).exists() {
-            return PathBuf::from(root)
-                .join("cn.ShadowVerse")
-                .join("cache");
+            return PathBuf::from(root).join("cn.ShadowVerse").join("cache");
         }
     }
 
@@ -165,11 +155,7 @@ async fn setup_logging(log_dir: &Path) -> Result<(), Box<dyn std::error::Error>>
             simplelog::TerminalMode::Mixed,
             simplelog::ColorChoice::Auto,
         ),
-        simplelog::WriteLogger::new(
-            simplelog::LevelFilter::Info,
-            config,
-            file,
-        ),
+        simplelog::WriteLogger::new(simplelog::LevelFilter::Info, config, file),
     ])?;
 
     // logging current package version
@@ -814,7 +800,6 @@ fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
         crate::handlers::account::close_webview_window,
         crate::handlers::account::close_all_login_windows,
         crate::handlers::account::refresh_guest_accounts_force,
-
         crate::handlers::config::get_config,
         crate::handlers::config::get_static_port,
         crate::handlers::config::set_cache_path,
@@ -942,7 +927,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
 
                 app.manage(state.clone());
-                
+
                 if state.config.read().await.use_guest_accounts {
                     let guest_empty_or_blank = {
                         let cfg = state.config.read().await;
@@ -955,18 +940,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     if guest_empty_or_blank {
                         let state_clone = state.clone();
                         tauri::async_runtime::spawn(async move {
-                            let _ = crate::handlers::account::refresh_guest_accounts_on_demand_owned(
-                                state_clone,
-                                "startup".to_string(),
-                            )
-                            .await;
+                            let _ =
+                                crate::handlers::account::refresh_guest_accounts_on_demand_owned(
+                                    state_clone,
+                                    "startup".to_string(),
+                                )
+                                .await;
                         });
                     }
                 }
 
                 // Start periodic guest cookie refresh timer
                 crate::handlers::account::start_guest_cookie_refresh_timer(state);
-                
+
                 Ok(())
             })
         })

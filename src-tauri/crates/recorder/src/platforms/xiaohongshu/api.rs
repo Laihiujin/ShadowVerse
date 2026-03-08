@@ -8,7 +8,10 @@ use urlencoding::decode;
 const USER_AGENT: &str = "ios/7.830 (ios 17.0; ; iPhone 15 (A2846/A3089/A3090/A3092))";
 
 /// Get user information from cookies
-pub async fn get_user_info(_client: &Client, account: &Account) -> Result<crate::UserInfo, RecorderError> {
+pub async fn get_user_info(
+    _client: &Client,
+    account: &Account,
+) -> Result<crate::UserInfo, RecorderError> {
     let mut headers = reqwest::header::HeaderMap::new();
     headers.insert("User-Agent", USER_AGENT.parse().unwrap());
     headers.insert(
@@ -38,7 +41,8 @@ pub async fn get_user_info(_client: &Client, account: &Account) -> Result<crate:
         .and_then(|cap| cap.get(1))
         .map(|m| m.as_str().to_string())
         .ok_or(RecorderError::ApiError {
-            error: "Failed to extract webId from cookies - please ensure cookies are valid".to_string(),
+            error: "Failed to extract webId from cookies - please ensure cookies are valid"
+                .to_string(),
         })?;
 
     // Use default user name and avatar since Xiaohongshu's profile API requires additional authentication
@@ -97,11 +101,7 @@ pub async fn get_room_info(
 
     // Handle short link redirect
     let final_url = if url.contains("xhslink.com") {
-        let response = client
-            .get(url)
-            .headers(headers.clone())
-            .send()
-            .await?;
+        let response = client.get(url).headers(headers.clone()).send().await?;
         response.url().to_string()
     } else {
         url.to_string()
@@ -109,11 +109,10 @@ pub async fn get_room_info(
 
     // Extract user_id
     let host_id = get_param(&final_url, "host_id");
-    let user_id_regex = Regex::new(r"/user/profile/([^/?#]+)").map_err(|e| {
-        RecorderError::ApiError {
+    let user_id_regex =
+        Regex::new(r"/user/profile/([^/?#]+)").map_err(|e| RecorderError::ApiError {
             error: format!("Failed to create regex: {}", e),
-        }
-    })?;
+        })?;
     let user_id = user_id_regex
         .captures(&final_url)
         .and_then(|cap| cap.get(1).map(|m| m.as_str().to_string()))
@@ -123,13 +122,19 @@ pub async fn get_room_info(
         })?;
 
     // Fetch page content
-    let response = client.get(&final_url).headers(headers.clone()).send().await?;
+    let response = client
+        .get(&final_url)
+        .headers(headers.clone())
+        .send()
+        .await?;
     let html_str = response.text().await?;
 
     // Parse INITIAL_STATE from script tag
-    let script_regex = Regex::new(r"<script>window.__INITIAL_STATE__=(.*?)</script>")
-        .map_err(|e| RecorderError::ApiError {
-            error: format!("Failed to create regex: {}", e),
+    let script_regex =
+        Regex::new(r"<script>window.__INITIAL_STATE__=(.*?)</script>").map_err(|e| {
+            RecorderError::ApiError {
+                error: format!("Failed to create regex: {}", e),
+            }
         })?;
 
     let json_str = script_regex
@@ -141,11 +146,10 @@ pub async fn get_room_info(
         .as_str()
         .replace("undefined", "null");
 
-    let state: InitialStateResponse = serde_json::from_str(&json_str).map_err(|e| {
-        RecorderError::ApiError {
+    let state: InitialStateResponse =
+        serde_json::from_str(&json_str).map_err(|e| RecorderError::ApiError {
             error: format!("Failed to parse JSON: {}", e),
-        }
-    })?;
+        })?;
 
     // Check if live stream exists and is active
     let live_stream = state.live_stream.ok_or(RecorderError::NotLive)?;
@@ -157,7 +161,8 @@ pub async fn get_room_info(
 
     if !live_status {
         // Try to get anchor name from profile page
-        let anchor_name = get_anchor_name_from_profile(client, &user_id, &headers).await
+        let anchor_name = get_anchor_name_from_profile(client, &user_id, &headers)
+            .await
             .unwrap_or_else(|_| String::from("Unknown"));
 
         return Ok(RoomInfo {
@@ -188,7 +193,8 @@ pub async fn get_room_info(
         error: "No deeplink in room info".to_string(),
     })?;
 
-    let anchor_name = get_param(&deeplink, "host_nickname").unwrap_or_else(|| String::from("Unknown"));
+    let anchor_name =
+        get_param(&deeplink, "host_nickname").unwrap_or_else(|| String::from("Unknown"));
 
     Ok(RoomInfo {
         live_status: true,
@@ -221,24 +227,26 @@ pub async fn get_stream_url(
 
     // Handle short link redirect
     let final_url = if url.contains("xhslink.com") {
-        let response = client
-            .get(url)
-            .headers(headers.clone())
-            .send()
-            .await?;
+        let response = client.get(url).headers(headers.clone()).send().await?;
         response.url().to_string()
     } else {
         url.to_string()
     };
 
     // Fetch page content
-    let response = client.get(&final_url).headers(headers.clone()).send().await?;
+    let response = client
+        .get(&final_url)
+        .headers(headers.clone())
+        .send()
+        .await?;
     let html_str = response.text().await?;
 
     // Parse INITIAL_STATE from script tag
-    let script_regex = Regex::new(r"<script>window.__INITIAL_STATE__=(.*?)</script>")
-        .map_err(|e| RecorderError::ApiError {
-            error: format!("Failed to create regex: {}", e),
+    let script_regex =
+        Regex::new(r"<script>window.__INITIAL_STATE__=(.*?)</script>").map_err(|e| {
+            RecorderError::ApiError {
+                error: format!("Failed to create regex: {}", e),
+            }
         })?;
 
     let json_str = script_regex
@@ -250,11 +258,10 @@ pub async fn get_stream_url(
         .as_str()
         .replace("undefined", "null");
 
-    let state: InitialStateResponse = serde_json::from_str(&json_str).map_err(|e| {
-        RecorderError::ApiError {
+    let state: InitialStateResponse =
+        serde_json::from_str(&json_str).map_err(|e| RecorderError::ApiError {
             error: format!("Failed to parse JSON: {}", e),
-        }
-    })?;
+        })?;
 
     let live_stream = state.live_stream.ok_or(RecorderError::NotLive)?;
 
@@ -301,14 +308,17 @@ async fn get_anchor_name_from_profile(
     headers: &reqwest::header::HeaderMap,
 ) -> Result<String, RecorderError> {
     let profile_url = format!("https://www.xiaohongshu.com/user/profile/{}", user_id);
-    let response = client.get(&profile_url).headers(headers.clone()).send().await?;
+    let response = client
+        .get(&profile_url)
+        .headers(headers.clone())
+        .send()
+        .await?;
     let html_str = response.text().await?;
 
-    let title_regex = Regex::new(r"<title>@(.*?) 的个人主页</title>").map_err(|e| {
-        RecorderError::ApiError {
+    let title_regex =
+        Regex::new(r"<title>@(.*?) 的个人主页</title>").map_err(|e| RecorderError::ApiError {
             error: format!("Failed to create regex: {}", e),
-        }
-    })?;
+        })?;
 
     let anchor_name = title_regex
         .captures(&html_str)

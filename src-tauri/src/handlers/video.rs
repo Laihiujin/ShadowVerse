@@ -293,7 +293,7 @@ async fn copy_file_with_network_optimization(
 }
 
 #[cfg(all(feature = "gui", not(feature = "headless")))]
-use {tauri_plugin_notification::NotificationExt};
+use tauri_plugin_notification::NotificationExt;
 
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn clip_range(

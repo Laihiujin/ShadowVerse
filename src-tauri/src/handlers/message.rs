@@ -3,7 +3,6 @@ use crate::state::State;
 use crate::state_type;
 
 #[cfg(feature = "gui")]
-
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn get_messages(state: state_type!()) -> Result<Vec<MessageRow>, String> {
     Ok(state.db.get_messages().await?)

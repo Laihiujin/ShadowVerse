@@ -17,7 +17,7 @@ impl KuaishouSign {
     }
 
     /// Generate sign parameter for danmu requests
-    /// url_params: The query parameters without '?' 
+    /// url_params: The query parameters without '?'
     pub fn generate_sign(&self, url_params: &str) -> String {
         // Use md5::compute like other modules in this project
         let combined = format!("{}{}", url_params, self.did);
@@ -30,12 +30,12 @@ impl KuaishouSign {
         if !params.iter().any(|(k, _)| k == "did") {
             params.push(("did".to_string(), self.did.clone()));
         }
-        
+
         // Add kpn if not exists
         if !params.iter().any(|(k, _)| k == "kpn") {
             params.push(("kpn".to_string(), "GAME_ZONE".to_string()));
         }
-        
+
         params
     }
 }

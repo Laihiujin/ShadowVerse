@@ -39,7 +39,11 @@ pub fn gen_verify_fp() -> String {
         chars[i] = base_str.chars().nth(idx).unwrap_or('0');
     }
 
-    format!("verify_{}_{}", base36, chars.into_iter().collect::<String>())
+    format!(
+        "verify_{}_{}",
+        base36,
+        chars.into_iter().collect::<String>()
+    )
 }
 
 pub fn gen_false_ms_token() -> String {
@@ -52,4 +56,3 @@ pub fn gen_false_ms_token() -> String {
     output.push_str("==");
     output
 }
-

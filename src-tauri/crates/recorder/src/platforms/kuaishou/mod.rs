@@ -78,16 +78,15 @@ impl KuaishouRecorder {
     ) -> Result<Self, RecorderError> {
         let mut default_headers = reqwest::header::HeaderMap::new();
         default_headers.insert("Referer", "https://live.kuaishou.com/".parse().unwrap());
-        default_headers.insert(
-            "User-Agent",
-            KUAISHOU_USER_AGENT.parse().unwrap(),
-        );
+        default_headers.insert("User-Agent", KUAISHOU_USER_AGENT.parse().unwrap());
 
         let client = reqwest::Client::builder()
             .default_headers(default_headers)
             .no_proxy()
             .build()
-            .map_err(|e| RecorderError::ApiError{ error: e.to_string() })?;
+            .map_err(|e| RecorderError::ApiError {
+                error: e.to_string(),
+            })?;
         let extra = KuaishouExtra {
             stream_url: Arc::new(RwLock::new(None)),
             stream_list: Arc::new(RwLock::new(Vec::new())),
@@ -215,17 +214,13 @@ impl KuaishouRecorder {
             Some(uri) => uri,
             None => return false,
         };
-        let stream = match construct_stream_from_variant(
-            "probe",
-            &playlist_url,
-            Format::TS,
-            Codec::Avc,
-        )
-        .await
-        {
-            Ok(stream) => stream,
-            Err(_) => return false,
-        };
+        let stream =
+            match construct_stream_from_variant("probe", &playlist_url, Format::TS, Codec::Avc)
+                .await
+            {
+                Ok(stream) => stream,
+                Err(_) => return false,
+            };
         let segment_url = stream.ts_url(&first_segment);
         let response = match client
             .get(&segment_url)
@@ -268,10 +263,7 @@ impl KuaishouRecorder {
         KuaishouProtocol::Hls
     }
 
-    fn select_stream_url(
-        streams: &[api::StreamInfo],
-        prefer: KuaishouProtocol,
-    ) -> Option<String> {
+    fn select_stream_url(streams: &[api::StreamInfo], prefer: KuaishouProtocol) -> Option<String> {
         let mut selected = streams
             .iter()
             .find(|stream| prefer.matches_url(&stream.url))
@@ -312,9 +304,7 @@ impl KuaishouRecorder {
         *self.danmu_storage.write().await = None;
         *self.platform_live_id.write().await = String::new();
         *self.live_id.write().await = String::new();
-        self.extra
-            .last_error_ts
-            .store(0, atomic::Ordering::Relaxed);
+        self.extra.last_error_ts.store(0, atomic::Ordering::Relaxed);
         if let Some(danmu_task) = self.danmu_task.lock().await.take() {
             danmu_task.abort();
             let _ = danmu_task.await;
@@ -333,7 +323,6 @@ impl KuaishouRecorder {
         };
 
         let account = self.account.clone();
-
 
         match api::get_room_info(&self.client, &account, &url).await {
             Ok(room_info) => {
@@ -412,51 +401,54 @@ impl KuaishouRecorder {
                     return false;
                 }
 
-                // Get stream URLs
-                let new_stream = api::get_stream_urls(&self.client, &self.account, &url).await;
-
-                match new_stream {
-                    Ok(streams) => {
-                        let prefer = Self::prefer_protocol();
-                        let selected_url = Self::select_stream_url(&streams, prefer);
-
-                        if let Some(url) = selected_url {
-                            *self.extra.stream_list.write().await = streams.clone();
-
-                            // Find resolution
-                            let resolution = streams.iter().find(|s| s.url == url).map(|s| s.quality.clone());
-                            *self.extra.resolution.write().await = resolution;
-
-                            let pre_stream = self.extra.stream_url.read().await.clone();
-                            *self.extra.stream_url.write().await = Some(url.clone());
-                            self.last_update
-                                .store(Utc::now().timestamp(), atomic::Ordering::Relaxed);
-
-                            self.log_info(&format!(
-                                "Update to new stream: {:?} => {}",
-                                pre_stream, url
-                            ));
-
-                            true
-                        } else {
-                            self.log_error("No stream URLs found");
-                            false
+                let mut streams = room_info.streams.clone();
+                if streams.is_empty() {
+                    self.log_info("Room info has no stream list, fallback to stream API");
+                    match api::get_stream_urls(&self.client, &self.account, &url).await {
+                        Ok(fetched) => streams = fetched,
+                        Err(e) => {
+                            self.log_error(&format!("Fetch stream failed: {}", e));
+                            return true;
                         }
                     }
-                    Err(e) => {
-                        self.log_error(&format!("Fetch stream failed: {}", e));
-                        true
-                    }
+                }
+
+                let prefer = Self::prefer_protocol();
+                let selected_url = Self::select_stream_url(&streams, prefer);
+
+                if let Some(url) = selected_url {
+                    *self.extra.stream_list.write().await = streams.clone();
+
+                    // Find resolution
+                    let resolution = streams
+                        .iter()
+                        .find(|s| s.url == url)
+                        .map(|s| s.quality.clone());
+                    *self.extra.resolution.write().await = resolution;
+
+                    let pre_stream = self.extra.stream_url.read().await.clone();
+                    *self.extra.stream_url.write().await = Some(url.clone());
+                    self.last_update
+                        .store(Utc::now().timestamp(), atomic::Ordering::Relaxed);
+
+                    self.log_info(&format!(
+                        "Update to new stream: {:?} => {}",
+                        pre_stream, url
+                    ));
+                    true
+                } else {
+                    self.log_error("No stream URLs found");
+                    false
                 }
             }
             Err(e) => {
                 if self.account.is_guest() && is_guest_cookie_block_error(&e) {
-                    let _ = self.event_channel.send(
-                        RecorderEvent::GuestCookieRefreshRequested {
+                    let _ = self
+                        .event_channel
+                        .send(RecorderEvent::GuestCookieRefreshRequested {
                             platform: PlatformType::Kuaishou,
                             reason: format!("kuaishou guest cookie blocked: {}", e),
-                        },
-                    );
+                        });
                 }
                 if api::is_rate_limited_error(&e) {
                     self.log_info("Rate limited, backing off");
@@ -482,16 +474,7 @@ impl KuaishouRecorder {
     }
 
     async fn danmu(&self) -> Result<(), RecorderError> {
-        let mut cookies = self.account.cookies.clone();
-
-        if !cookies.contains("did=") {
-             let did = crate::reverse_generate::qr_login::get_or_create_kuaishou_did();
-             let didv = chrono::Utc::now().timestamp_millis();
-             if !cookies.is_empty() {
-                 cookies.push_str("; ");
-             }
-             cookies.push_str(&format!("did={did}; didv={didv}"));
-        }
+        let mut cookies = api::normalize_record_cookie(&self.account.cookies);
 
         let live_id = self.live_id.read().await.clone();
         if !live_id.is_empty() && !cookies.contains("liveStreamId=") {
@@ -615,11 +598,8 @@ impl KuaishouRecorder {
         let selected_stream = stream_list.iter().find(|s| s.url == stream_url);
         let stream_cookie = selected_stream.and_then(|s| s.cookie.clone());
 
-        let cookies = if let Some(cookie) = stream_cookie {
-            cookie
-        } else {
-            self.account.cookies.clone()
-        };
+        let cookies =
+            api::normalize_record_cookie(stream_cookie.as_deref().unwrap_or(&self.account.cookies));
         let web_headers = Self::build_stream_headers(false, &cookies);
         let h5_headers = Self::build_stream_headers(true, &cookies);
         let mut headers = if is_mobile_stream {
@@ -689,7 +669,13 @@ impl KuaishouRecorder {
                 if let Some(hls_url) = fallback_hls {
                     self.log_info("FLV failed, fallback to HLS recorder");
                     return self
-                        .run_hls_recorder(&hls_url, &headers, &work_dir, live_id)
+                        .run_hls_recorder(
+                            &hls_url,
+                            &headers,
+                            &work_dir,
+                            live_id,
+                            Some(cookies.clone()),
+                        )
                         .await;
                 }
                 return Err(e);
@@ -700,7 +686,13 @@ impl KuaishouRecorder {
         // Create HLS stream
         // Kuaishou stream URLs are direct m3u8 URLs
         if let Err(e) = self
-            .run_hls_recorder(&stream_url, &headers, &work_dir, live_id)
+            .run_hls_recorder(
+                &stream_url,
+                &headers,
+                &work_dir,
+                live_id,
+                Some(cookies.clone()),
+            )
             .await
         {
             let should_retry = matches!(
@@ -711,7 +703,13 @@ impl KuaishouRecorder {
                 let alt_headers = Self::build_stream_headers(!is_mobile_stream, &cookies);
                 self.log_info("HLS 403, retrying with alternate headers");
                 if self
-                    .run_hls_recorder(&stream_url, &alt_headers, &work_dir, live_id)
+                    .run_hls_recorder(
+                        &stream_url,
+                        &alt_headers,
+                        &work_dir,
+                        live_id,
+                        Some(cookies.clone()),
+                    )
                     .await
                     .is_ok()
                 {
@@ -749,25 +747,17 @@ impl KuaishouRecorder {
         headers: &reqwest::header::HeaderMap,
         work_dir: &CachePath,
         live_id: &str,
+        cookie_header: Option<String>,
     ) -> Result<(), RecorderError> {
-        let hls_stream = construct_stream_from_variant(
-            live_id,
-            stream_url,
-            Format::TS,
-            Codec::Avc,
-        )
-        .await
-        .map_err(|_| RecorderError::NoStreamAvailable)?;
+        let hls_stream = construct_stream_from_variant(live_id, stream_url, Format::TS, Codec::Avc)
+            .await
+            .map_err(|_| RecorderError::NoStreamAvailable)?;
 
         let hls_recorder = HlsRecorder::new(
             self.room_id.to_string(),
             Arc::new(hls_stream),
             self.client.clone(),
-            if self.account.cookies.is_empty() {
-                None
-            } else {
-                Some(self.account.cookies.clone())
-            },
+            cookie_header.filter(|v| !v.trim().is_empty()),
             Some(headers.clone()),
             self.event_channel.clone(),
             work_dir.full_path(),
@@ -816,8 +806,7 @@ impl RecorderTrait<KuaishouExtra> for KuaishouRecorder {
                                         .extra
                                         .should_continue
                                         .store(true, Ordering::Relaxed);
-                                    self_clone
-                                        .log_info(&format!("Stream expired at {}", expire));
+                                    self_clone.log_info(&format!("Stream expired at {}", expire));
                                 }
                                 _ => {
                                     self_clone.log_error(&format!("Update entries error: {}", e));
@@ -847,11 +836,15 @@ impl RecorderTrait<KuaishouExtra> for KuaishouRecorder {
                         .ok()
                         .and_then(|v| v.trim().parse::<u64>().ok())
                         .unwrap_or(120);
-                    let last_error_ts = self_clone.extra.last_error_ts.load(atomic::Ordering::Relaxed);
+                    let last_error_ts = self_clone
+                        .extra
+                        .last_error_ts
+                        .load(atomic::Ordering::Relaxed);
                     if last_error_ts > 0 {
                         let now = Utc::now().timestamp();
                         if now.saturating_sub(last_error_ts) <= error_window as i64 {
-                            let interval = self_clone.update_interval.load(atomic::Ordering::Relaxed);
+                            let interval =
+                                self_clone.update_interval.load(atomic::Ordering::Relaxed);
                             let mut sleep_secs = crate::utils::jitter_interval_secs(interval, 10);
                             sleep_secs = sleep_secs.max(interval);
                             sleep_secs = sleep_secs.saturating_add(error_backoff);
@@ -876,7 +869,10 @@ impl RecorderTrait<KuaishouExtra> for KuaishouRecorder {
                     .ok()
                     .and_then(|v| v.trim().parse::<u64>().ok())
                     .unwrap_or(120);
-                let last_error_ts = self_clone.extra.last_error_ts.load(atomic::Ordering::Relaxed);
+                let last_error_ts = self_clone
+                    .extra
+                    .last_error_ts
+                    .load(atomic::Ordering::Relaxed);
                 if last_error_ts > 0 {
                     let now = Utc::now().timestamp();
                     if now.saturating_sub(last_error_ts) <= error_window as i64 {

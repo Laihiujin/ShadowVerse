@@ -158,7 +158,10 @@ pub async fn fetch_url(_state: state_type!(), url: String) -> Result<FetchUrlRes
         .map(|value| value.to_string());
     let bytes = response.bytes().await.map_err(|e| e.to_string())?.to_vec();
 
-    Ok(FetchUrlResponse { bytes, content_type })
+    Ok(FetchUrlResponse {
+        bytes,
+        content_type,
+    })
 }
 
 pub async fn get_disk_info_inner(target: PathBuf) -> Result<DiskInfo, ()> {

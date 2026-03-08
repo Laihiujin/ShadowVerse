@@ -60,13 +60,25 @@ pub struct Config {
     pub powerlive_key: String,
     #[serde(default = "default_reverse_generate_path")]
     pub reverse_generate_path: String,
-    #[serde(skip_serializing, skip_deserializing, default = "default_douyin_passport")]
+    #[serde(
+        skip_serializing,
+        skip_deserializing,
+        default = "default_douyin_passport"
+    )]
     pub douyin_passport: DouyinPassportConfig,
-    #[serde(skip_serializing, skip_deserializing, default = "default_guest_accounts")]
+    #[serde(
+        skip_serializing,
+        skip_deserializing,
+        default = "default_guest_accounts"
+    )]
     pub guest_accounts: Vec<DefaultAccountConfig>,
     #[serde(default = "default_use_guest_accounts")]
     pub use_guest_accounts: bool,
-    #[serde(skip_serializing, skip_deserializing, default = "default_login_accounts")]
+    #[serde(
+        skip_serializing,
+        skip_deserializing,
+        default = "default_login_accounts"
+    )]
     pub login_accounts: Vec<DefaultAccountConfig>,
     #[serde(default = "default_use_login_accounts")]
     pub use_login_accounts: bool,
@@ -288,7 +300,7 @@ fn default_guest_accounts() -> Vec<DefaultAccountConfig> {
 }
 
 fn default_use_guest_accounts() -> bool {
-    true  // 默认启用访客模式
+    true // 默认启用访客模式
 }
 
 fn default_douyin_passport() -> DouyinPassportConfig {
@@ -404,7 +416,10 @@ pub(crate) fn load_accounts_file_or_example() -> Option<(AccountsFile, PathBuf)>
     load_accounts_file().or_else(load_accounts_example_file)
 }
 
-pub(crate) fn write_accounts_file(path: &Path, accounts: &AccountsFile) -> Result<(), std::io::Error> {
+pub(crate) fn write_accounts_file(
+    path: &Path,
+    accounts: &AccountsFile,
+) -> Result<(), std::io::Error> {
     if let Some(parent) = path.parent() {
         if !parent.exists() {
             std::fs::create_dir_all(parent)?;
@@ -545,10 +560,7 @@ impl Config {
             path.parent().unwrap_or(&path).to_path_buf()
         };
         let qr_login_path = if path.is_file()
-            && path
-                .file_name()
-                .and_then(|name| name.to_str())
-                == Some("qr_login.toml")
+            && path.file_name().and_then(|name| name.to_str()) == Some("qr_login.toml")
         {
             path
         } else {
@@ -619,9 +631,8 @@ impl Config {
         };
 
         let _ = recorder::reverse_generate::qr_login::ensure_qr_login_defaults(&qr_login_path);
-        let _ = recorder::reverse_generate::tiktok_web::ensure_tiktok_web_defaults(
-            &tiktok_web_path,
-        );
+        let _ =
+            recorder::reverse_generate::tiktok_web::ensure_tiktok_web_defaults(&tiktok_web_path);
         let Ok(content) = std::fs::read_to_string(&qr_login_path) else {
             return;
         };
@@ -702,7 +713,10 @@ impl Config {
             std::env::set_var("DOUYIN_PASSPORT_PARAMS_RAW", douyin.params_raw.trim());
         }
         if !douyin.params_raw_status.trim().is_empty() {
-            std::env::set_var("DOUYIN_PASSPORT_PARAMS_RAW_STATUS", douyin.params_raw_status.trim());
+            std::env::set_var(
+                "DOUYIN_PASSPORT_PARAMS_RAW_STATUS",
+                douyin.params_raw_status.trim(),
+            );
         }
         if !douyin.challenge_params_raw.trim().is_empty() {
             std::env::set_var(
@@ -711,7 +725,10 @@ impl Config {
             );
         }
         if !douyin.challenge_body.trim().is_empty() {
-            std::env::set_var("DOUYIN_PASSPORT_CHALLENGE_BODY", douyin.challenge_body.trim());
+            std::env::set_var(
+                "DOUYIN_PASSPORT_CHALLENGE_BODY",
+                douyin.challenge_body.trim(),
+            );
         }
         if !douyin.challenge_content_type.trim().is_empty() {
             std::env::set_var(
@@ -991,7 +1008,10 @@ impl Config {
     pub fn apply_douyin_passport_env(&self) {
         let cfg = &self.douyin_passport;
         let set_if_missing = |key: &str, value: &str| {
-            let has_value = std::env::var(key).ok().filter(|v| !v.trim().is_empty()).is_some();
+            let has_value = std::env::var(key)
+                .ok()
+                .filter(|v| !v.trim().is_empty())
+                .is_some();
             if has_value {
                 return;
             }
@@ -1016,7 +1036,10 @@ impl Config {
         set_if_missing("DOUYIN_IS_NEW_LOGIN", &cfg.is_new_login);
         set_if_missing("DOUYIN_IS_FROM_IESACCOUNTSAAS", &cfg.is_from_iesaccountsaas);
         set_if_missing("DOUYIN_ACCOUNT_SDK_SOURCE", &cfg.account_sdk_source);
-        set_if_missing("DOUYIN_ACCOUNT_SDK_SOURCE_INFO", &cfg.account_sdk_source_info);
+        set_if_missing(
+            "DOUYIN_ACCOUNT_SDK_SOURCE_INFO",
+            &cfg.account_sdk_source_info,
+        );
         set_if_missing("DOUYIN_SERVICE", &cfg.service);
         set_if_missing("DOUYIN_P_UI", &cfg.p_ui);
         set_if_missing("DOUYIN_P_CA", &cfg.p_ca);
@@ -1036,7 +1059,10 @@ impl Config {
         set_if_missing("DOUYIN_FP", &cfg.fp);
         set_if_missing("DOUYIN_MS_TOKEN", &cfg.ms_token);
         set_if_missing("DOUYIN_A_BOGUS", &cfg.a_bogus);
-        set_if_missing("DOUYIN_X_TT_PASSPORT_CSRF_TOKEN", &cfg.x_tt_passport_csrf_token);
+        set_if_missing(
+            "DOUYIN_X_TT_PASSPORT_CSRF_TOKEN",
+            &cfg.x_tt_passport_csrf_token,
+        );
         set_if_missing("DOUYIN_X_TT_PASSPORT_AID_SIGN", &cfg.x_tt_passport_aid_sign);
         set_if_missing("DOUYIN_X_TT_PASSPORT_TRACE_ID", &cfg.x_tt_passport_trace_id);
         set_if_missing(

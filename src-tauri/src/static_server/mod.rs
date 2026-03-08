@@ -61,7 +61,10 @@ async fn handler_hls(
     let mut response =
         axum::response::Response::<axum::body::Body>::new(axum::body::Body::from(hls));
     let headers = response.headers_mut();
-    headers.insert(axum::http::header::CONTENT_TYPE, content_type.parse().unwrap());
+    headers.insert(
+        axum::http::header::CONTENT_TYPE,
+        content_type.parse().unwrap(),
+    );
     if filename.ends_with(".m3u8") {
         headers.insert(
             axum::http::header::CACHE_CONTROL,

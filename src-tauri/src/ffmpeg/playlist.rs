@@ -5,7 +5,6 @@ use tokio::io::AsyncWriteExt;
 
 use crate::progress::progress_reporter::ProgressReporterTrait;
 
-
 use super::Range;
 
 pub async fn clip_multiple_from_playlist(

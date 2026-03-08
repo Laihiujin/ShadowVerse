@@ -1785,10 +1785,7 @@ pub async fn start_api_server(state: State) {
                 "/api/generate_whole_clip",
                 post(handler_generate_whole_clip),
             )
-            .route(
-                "/api/fix_archive_covers",
-                post(handler_fix_archive_covers),
-            )
+            .route("/api/fix_archive_covers", post(handler_fix_archive_covers))
             .route("/api/update_notify", post(handler_update_notify))
             .route(
                 "/api/update_status_check_interval",

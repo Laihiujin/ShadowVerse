@@ -18,11 +18,7 @@ pub struct AccountRow {
 
 impl AccountRow {
     pub fn to_account(&self) -> Account {
-        let cookies = merge_kuaishou_extra_cookies(
-            &self.platform,
-            &self.cookies,
-            &self.extra,
-        );
+        let cookies = merge_kuaishou_extra_cookies(&self.platform, &self.cookies, &self.extra);
         Account {
             platform: self.platform.clone(),
             id: self.uid.clone(),
@@ -69,7 +65,8 @@ fn merge_kuaishou_extra_cookies(platform: &str, cookies: &str, extra: &str) -> S
         if name.is_empty() || value.is_empty() {
             continue;
         }
-        map.entry(name.to_string()).or_insert_with(|| value.to_string());
+        map.entry(name.to_string())
+            .or_insert_with(|| value.to_string());
     }
 
     if map.is_empty() {
@@ -194,11 +191,9 @@ impl Database {
             .iter()
             .max_by_key(|account| account_profile_score(account))
             .ok_or(DatabaseError::NotFound)?;
-            
+
         Ok(best.clone())
     }
-
-
 }
 
 fn account_profile_score(account: &AccountRow) -> usize {

@@ -430,9 +430,18 @@ pub async fn get_anchor_info(
 
     Ok(UserInfo {
         user_id: user_id.to_string(),
-        user_name: res["data"]["info"]["uname"].as_str().unwrap_or("").to_string(),
-        user_sign: res["data"]["info"]["sign"].as_str().unwrap_or("").to_string(),
-        user_avatar_url: res["data"]["info"]["face"].as_str().unwrap_or("").to_string(),
+        user_name: res["data"]["info"]["uname"]
+            .as_str()
+            .unwrap_or("")
+            .to_string(),
+        user_sign: res["data"]["info"]["sign"]
+            .as_str()
+            .unwrap_or("")
+            .to_string(),
+        user_avatar_url: res["data"]["info"]["face"]
+            .as_str()
+            .unwrap_or("")
+            .to_string(),
     })
 }
 
@@ -481,8 +490,10 @@ pub async fn get_stream_info(
 
     // Parse quality descriptions
     let empty_vec = vec![];
-    let quality_descriptions = res["data"]["playurl_info"]["playurl"]["g_qn_desc"].as_array().unwrap_or(&empty_vec);
-    
+    let quality_descriptions = res["data"]["playurl_info"]["playurl"]["g_qn_desc"]
+        .as_array()
+        .unwrap_or(&empty_vec);
+
     let streams = playurl_info["stream"].as_array().unwrap_or(&empty_vec);
 
     if streams.is_empty() {
@@ -555,7 +566,7 @@ pub async fn get_stream_info(
     let base_url = codec_info["base_url"].as_str().unwrap_or("").to_string();
     let master_url = format_info["master_url"].as_str().map(|s| s.to_string());
     let current_qn = codec_info["current_qn"].as_u64();
-    
+
     // Find resolution description
     let mut resolution = None;
     if let Some(qn) = current_qn {

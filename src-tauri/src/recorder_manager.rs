@@ -20,9 +20,9 @@ use recorder::platforms::bilibili::BiliRecorder;
 use recorder::platforms::douyin::DouyinRecorder;
 use recorder::platforms::huya::HuyaRecorder;
 use recorder::platforms::kuaishou::KuaishouRecorder;
-use recorder::platforms::xiaohongshu::XiaohongshuRecorder;
 use recorder::platforms::tiktok::TikTokRecorder;
 use recorder::platforms::weibo::WeiboRecorder;
+use recorder::platforms::xiaohongshu::XiaohongshuRecorder;
 use recorder::platforms::PlatformType;
 use recorder::traits::RecorderTrait;
 use recorder::RoomInfo;
@@ -282,10 +282,14 @@ impl RecorderManager {
                 .find(|e| e.platform == platform_str && !e.cookies.trim().is_empty())
             {
                 let accounts = self.db.get_accounts().await?;
-                if let Some(matched) = accounts.iter().find(|a| {
-                    a.platform == platform_str && a.cookies == entry.cookies
-                }) {
-                    log::info!("[Account] Using manual login account for platform: {}", platform_str);
+                if let Some(matched) = accounts
+                    .iter()
+                    .find(|a| a.platform == platform_str && a.cookies == entry.cookies)
+                {
+                    log::info!(
+                        "[Account] Using manual login account for platform: {}",
+                        platform_str
+                    );
                     return Ok(Some(matched.to_account()));
                 }
             }
@@ -299,9 +303,10 @@ impl RecorderManager {
                 .find(|e| e.platform == platform_str && !e.cookies.trim().is_empty())
             {
                 let accounts = self.db.get_accounts().await?;
-                if let Some(matched) = accounts.iter().find(|a| {
-                    a.platform == platform_str && a.cookies == entry.cookies
-                }) {
+                if let Some(matched) = accounts
+                    .iter()
+                    .find(|a| a.platform == platform_str && a.cookies == entry.cookies)
+                {
                     log::info!("[Account] No login account found, falling back to guest account for platform: {}", platform_str);
                     return Ok(Some(matched.to_account()));
                 }
@@ -397,7 +402,7 @@ impl RecorderManager {
                     {
                         log::error!("Failed to add record entry into db: {e}");
                     }
-                    
+
                     // Save resolution if available
                     if let Some(resolution) = &recorder.resolution {
                         if let Err(e) = self
@@ -408,7 +413,7 @@ impl RecorderManager {
                             log::warn!("Failed to save resolution to db: {e}");
                         }
                     }
-                    
+
                     let event =
                         events::new_webhook_event(events::RECORD_STARTED, Payload::Room(recorder));
                     let _ = self.webhook_poster.post_event(&event).await;
@@ -457,8 +462,7 @@ impl RecorderManager {
                             .state::<crate::state::State>()
                             .inner()
                             .clone();
-                        let refresh_reason =
-                            format!("{}: {}", platform.as_str(), reason);
+                        let refresh_reason = format!("{}: {}", platform.as_str(), reason);
                         let target_platform = platform;
                         tokio::spawn(async move {
                             match crate::handlers::account::refresh_guest_accounts_on_demand_owned(
@@ -484,10 +488,7 @@ impl RecorderManager {
                                     }
                                 }
                                 Err(err) => {
-                                    log::warn!(
-                                        "[Account] Guest cookie refresh failed: {}",
-                                        err
-                                    );
+                                    log::warn!("[Account] Guest cookie refresh failed: {}", err);
                                 }
                             }
                         });
@@ -565,7 +566,12 @@ impl RecorderManager {
                         .generate_whole_clip(
                             Some(&reporter),
                             self_clone.config.read().await.auto_generate.encode_danmu,
-                            self_clone.config.read().await.auto_generate.delete_cache_after_clip,
+                            self_clone
+                                .config
+                                .read()
+                                .await
+                                .auto_generate
+                                .delete_cache_after_clip,
                             platform.as_str().to_string(),
                             &room_id,
                             live_record.parent_id,
@@ -693,7 +699,10 @@ impl RecorderManager {
                     continue;
                 }
                 if account_required {
-                    self.missing_account_retry.write().await.remove(&recorder_id);
+                    self.missing_account_retry
+                        .write()
+                        .await
+                        .remove(&recorder_id);
                 }
                 let account = account.unwrap_or_default();
 
@@ -1203,8 +1212,12 @@ impl RecorderManager {
         let playlists = archives
             .iter()
             .map(async |record| {
-                let work_dir =
-                    CachePath::new(cache_path.to_path_buf(), *platform, room_id, &record.live_id);
+                let work_dir = CachePath::new(
+                    cache_path.to_path_buf(),
+                    *platform,
+                    room_id,
+                    &record.live_id,
+                );
 
                 RelatedPlaylist {
                     live_id: record.live_id.clone(),
@@ -1439,8 +1452,7 @@ impl RecorderManager {
             let recorder_info = recorder_ref.1.info().await;
             let key = format!(
                 "{}:{}",
-                recorder_info.room_info.platform,
-                recorder_info.room_info.room_id
+                recorder_info.room_info.platform, recorder_info.room_info.room_id
             );
             summary.recorders.push(recorder_info.clone());
             recorder_set.insert(key);
@@ -1482,8 +1494,7 @@ impl RecorderManager {
         for recorder in summary.recorders.iter_mut() {
             let key = format!(
                 "{}:{}",
-                recorder.room_info.platform,
-                recorder.room_info.room_id
+                recorder.room_info.platform, recorder.room_info.room_id
             );
             if let Some(db_row) = db_map.get(&key) {
                 if recorder.room_info.room_title.is_empty() {
@@ -1515,8 +1526,7 @@ impl RecorderManager {
                         }
                         "kuaishou" | "tiktok" => {
                             if !recorder.room_info.room_id.is_empty() {
-                                recorder.user_info.user_id =
-                                    recorder.room_info.room_id.clone();
+                                recorder.user_info.user_id = recorder.room_info.room_id.clone();
                             }
                         }
                         _ => {}
@@ -1545,8 +1555,7 @@ impl RecorderManager {
 
             let key = format!(
                 "{}:{}",
-                recorder.room_info.platform,
-                recorder.room_info.room_id
+                recorder.room_info.platform, recorder.room_info.room_id
             );
             if let Some(db_row) = db_map.get(&key) {
                 let mut changed = false;
@@ -1776,9 +1785,7 @@ impl RecorderManager {
         Ok(to_deletes)
     }
 
-    pub async fn delete_zero_size_archives(
-        &self,
-    ) -> Result<usize, RecorderManagerError> {
+    pub async fn delete_zero_size_archives(&self) -> Result<usize, RecorderManagerError> {
         let records = self.db.get_zero_size_records().await?;
         let mut deleted = 0usize;
         for record in records {
@@ -1885,7 +1892,10 @@ impl RecorderManager {
                 Err(RecorderManagerError::IoError(err))
                     if err.kind() == std::io::ErrorKind::NotFound =>
                 {
-                    if self.wait_for_playlist(platform, room_id, live_id, 2000).await {
+                    if self
+                        .wait_for_playlist(platform, room_id, live_id, 2000)
+                        .await
+                    {
                         self.load_playlist(platform, room_id, live_id).await?
                     } else {
                         return Err(RecorderManagerError::IoError(err));
@@ -2077,12 +2087,16 @@ impl RecorderManager {
                 if let Err(e) = self.db.remove_record(&live_id).await {
                     log::error!("[{room_id}][{live_id}] Failed to remove DB record: {}", e);
                 }
-                
+
                 // Remove physical files
                 let cache_path = self.config.read().await.cache.clone();
-                let work_dir = CachePath::new(PathBuf::from(cache_path), platform, room_id, &live_id);
+                let work_dir =
+                    CachePath::new(PathBuf::from(cache_path), platform, room_id, &live_id);
                 if let Err(e) = tokio::fs::remove_dir_all(work_dir.full_path()).await {
-                    log::error!("[{room_id}][{live_id}] Failed to remove archive cache dir: {}", e);
+                    log::error!(
+                        "[{room_id}][{live_id}] Failed to remove archive cache dir: {}",
+                        e
+                    );
                 } else {
                     log::info!("[{room_id}][{live_id}] Archive cache deleted successfully");
                 }

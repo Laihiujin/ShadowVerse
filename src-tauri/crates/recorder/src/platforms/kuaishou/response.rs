@@ -169,9 +169,19 @@ pub struct UserFollowLive {
 pub struct UserFollowUser {
     #[serde(default, alias = "principalId")]
     pub principal_id: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_opt_string", alias = "user_id", alias = "userId")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_opt_string",
+        alias = "user_id",
+        alias = "userId"
+    )]
     pub user_id: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_opt_string", alias = "user_name", alias = "userName")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_opt_string",
+        alias = "user_name",
+        alias = "userName"
+    )]
     pub user_name: Option<String>,
     #[serde(default, alias = "headurl", alias = "headUrl", alias = "avatar")]
     pub head_url: Option<String>,

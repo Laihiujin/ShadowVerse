@@ -34,7 +34,6 @@ impl crate::traits::StreamInfoProvider for XiaohongshuExtra {
     }
 }
 
-
 impl XiaohongshuRecorder {
     pub async fn new(
         room_id: &str,
@@ -218,14 +217,10 @@ impl XiaohongshuRecorder {
         self.is_recording.store(true, atomic::Ordering::Relaxed);
 
         // Xiaohongshu provides both FLV and M3U8, prefer M3U8
-        let hls_stream = construct_stream_from_variant(
-            live_id,
-            &stream_info.m3u8_url,
-            Format::TS,
-            Codec::Avc,
-        )
-        .await
-        .map_err(|_| RecorderError::NoStreamAvailable)?;
+        let hls_stream =
+            construct_stream_from_variant(live_id, &stream_info.m3u8_url, Format::TS, Codec::Avc)
+                .await
+                .map_err(|_| RecorderError::NoStreamAvailable)?;
 
         let hls_recorder = HlsRecorder::new(
             self.room_id.to_string(),
@@ -289,8 +284,7 @@ impl RecorderTrait<XiaohongshuExtra> for XiaohongshuRecorder {
                                         .extra
                                         .should_continue
                                         .store(true, Ordering::Relaxed);
-                                    self_clone
-                                        .log_info(&format!("Stream expired at {}", expire));
+                                    self_clone.log_info(&format!("Stream expired at {}", expire));
                                 }
                                 _ => {
                                     self_clone.log_error(&format!("Update entries error: {}", e));

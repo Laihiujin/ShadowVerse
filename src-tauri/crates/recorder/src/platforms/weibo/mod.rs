@@ -34,7 +34,6 @@ impl crate::traits::StreamInfoProvider for WeiboExtra {
     }
 }
 
-
 impl WeiboRecorder {
     pub async fn new(
         room_id: &str,
@@ -213,14 +212,10 @@ impl WeiboRecorder {
         self.is_recording.store(true, atomic::Ordering::Relaxed);
 
         // Prefer M3U8 stream
-        let hls_stream = construct_stream_from_variant(
-            live_id,
-            &stream_info.m3u8_url,
-            Format::TS,
-            Codec::Avc,
-        )
-        .await
-        .map_err(|_| RecorderError::NoStreamAvailable)?;
+        let hls_stream =
+            construct_stream_from_variant(live_id, &stream_info.m3u8_url, Format::TS, Codec::Avc)
+                .await
+                .map_err(|_| RecorderError::NoStreamAvailable)?;
 
         let hls_recorder = HlsRecorder::new(
             self.room_id.to_string(),
@@ -282,8 +277,7 @@ impl RecorderTrait<WeiboExtra> for WeiboRecorder {
                                         .extra
                                         .should_continue
                                         .store(true, Ordering::Relaxed);
-                                    self_clone
-                                        .log_info(&format!("Stream expired at {}", expire));
+                                    self_clone.log_info(&format!("Stream expired at {}", expire));
                                 }
                                 _ => {
                                     self_clone.log_error(&format!("Update entries error: {}", e));

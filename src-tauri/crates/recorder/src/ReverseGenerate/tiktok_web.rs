@@ -38,7 +38,9 @@ pub fn ensure_tiktok_web_defaults(path: &Path) -> Result<(), std::io::Error> {
         return Ok(());
     }
     let raw = fs::read_to_string(path)?;
-    let mut parsed: TomlValue = raw.parse().unwrap_or_else(|_| TomlValue::Table(Default::default()));
+    let mut parsed: TomlValue = raw
+        .parse()
+        .unwrap_or_else(|_| TomlValue::Table(Default::default()));
     let table = match table_mut(&mut parsed) {
         Some(table) => table,
         None => return Ok(()),
@@ -70,10 +72,10 @@ pub fn fetch_tiktok_overrides() -> Option<std::collections::HashMap<String, Stri
     if !path.exists() {
         return None;
     }
-    
+
     let raw = fs::read_to_string(path).ok()?;
     let parsed: TomlValue = raw.parse().ok()?;
-    
+
     let mut map = std::collections::HashMap::new();
     if let Some(table) = parsed.get("tiktok").and_then(|v| v.as_table()) {
         for (k, v) in table {
@@ -82,6 +84,10 @@ pub fn fetch_tiktok_overrides() -> Option<std::collections::HashMap<String, Stri
             }
         }
     }
-    
-    if map.is_empty() { None } else { Some(map) }
+
+    if map.is_empty() {
+        None
+    } else {
+        Some(map)
+    }
 }

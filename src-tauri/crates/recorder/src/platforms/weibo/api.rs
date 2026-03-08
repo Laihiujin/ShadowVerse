@@ -80,7 +80,10 @@ async fn get_room_id_from_uid(
             .parse()
             .unwrap(),
     );
-    headers.insert("Referer", format!("https://weibo.com/u/{}", uid).parse().unwrap());
+    headers.insert(
+        "Referer",
+        format!("https://weibo.com/u/{}", uid).parse().unwrap(),
+    );
 
     if !account.cookies.is_empty() {
         headers.insert("Cookie", account.cookies.parse().unwrap());
@@ -243,7 +246,10 @@ pub async fn get_stream_url(
 }
 
 /// Get user information from cookies
-pub async fn get_user_info(client: &Client, account: &Account) -> Result<crate::UserInfo, RecorderError> {
+pub async fn get_user_info(
+    client: &Client,
+    account: &Account,
+) -> Result<crate::UserInfo, RecorderError> {
     let mut headers = reqwest::header::HeaderMap::new();
     headers.insert("User-Agent", USER_AGENT.parse().unwrap());
     headers.insert(
@@ -289,7 +295,10 @@ pub async fn get_user_info(client: &Client, account: &Account) -> Result<crate::
     }
 
     let profile: ProfileResponse = response.json().await.map_err(|e| RecorderError::ApiError {
-        error: format!("Failed to parse profile response: {} - please check if cookies are valid", e),
+        error: format!(
+            "Failed to parse profile response: {} - please check if cookies are valid",
+            e
+        ),
     })?;
 
     let data = profile.data.ok_or(RecorderError::ApiError {
@@ -341,10 +350,9 @@ pub async fn get_qr(client: &Client) -> Result<QrInfo, RecorderError> {
         .to_string();
 
     // Extract image URL from JSONP response
-    let img_regex =
-        Regex::new(r#""image":"([^"]+)""#).map_err(|e| RecorderError::ApiError {
-            error: format!("Failed to create image regex: {}", e),
-        })?;
+    let img_regex = Regex::new(r#""image":"([^"]+)""#).map_err(|e| RecorderError::ApiError {
+        error: format!("Failed to create image regex: {}", e),
+    })?;
 
     let img_url = img_regex
         .captures(&text)
@@ -355,10 +363,7 @@ pub async fn get_qr(client: &Client) -> Result<QrInfo, RecorderError> {
         .as_str()
         .replace(r"\/", "/"); // Unescape forward slashes
 
-    Ok(QrInfo {
-        qrid,
-        url: img_url,
-    })
+    Ok(QrInfo { qrid, url: img_url })
 }
 
 /// Poll QR code status and get cookies after successful login
@@ -377,14 +382,17 @@ pub async fn get_qr_status(client: &Client, qrid: &str) -> Result<QrStatus, Reco
         qrid, timestamp
     );
 
-    let response = client.get(&check_url).headers(headers.clone()).send().await?;
+    let response = client
+        .get(&check_url)
+        .headers(headers.clone())
+        .send()
+        .await?;
     let text = response.text().await?;
 
     // Extract retcode from JSONP response
-    let retcode_regex =
-        Regex::new(r#""retcode":(\d+)"#).map_err(|e| RecorderError::ApiError {
-            error: format!("Failed to create retcode regex: {}", e),
-        })?;
+    let retcode_regex = Regex::new(r#""retcode":(\d+)"#).map_err(|e| RecorderError::ApiError {
+        error: format!("Failed to create retcode regex: {}", e),
+    })?;
 
     let retcode = retcode_regex
         .captures(&text)

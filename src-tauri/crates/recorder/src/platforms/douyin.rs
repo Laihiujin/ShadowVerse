@@ -60,12 +60,13 @@ impl DouyinRecorder {
         update_interval: Arc<atomic::AtomicU64>,
         enabled: bool,
     ) -> Result<Self, crate::errors::RecorderError> {
-        let client = reqwest::Client::builder()
-            .no_proxy()
-            .build()
-            .map_err(|e| RecorderError::ApiError {
-                error: e.to_string(),
-            })?;
+        let client =
+            reqwest::Client::builder()
+                .no_proxy()
+                .build()
+                .map_err(|e| RecorderError::ApiError {
+                    error: e.to_string(),
+                })?;
         Ok(Self {
             platform: PlatformType::Douyin,
             room_id: room_id.to_string(),
@@ -206,12 +207,12 @@ impl DouyinRecorder {
             }
             Err(e) => {
                 if self.account.is_guest() && is_guest_cookie_block_error(&e) {
-                    let _ = self.event_channel.send(
-                        RecorderEvent::GuestCookieRefreshRequested {
+                    let _ = self
+                        .event_channel
+                        .send(RecorderEvent::GuestCookieRefreshRequested {
                             platform: PlatformType::Douyin,
                             reason: format!("douyin guest cookie blocked: {}", e),
-                        },
-                    );
+                        });
                 }
                 log::warn!("[{}]Update room status failed: {}", &self.room_id, e);
                 pre_live_status

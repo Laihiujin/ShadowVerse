@@ -60,24 +60,11 @@ pub struct RoomInfo {
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Owner {
-    #[serde(
-        default,
-        alias = "userId",
-        alias = "user_id"
-    )]
+    #[serde(default, alias = "userId", alias = "user_id")]
     pub id: Option<String>,
-    #[serde(
-         default,
-         alias = "uniqueId",
-         alias = "unique_id"
-    )]
+    #[serde(default, alias = "uniqueId", alias = "unique_id")]
     pub unique_id: Option<String>,
-    #[serde(
-        default,
-        alias = "nickName",
-        alias = "userName",
-        alias = "user_name"
-    )]
+    #[serde(default, alias = "nickName", alias = "userName", alias = "user_name")]
     pub nickname: Option<String>,
     pub avatar_thumb: Option<Value>,
 }

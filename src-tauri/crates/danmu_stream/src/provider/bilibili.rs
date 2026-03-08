@@ -12,13 +12,13 @@ use futures_util::{SinkExt, StreamExt, TryStreamExt};
 use log::{error, info};
 use pct_str::{PctString, URIReserved};
 use regex::Regex;
-use url::Url;
 use serde::{Deserialize, Serialize};
 use tokio::{
     sync::{mpsc, RwLock},
     time::{sleep, Duration},
 };
 use tokio_tungstenite::{connect_async, tungstenite::Message};
+use url::Url;
 
 use crate::{
     http_client::ApiClient,
@@ -313,9 +313,7 @@ impl BiliDanmu {
         if let Some(user_id) = user_id {
             Ok(user_id)
         } else {
-            log::warn!(
-                "Bilibili cookie missing DedeUserID, fallback to anonymous uid=0"
-            );
+            log::warn!("Bilibili cookie missing DedeUserID, fallback to anonymous uid=0");
             Ok(0)
         }
     }

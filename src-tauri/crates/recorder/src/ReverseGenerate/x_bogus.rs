@@ -1,4 +1,4 @@
-﻿use md5;
+use md5;
 
 pub struct XBogus {
     user_agent: String,
@@ -105,9 +105,7 @@ impl XBogus {
     pub fn get_x_bogus(&self, url_path: &str) -> String {
         let params = url_path.replace("?", "");
         let md5 = self.md5_encrypt(&params);
-        let mut data = vec![
-            64, 0, 1, 10, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        ];
+        let mut data = vec![64, 0, 1, 10, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
         data.append(&mut md5.clone());
         data.append(&mut md5.clone());
         data.push(1);

@@ -65,10 +65,7 @@ impl DouyinDanmu {
                 tokio_tungstenite::tungstenite::http::header::USER_AGENT,
                 USER_AGENT,
             )
-            .header(
-                tokio_tungstenite::tungstenite::http::header::HOST,
-                host,
-            )
+            .header(tokio_tungstenite::tungstenite::http::header::HOST, host)
             .header(
                 tokio_tungstenite::tungstenite::http::header::UPGRADE,
                 "websocket",

@@ -18,16 +18,20 @@ use std::sync::{atomic, Arc};
 use std::time::Duration;
 use tokio::sync::{broadcast, Mutex, RwLock};
 
+use self::errors::is_guest_cookie_block_error;
 use crate::danmu::DanmuStorage;
 use crate::platforms::PlatformType;
-use self::errors::is_guest_cookie_block_error;
 
 pub type HuyaRecorder = Recorder<HuyaExtra>;
 
 #[async_trait]
 impl crate::traits::StreamInfoProvider for HuyaExtra {
     async fn get_resolution(&self) -> Option<String> {
-        self.live_stream.read().await.as_ref().and_then(|info| info.resolution.clone())
+        self.live_stream
+            .read()
+            .await
+            .as_ref()
+            .and_then(|info| info.resolution.clone())
     }
 }
 
@@ -125,12 +129,12 @@ impl HuyaRecorder {
             }
             Err(e) => {
                 if self.account.is_guest() && is_guest_cookie_block_error(&e) {
-                    let _ = self.event_channel.send(
-                        RecorderEvent::GuestCookieRefreshRequested {
+                    let _ = self
+                        .event_channel
+                        .send(RecorderEvent::GuestCookieRefreshRequested {
                             platform: PlatformType::Huya,
                             reason: format!("huya guest cookie blocked: {}", e),
-                        },
-                    );
+                        });
                 }
                 log::warn!("[{}]Update room status failed: {}", &self.room_id, e);
                 pre_live_status

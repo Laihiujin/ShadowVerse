@@ -121,9 +121,10 @@ impl RtmpRecorder {
                 }
             }
 
-            if let Some(status) = child.try_wait().map_err(|e| {
-                RecorderError::FfmpegError(format!("ffmpeg wait failed: {e}"))
-            })? {
+            if let Some(status) = child
+                .try_wait()
+                .map_err(|e| RecorderError::FfmpegError(format!("ffmpeg wait failed: {e}")))?
+            {
                 if !status.success() {
                     return Err(RecorderError::FfmpegError(format!(
                         "ffmpeg exited with status: {status}"

@@ -131,7 +131,9 @@ impl FlvRecorder {
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
 
-        let mut child = cmd.spawn().map_err(|e| RecorderError::FfmpegError(e.to_string()))?;
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| RecorderError::FfmpegError(e.to_string()))?;
         let mut processed_segments = 0usize;
 
         loop {
@@ -166,9 +168,10 @@ impl FlvRecorder {
                 }
             }
 
-            if let Some(status) = child.try_wait().map_err(|e| {
-                RecorderError::FfmpegError(format!("ffmpeg wait failed: {e}"))
-            })? {
+            if let Some(status) = child
+                .try_wait()
+                .map_err(|e| RecorderError::FfmpegError(format!("ffmpeg wait failed: {e}")))?
+            {
                 if !status.success() {
                     return Err(RecorderError::FfmpegError(format!(
                         "ffmpeg exited with status: {status}"

@@ -188,15 +188,12 @@ impl Database {
         Ok(())
     }
 
-    pub async fn get_distinct_record_rooms(
-        &self,
-    ) -> Result<Vec<(String, String)>, DatabaseError> {
+    pub async fn get_distinct_record_rooms(&self) -> Result<Vec<(String, String)>, DatabaseError> {
         let lock = self.db.read().await.clone().unwrap();
-        let rows = sqlx::query_as::<_, (String, String)>(
-            "SELECT DISTINCT platform, room_id FROM records",
-        )
-        .fetch_all(&lock)
-        .await?;
+        let rows =
+            sqlx::query_as::<_, (String, String)>("SELECT DISTINCT platform, room_id FROM records")
+                .fetch_all(&lock)
+                .await?;
         Ok(rows)
     }
 
@@ -281,11 +278,11 @@ impl Database {
 
     pub async fn get_zero_size_records(&self) -> Result<Vec<RecordRow>, DatabaseError> {
         let lock = self.db.read().await.clone().unwrap();
-        Ok(sqlx::query_as::<_, RecordRow>(
-            "SELECT * FROM records WHERE size = 0",
+        Ok(
+            sqlx::query_as::<_, RecordRow>("SELECT * FROM records WHERE size = 0")
+                .fetch_all(&lock)
+                .await?,
         )
-        .fetch_all(&lock)
-        .await?)
     }
 
     pub async fn get_records_below_size(
@@ -293,12 +290,12 @@ impl Database {
         max_size: i64,
     ) -> Result<Vec<RecordRow>, DatabaseError> {
         let lock = self.db.read().await.clone().unwrap();
-        Ok(sqlx::query_as::<_, RecordRow>(
-            "SELECT * FROM records WHERE size < $1",
+        Ok(
+            sqlx::query_as::<_, RecordRow>("SELECT * FROM records WHERE size < $1")
+                .bind(max_size)
+                .fetch_all(&lock)
+                .await?,
         )
-        .bind(max_size)
-        .fetch_all(&lock)
-        .await?)
     }
 
     pub async fn get_record_disk_usage(&self) -> Result<i64, DatabaseError> {

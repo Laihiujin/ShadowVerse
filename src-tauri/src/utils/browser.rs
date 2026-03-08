@@ -10,7 +10,9 @@ use std::{fs, io};
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::Security::Cryptography::{CryptUnprotectData, CRYPT_INTEGER_BLOB};
 #[cfg(target_os = "windows")]
-use windows_sys::Win32::Storage::FileSystem::{FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE};
+use windows_sys::Win32::Storage::FileSystem::{
+    FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+};
 
 #[cfg(target_os = "windows")]
 type DataBlob = CRYPT_INTEGER_BLOB;
@@ -36,9 +38,7 @@ impl BrowserCookieCollector {
         let local_app_data = std::env::var("LOCALAPPDATA").ok()?;
         let path = Path::new(&local_app_data).join("Google/Chrome/User Data");
         if path.exists() {
-            Some(Self {
-                profile_path: path,
-            })
+            Some(Self { profile_path: path })
         } else {
             None
         }
@@ -49,9 +49,7 @@ impl BrowserCookieCollector {
         let local_app_data = std::env::var("LOCALAPPDATA").ok()?;
         let path = Path::new(&local_app_data).join("Microsoft/Edge/User Data");
         if path.exists() {
-            Some(Self {
-                profile_path: path,
-            })
+            Some(Self { profile_path: path })
         } else {
             None
         }
@@ -63,19 +61,19 @@ impl BrowserCookieCollector {
         let local_state_path = self.profile_path.join("Local State");
         let content = fs::read_to_string(local_state_path)?;
         let json: Value = serde_json::from_str(&content)?;
-        
+
         let encrypted_key_b64 = json["os_crypt"]["encrypted_key"]
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("No encrypted_key found in Local State"))?;
-        
+
         let encrypted_key_raw = general_purpose::STANDARD.decode(encrypted_key_b64)?;
-        
+
         if encrypted_key_raw.len() < 5 || &encrypted_key_raw[0..5] != b"DPAPI" {
             return Err(anyhow::anyhow!("Invalid key prefix"));
         }
-        
+
         let encrypted_key = &encrypted_key_raw[5..];
-        
+
         unsafe {
             let mut input = DataBlob {
                 cbData: encrypted_key.len() as u32,
@@ -85,7 +83,7 @@ impl BrowserCookieCollector {
                 cbData: 0,
                 pbData: std::ptr::null_mut(),
             };
-            
+
             if CryptUnprotectData(
                 &mut input as *mut _,
                 std::ptr::null_mut(),
@@ -94,8 +92,10 @@ impl BrowserCookieCollector {
                 std::ptr::null_mut(),
                 0,
                 &mut output as *mut _,
-            ) != 0 {
-                let decrypted = std::slice::from_raw_parts(output.pbData, output.cbData as usize).to_vec();
+            ) != 0
+            {
+                let decrypted =
+                    std::slice::from_raw_parts(output.pbData, output.cbData as usize).to_vec();
                 // Note: We should ideally call LocalFree(output.pbData) here, but for now we prioritize correctness of decryption
                 Ok(decrypted)
             } else {
@@ -113,7 +113,7 @@ impl BrowserCookieCollector {
     pub fn get_cookies(&self, domain_filter: &str) -> anyhow::Result<Vec<BrowserCookie>> {
         let master_key = self.get_master_key()?;
         let mut cookies = Vec::new();
-        
+
         // Discover profiles dynamically to handle non-standard profile names.
         let mut profiles = Vec::new();
         if let Ok(entries) = fs::read_dir(&self.profile_path) {
@@ -137,7 +137,7 @@ impl BrowserCookieCollector {
                 "Profile 5".to_string(),
             ];
         }
-        
+
         for profile in profiles {
             let profile_dir = self.profile_path.join(&profile);
             let cookie_path = {
@@ -151,14 +151,19 @@ impl BrowserCookieCollector {
             if !cookie_path.exists() {
                 continue;
             }
-            
+
             // Copy file to avoid lock
-            let temp_db = std::env::temp_dir().join(format!("bsr_cookies_{}.db", profile.replace(' ', "_")));
+            let temp_db =
+                std::env::temp_dir().join(format!("bsr_cookies_{}.db", profile.replace(' ', "_")));
             if let Err(e) = copy_cookie_db(&cookie_path, &temp_db) {
-                log::warn!("Failed to copy cookie database for profile {}: {}", profile, e);
+                log::warn!(
+                    "Failed to copy cookie database for profile {}: {}",
+                    profile,
+                    e
+                );
                 continue;
             }
-            
+
             match rusqlite::Connection::open(&temp_db) {
                 Ok(conn) => {
                     let mut stmt = conn.prepare("SELECT host_key, name, encrypted_value, value, path, expires_utc FROM cookies WHERE host_key LIKE ?")?;
@@ -172,7 +177,7 @@ impl BrowserCookieCollector {
                             row.get::<_, i64>(5)?,
                         ))
                     })?;
-                    
+
                     for row in rows {
                         if let Ok((host, name, encrypted_value, value_plain, path, expires)) = row {
                             let mut value = if !encrypted_value.is_empty() {
@@ -196,13 +201,17 @@ impl BrowserCookieCollector {
                     }
                 }
                 Err(e) => {
-                    log::warn!("Failed to open cookie database for profile {}: {}", profile, e);
+                    log::warn!(
+                        "Failed to open cookie database for profile {}: {}",
+                        profile,
+                        e
+                    );
                 }
             }
-            
+
             let _ = fs::remove_file(temp_db);
         }
-        
+
         Ok(cookies)
     }
 
@@ -224,14 +233,17 @@ impl BrowserCookieCollector {
         }
 
         // Chromium v80+ use "v10" or "v11" prefix
-        if encrypted_value.len() > 15 && (&encrypted_value[0..3] == b"v10" || &encrypted_value[0..3] == b"v11") {
+        if encrypted_value.len() > 15
+            && (&encrypted_value[0..3] == b"v10" || &encrypted_value[0..3] == b"v11")
+        {
             let nonce = &encrypted_value[3..15];
             let ciphertext = &encrypted_value[15..];
-            
+
             let cipher = Aes256Gcm::new_from_slice(master_key)?;
-            let decrypted = cipher.decrypt(aes_gcm::Nonce::from_slice(nonce), ciphertext)
+            let decrypted = cipher
+                .decrypt(aes_gcm::Nonce::from_slice(nonce), ciphertext)
                 .map_err(|e| anyhow::anyhow!("AES decryption failed: {}", e))?;
-            
+
             Ok(String::from_utf8(decrypted)?)
         } else {
             // Older versions or different format (Direct DPAPI)
@@ -246,7 +258,7 @@ impl BrowserCookieCollector {
                         cbData: 0,
                         pbData: std::ptr::null_mut(),
                     };
-                    
+
                     if CryptUnprotectData(
                         &mut input as *mut _,
                         std::ptr::null_mut(),
@@ -255,8 +267,11 @@ impl BrowserCookieCollector {
                         std::ptr::null_mut(),
                         0,
                         &mut output as *mut _,
-                    ) != 0 {
-                        let decrypted = std::slice::from_raw_parts(output.pbData, output.cbData as usize).to_vec();
+                    ) != 0
+                    {
+                        let decrypted =
+                            std::slice::from_raw_parts(output.pbData, output.cbData as usize)
+                                .to_vec();
                         Ok(String::from_utf8(decrypted)?)
                     } else {
                         Err(anyhow::anyhow!("DPAPI decryption failed"))
@@ -265,7 +280,9 @@ impl BrowserCookieCollector {
             }
             #[cfg(not(target_os = "windows"))]
             {
-                Err(anyhow::anyhow!("Legacy decryption only supported on Windows"))
+                Err(anyhow::anyhow!(
+                    "Legacy decryption only supported on Windows"
+                ))
             }
         }
     }

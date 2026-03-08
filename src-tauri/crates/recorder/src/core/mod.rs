@@ -1,8 +1,8 @@
 use std::fmt;
-pub mod hls_recorder;
 pub mod flv_recorder;
-pub mod rtmp_recorder;
+pub mod hls_recorder;
 pub mod playlist;
+pub mod rtmp_recorder;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Format {
@@ -148,10 +148,7 @@ impl HlsStream {
         let rest = &seg_path[marker_index + marker.len()..];
 
         let base_path = self.base.split('?').next().unwrap_or(&self.base);
-        let base_dir = base_path
-            .rsplit_once('/')
-            .map(|(dir, _)| dir)
-            .unwrap_or("");
+        let base_dir = base_path.rsplit_once('/').map(|(dir, _)| dir).unwrap_or("");
         let mut url = if base_dir.is_empty() {
             format!("https://{host}/")
         } else if base_dir.ends_with('/') {
