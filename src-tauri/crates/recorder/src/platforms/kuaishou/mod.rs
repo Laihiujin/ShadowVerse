@@ -17,8 +17,11 @@ use chrono::Utc;
 use danmu_stream::danmu_stream::DanmuStream;
 use danmu_stream::provider::ProviderType;
 use reqwest::StatusCode;
+use regex::Regex;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, Ordering};
 use std::sync::{atomic, Arc};
 use std::time::Duration;
 use tokio::sync::{broadcast, Mutex, RwLock};
@@ -62,6 +65,8 @@ pub struct KuaishouExtra {
     pre_live_id: Arc<RwLock<Option<String>>>,
     should_continue: Arc<AtomicBool>,
     last_error_ts: Arc<AtomicI64>,
+    rate_limit_until_ts: Arc<AtomicI64>,
+    rate_limit_streak: Arc<AtomicU32>,
     resolution: Arc<RwLock<Option<String>>>,
 }
 
@@ -93,6 +98,8 @@ impl KuaishouRecorder {
             pre_live_id: Arc::new(RwLock::new(None)),
             should_continue: Arc::new(AtomicBool::new(false)),
             last_error_ts: Arc::new(AtomicI64::new(0)),
+            rate_limit_until_ts: Arc::new(AtomicI64::new(0)),
+            rate_limit_streak: Arc::new(AtomicU32::new(0)),
             resolution: Arc::new(RwLock::new(None)),
         };
 
@@ -130,6 +137,104 @@ impl KuaishouRecorder {
 
     fn log_error(&self, message: &str) {
         log::error!("[Kuaishou][{}]{}", self.room_id, message);
+    }
+
+    fn room_lookup_input(room_id: &str) -> String {
+        let trimmed = room_id.trim();
+        if trimmed.is_empty() {
+            return String::new();
+        }
+        if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+            return trimmed.to_string();
+        }
+        if let Some((prefix, suffix)) = trimmed.split_once('#') {
+            if prefix.trim().eq_ignore_ascii_case("kuaishou") {
+                let principal_id = suffix.trim();
+                if !principal_id.is_empty() {
+                    return principal_id.to_string();
+                }
+            }
+        }
+        trimmed.trim_start_matches('@').to_string()
+    }
+
+    fn get_cookie_value_ci(cookies: &str, key: &str) -> Option<String> {
+        let target = key.to_ascii_lowercase();
+        for part in cookies.split(';').map(str::trim) {
+            if let Some((k, v)) = part.split_once('=') {
+                if k.trim().to_ascii_lowercase() == target {
+                    let value = v.trim();
+                    if !value.is_empty() {
+                        return Some(value.to_string());
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    fn append_cookie_pair(mut cookie: String, key: &str, value: &str) -> String {
+        let value = value.trim();
+        if value.is_empty() {
+            return cookie;
+        }
+        if !cookie.is_empty() {
+            cookie.push_str("; ");
+        }
+        cookie.push_str(key);
+        cookie.push('=');
+        cookie.push_str(value);
+        cookie
+    }
+
+    fn infer_live_stream_id_from_stream_url(stream_url: &str) -> Option<String> {
+        if let Ok(url) = Url::parse(stream_url) {
+            for (k, v) in url.query_pairs() {
+                let key = k.to_ascii_lowercase();
+                if key == "livestreamid" || key == "live_stream_id" {
+                    let value = v.trim();
+                    if !value.is_empty() {
+                        return Some(value.to_string());
+                    }
+                }
+            }
+
+            if let Some(last) = url.path_segments().and_then(|mut seg| seg.next_back()) {
+                let stem = last.split('.').next().unwrap_or(last);
+                if let Some((id, _)) = stem.split_once("_Game") {
+                    let id = id.trim();
+                    if !id.is_empty() {
+                        return Some(id.to_string());
+                    }
+                }
+            }
+        }
+
+        let patterns = [
+            r"(?i)(?:liveStreamId|live_stream_id)=([^&?#]+)",
+            r"/([A-Za-z0-9_-]{8,})_Game[A-Za-z0-9_-]*",
+        ];
+        for pattern in patterns {
+            if let Ok(re) = Regex::new(pattern) {
+                if let Some(captures) = re.captures(stream_url) {
+                    if let Some(m) = captures.get(1) {
+                        let value = m.as_str().trim();
+                        if !value.is_empty() {
+                            return Some(value.to_string());
+                        }
+                    }
+                }
+            }
+        }
+
+        None
+    }
+
+    fn is_nonfatal_danmu_error(err_text: &str) -> bool {
+        let lower = err_text.to_ascii_lowercase();
+        lower.contains("livestreamid missing")
+            || lower.contains("room is not live")
+            || lower.contains("room not live")
     }
 
     fn build_stream_headers(is_mobile_stream: bool, cookies: &str) -> reqwest::header::HeaderMap {
@@ -263,6 +368,79 @@ impl KuaishouRecorder {
         KuaishouProtocol::Hls
     }
 
+    fn startup_stagger_max_secs() -> u64 {
+        std::env::var("BSR_KUAISHOU_STARTUP_STAGGER_SECS")
+            .ok()
+            .and_then(|v| v.trim().parse::<u64>().ok())
+            .unwrap_or(8)
+    }
+
+    fn startup_stagger_secs(&self) -> u64 {
+        let max = Self::startup_stagger_max_secs();
+        if max == 0 {
+            return 0;
+        }
+        let mut hasher = DefaultHasher::new();
+        self.room_id.hash(&mut hasher);
+        hasher.finish() % (max + 1)
+    }
+
+    fn read_env_u64(key: &str, default: u64) -> u64 {
+        std::env::var(key)
+            .ok()
+            .and_then(|v| v.trim().parse::<u64>().ok())
+            .unwrap_or(default)
+    }
+
+    fn rate_limit_base_backoff_secs() -> u64 {
+        Self::read_env_u64("BSR_KUAISHOU_RATE_LIMIT_BASE_BACKOFF_SECS", 30)
+    }
+
+    fn rate_limit_max_backoff_secs() -> u64 {
+        Self::read_env_u64("BSR_KUAISHOU_RATE_LIMIT_MAX_BACKOFF_SECS", 300)
+    }
+
+    fn apply_rate_limit_backoff(&self) {
+        let streak = self
+            .extra
+            .rate_limit_streak
+            .fetch_add(1, atomic::Ordering::Relaxed)
+            .saturating_add(1);
+        let exp = streak.saturating_sub(1).min(6);
+        let base = Self::rate_limit_base_backoff_secs();
+        let max_backoff = Self::rate_limit_max_backoff_secs();
+        let mut backoff = base.saturating_mul(1_u64 << exp);
+        if max_backoff > 0 {
+            backoff = backoff.min(max_backoff);
+        }
+        let jitter = rand::random::<u64>() % 11;
+        let until = Utc::now()
+            .timestamp()
+            .saturating_add((backoff + jitter) as i64);
+        self.extra
+            .rate_limit_until_ts
+            .store(until, atomic::Ordering::Relaxed);
+        self.extra
+            .last_error_ts
+            .store(Utc::now().timestamp(), atomic::Ordering::Relaxed);
+        self.log_info(&format!(
+            "Rate limited: streak={}, backoff={}s(+{}s), next retry at {}",
+            streak,
+            backoff,
+            jitter,
+            until
+        ));
+    }
+
+    fn clear_rate_limit_backoff(&self) {
+        self.extra
+            .rate_limit_streak
+            .store(0, atomic::Ordering::Relaxed);
+        self.extra
+            .rate_limit_until_ts
+            .store(0, atomic::Ordering::Relaxed);
+    }
+
     fn select_stream_url(streams: &[api::StreamInfo], prefer: KuaishouProtocol) -> Option<String> {
         let mut selected = streams
             .iter()
@@ -315,17 +493,14 @@ impl KuaishouRecorder {
     async fn check_status(&self) -> bool {
         let pre_live_status = self.room_info.read().await.status;
 
-        // Construct full URL from room_id
-        let url = if self.room_id.starts_with("http") {
-            self.room_id.clone()
-        } else {
-            format!("https://live.kuaishou.com/u/{}", self.room_id)
-        };
+        // Keep original principal identifier (supports KUAISHOU#xxxx format).
+        let url = Self::room_lookup_input(&self.room_id);
 
         let account = self.account.clone();
 
         match api::get_room_info(&self.client, &account, &url).await {
             Ok(room_info) => {
+                self.clear_rate_limit_backoff();
                 let prev_room = self.room_info.read().await.clone();
                 let prev_user = self.user_info.read().await.clone();
                 let final_title = if room_info.room_title.is_empty() {
@@ -403,12 +578,12 @@ impl KuaishouRecorder {
 
                 let mut streams = room_info.streams.clone();
                 if streams.is_empty() {
-                    self.log_info("Room info has no stream list, fallback to stream API");
+                    self.log_info("Room info has no stream list, retry stream list via livedetail");
                     match api::get_stream_urls(&self.client, &self.account, &url).await {
                         Ok(fetched) => streams = fetched,
                         Err(e) => {
                             self.log_error(&format!("Fetch stream failed: {}", e));
-                            return true;
+                            return false;
                         }
                     }
                 }
@@ -451,10 +626,12 @@ impl KuaishouRecorder {
                         });
                 }
                 if api::is_rate_limited_error(&e) {
-                    self.log_info("Rate limited, backing off");
-                    self.extra
-                        .last_error_ts
-                        .store(Utc::now().timestamp(), atomic::Ordering::Relaxed);
+                    self.apply_rate_limit_backoff();
+                    return false;
+                }
+                if api::is_captcha_error(&e) {
+                    self.log_info("Captcha required, pause polling and wait manual verification");
+                    self.apply_rate_limit_backoff();
                     return false;
                 }
                 if api::is_room_disabled_error(&e) {
@@ -473,19 +650,9 @@ impl KuaishouRecorder {
         }
     }
 
-    async fn danmu(&self) -> Result<(), RecorderError> {
-        let mut cookies = api::normalize_record_cookie(&self.account.cookies);
-
-        let live_id = self.live_id.read().await.clone();
-        if !live_id.is_empty() && !cookies.contains("liveStreamId=") {
-            if !cookies.is_empty() {
-                cookies.push_str("; ");
-            }
-            cookies.push_str(&format!("liveStreamId={live_id}"));
-        }
+    async fn danmu(&self, cookies: String) -> Result<(), RecorderError> {
         self.log_info(&format!(
-            "Danmu cookie prepared: live_id={}, has_liveStreamId={}",
-            live_id,
+            "Danmu cookie prepared: has_liveStreamId={}",
             cookies.contains("liveStreamId=")
         ));
 
@@ -495,7 +662,12 @@ impl KuaishouRecorder {
         let danmu_stream = match danmu_stream_res {
             Ok(stream) => stream,
             Err(err) => {
-                self.log_error(&format!("Failed to create danmu stream: {err}"));
+                let err_text = err.to_string();
+                if Self::is_nonfatal_danmu_error(&err_text) {
+                    self.log_info(&format!("Skip danmu init: {err_text}"));
+                    return Ok(());
+                }
+                self.log_error(&format!("Failed to create danmu stream: {err_text}"));
                 return Err(RecorderError::DanmuStreamError(err));
             }
         };
@@ -511,7 +683,12 @@ impl KuaishouRecorder {
                             return Ok(());
                         }
                         Err(err) => {
-                            self.log_error(&format!("Danmu stream start error: {err}"));
+                            let err_text = err.to_string();
+                            if Self::is_nonfatal_danmu_error(&err_text) {
+                                self.log_info(&format!("Skip danmu start: {err_text}"));
+                                return Ok(());
+                            }
+                            self.log_error(&format!("Danmu stream start error: {err_text}"));
                             return Err(RecorderError::DanmuStreamError(err));
                         }
                     }
@@ -574,6 +751,26 @@ impl KuaishouRecorder {
         let cover_path = work_dir.with_filename("cover.jpg");
         let _ = api::download_file(&self.client, &cover_url, &cover_path.full_path()).await;
 
+        let is_mobile_stream =
+            stream_url.contains("auth_key=") || stream_url.contains("pull.yximgs.com");
+        // Try to find the exact cookie used for this stream
+        let selected_stream = stream_list.iter().find(|s| s.url == stream_url);
+        let stream_cookie = selected_stream.and_then(|s| s.cookie.clone());
+
+        let cookies =
+            api::normalize_record_cookie(stream_cookie.as_deref().unwrap_or(&self.account.cookies));
+
+        let mut danmu_cookie = cookies.clone();
+        let has_live_stream_id = Self::get_cookie_value_ci(&danmu_cookie, "liveStreamId").is_some();
+        if !has_live_stream_id {
+            if let Some(live_stream_id) = Self::infer_live_stream_id_from_stream_url(&stream_url) {
+                danmu_cookie = Self::append_cookie_pair(danmu_cookie, "liveStreamId", &live_stream_id);
+                self.log_info(&format!("Inject liveStreamId into danmu cookie: {}", live_stream_id));
+            } else {
+                self.log_info("No liveStreamId inferred from stream URL for danmu");
+            }
+        }
+
         let danmu_path = work_dir.with_filename("danmu.txt");
         *self.danmu_storage.write().await = DanmuStorage::new(&danmu_path.full_path()).await;
 
@@ -582,7 +779,7 @@ impl KuaishouRecorder {
         let self_clone = self.clone();
         self.log_info(&format!("Start fetching danmu for live {live_id}"));
         *self.danmu_task.lock().await = Some(tokio::spawn(async move {
-            let _ = self_clone.danmu().await;
+            let _ = self_clone.danmu(danmu_cookie).await;
         }));
 
         // Send record start event
@@ -592,14 +789,6 @@ impl KuaishouRecorder {
 
         self.is_recording.store(true, atomic::Ordering::Relaxed);
 
-        let is_mobile_stream =
-            stream_url.contains("auth_key=") || stream_url.contains("pull.yximgs.com");
-        // Try to find the exact cookie used for this stream
-        let selected_stream = stream_list.iter().find(|s| s.url == stream_url);
-        let stream_cookie = selected_stream.and_then(|s| s.cookie.clone());
-
-        let cookies =
-            api::normalize_record_cookie(stream_cookie.as_deref().unwrap_or(&self.account.cookies));
         let web_headers = Self::build_stream_headers(false, &cookies);
         let h5_headers = Self::build_stream_headers(true, &cookies);
         let mut headers = if is_mobile_stream {
@@ -775,7 +964,25 @@ impl RecorderTrait<KuaishouExtra> for KuaishouRecorder {
         let self_clone = self.clone();
         *self.record_task.lock().await = Some(tokio::spawn(async move {
             self_clone.log_info("Start running recorder");
+            let startup_stagger = self_clone.startup_stagger_secs();
+            if startup_stagger > 0 {
+                self_clone.log_info(&format!(
+                    "Apply startup stagger {}s to avoid multi-room burst",
+                    startup_stagger
+                ));
+                tokio::time::sleep(Duration::from_secs(startup_stagger)).await;
+            }
             while !self_clone.quit.load(atomic::Ordering::Relaxed) {
+                let now = Utc::now().timestamp();
+                let rate_limit_until = self_clone
+                    .extra
+                    .rate_limit_until_ts
+                    .load(atomic::Ordering::Relaxed);
+                if rate_limit_until > now {
+                    let wait_secs = (rate_limit_until - now) as u64;
+                    tokio::time::sleep(Duration::from_secs(wait_secs)).await;
+                    continue;
+                }
                 if self_clone.check_status().await {
                     // Live status is ok, start recording
                     if self_clone.should_record().await {

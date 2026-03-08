@@ -140,6 +140,24 @@ jobs:
             echo "Created: ShadowVerse_${VERSION}_universal.dmg"
           fi
 
+      - name: Notarize and staple DMGs (if Apple notarization secrets are available)
+        run: |
+          if [ -z "${APPLE_ID}" ] || [ -z "${APPLE_PASSWORD}" ] || [ -z "${APPLE_TEAM_ID}" ]; then
+            echo "Skipping notarization: APPLE_ID/APPLE_PASSWORD/APPLE_TEAM_ID not fully configured."
+            exit 0
+          fi
+
+          for DMG in \
+            src-tauri/target/aarch64-apple-darwin/release/bundle/macos/ShadowVerse_${{ steps.version.outputs.version }}_aarch64.dmg \
+            src-tauri/target/x86_64-apple-darwin/release/bundle/macos/ShadowVerse_${{ steps.version.outputs.version }}_x86_64.dmg \
+            src-tauri/target/universal-apple-darwin/release/bundle/macos/ShadowVerse_${{ steps.version.outputs.version }}_universal.dmg; do
+            if [ -f "$DMG" ]; then
+              xcrun notarytool submit "$DMG" --apple-id "${APPLE_ID}" --password "${APPLE_PASSWORD}" --team-id "${APPLE_TEAM_ID}" --wait
+              xcrun stapler staple "$DMG"
+              xcrun stapler validate "$DMG"
+            fi
+          done
+
       - name: Validate app signatures and DMG integrity
         run: |
           for APP in \

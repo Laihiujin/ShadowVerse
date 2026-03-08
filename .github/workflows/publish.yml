@@ -20,30 +20,40 @@ jobs:
             args: "--target aarch64-apple-darwin"
             rust-target: aarch64-apple-darwin
             label: macos-arm64
+            tauri-config: ""
+            include-updater-json: true
 
           # macOS x86_64 (Intel)
           - platform: macos-13
             args: "--target x86_64-apple-darwin"
             rust-target: x86_64-apple-darwin
             label: macos-x64
+            tauri-config: ""
+            include-updater-json: true
 
           # Ubuntu
           - platform: ubuntu-22.04
             args: ""
             rust-target: ""
             label: linux-x64
+            tauri-config: ""
+            include-updater-json: true
 
           # Windows CPU-only
           - platform: windows-latest
             args: "--features gui"
             rust-target: ""
             label: windows-cpu
+            tauri-config: "--config src-tauri/tauri.windows.cpu.conf.json"
+            include-updater-json: true
 
           # Windows CUDA
           - platform: windows-latest
             args: "--features gui,cuda"
             rust-target: ""
             label: windows-cuda
+            tauri-config: "--config src-tauri/tauri.windows.cuda.conf.json"
+            include-updater-json: false
 
     runs-on: ${{ matrix.platform }}
     name: Publish (${{ matrix.label }})
@@ -128,19 +138,6 @@ jobs:
           method: network
           sub-packages: '["nvcc", "cudart"]'
 
-      # ---------- Rename Product Name (Windows) ----------
-      - name: Rename productName for Windows CPU
-        if: matrix.platform == 'windows-latest' && !contains(matrix.args, 'cuda')
-        shell: powershell
-        run: |
-          (Get-Content src-tauri\tauri.conf.json) -replace '"productName": "ShadowVerse"', '"productName": "ShadowVerse-CPU"' | Set-Content src-tauri\tauri.conf.json
-          
-      - name: Rename productName for Windows CUDA
-        if: matrix.platform == 'windows-latest' && contains(matrix.args, 'cuda')
-        shell: powershell
-        run: |
-          (Get-Content src-tauri\tauri.conf.json) -replace '"productName": "ShadowVerse"', '"productName": "ShadowVerse-CUDA"' | Set-Content src-tauri\tauri.conf.json
-
       # ---------- 构建 & 发布 ----------
       - name: Build and publish Tauri app
         uses: tauri-apps/tauri-action@v0
@@ -163,4 +160,5 @@ jobs:
             See the [CHANGELOG](https://github.com/${{ github.repository }}/releases) for more details.
           releaseDraft: true
           prerelease: false
-          args: ${{ matrix.args }}
+          includeUpdaterJson: ${{ matrix.include-updater-json }}
+          args: ${{ matrix.args }} ${{ matrix.tauri-config }}

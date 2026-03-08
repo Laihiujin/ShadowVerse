@@ -2,7 +2,6 @@
   import { invoke, open, onOpenUrl, get_static_url, get } from "../lib/invoker";
   import { message } from "@tauri-apps/plugin-dialog";
   import { fade, scale } from "svelte/transition";
-  import { Dropdown, DropdownItem } from "flowbite-svelte";
   import type { RecorderList, RecorderInfo } from "../lib/interface";
   import type { RecordItem } from "../lib/db";
   import {
@@ -24,7 +23,7 @@
   import TikTokIcon from "../lib/components/TikTokIcon.svelte";
   import AutoRecordIcon from "../lib/components/AutoRecordIcon.svelte";
   import GenerateWholeClipModal from "../lib/components/GenerateWholeClipModal.svelte";
-  import { onMount } from "svelte";
+  import { onMount, onDestroy } from "svelte";
 
   export let room_count = 0;
   let room_active = 0;
@@ -47,29 +46,77 @@
   let isUpdating = false;
   let multiSelect = false;
   let selectedRoomKeys: string[] = [];
+  $: selectedRoomKeySet = new Set(selectedRoomKeys);
   $: selectedRoomCount = selectedRoomKeys.length;
+  let activeRoomMenuKey: string | null = null;
+  let roomMenuPosition = { x: 0, y: 0 };
   const cardElements: Map<string, HTMLElement> = new Map();
   let gridRef: HTMLDivElement;
   let dragSelecting = false;
   let dragStart = { x: 0, y: 0 };
   let dragRect: { left: number; top: number; width: number; height: number } | null =
     null;
+  let dragMoveRaf = 0;
+  let summaryTimer: ReturnType<typeof setInterval> | null = null;
 
   function roomKey(room: RecorderInfo) {
     return `${room.room_info.platform}:${room.room_info.room_id}`;
   }
 
+  function menuButtonId(room: RecorderInfo) {
+    return `menu-${encodeURIComponent(roomKey(room)).replace(/%/g, "_")}`;
+  }
+
   function isRoomSelected(room: RecorderInfo) {
-    return selectedRoomKeys.includes(roomKey(room));
+    return selectedRoomKeySet.has(roomKey(room));
+  }
+
+  function isRoomMenuOpen(room: RecorderInfo) {
+    return activeRoomMenuKey === roomKey(room);
+  }
+
+  function toggleRoomMenu(room: RecorderInfo, event?: Event) {
+    const key = roomKey(room);
+    const willOpen = activeRoomMenuKey !== key;
+    activeRoomMenuKey = willOpen ? key : null;
+    if (!willOpen || !event) return;
+    const target = event.currentTarget as HTMLElement | null;
+    if (!target) return;
+    const rect = target.getBoundingClientRect();
+    const menuWidth = 176;
+    const menuHeight = 220;
+    const margin = 8;
+    const left = Math.min(
+      Math.max(margin, rect.right - menuWidth),
+      window.innerWidth - menuWidth - margin
+    );
+    const top = Math.min(
+      Math.max(margin, rect.bottom + 6),
+      window.innerHeight - menuHeight - margin
+    );
+    roomMenuPosition = { x: left, y: top };
+  }
+
+  function closeRoomMenu() {
+    activeRoomMenuKey = null;
+  }
+
+  function handleRoomMenuPointerDownOutside(event: PointerEvent) {
+    if (activeRoomMenuKey === null) return;
+    const target = event.target as Element | null;
+    if (!target) return;
+    if (target.closest(".room-menu-container")) return;
+    closeRoomMenu();
   }
 
   function toggleRoomSelection(room: RecorderInfo) {
     const key = roomKey(room);
-    if (selectedRoomKeys.includes(key)) {
-      selectedRoomKeys = selectedRoomKeys.filter((item) => item !== key);
+    if (selectedRoomKeySet.has(key)) {
+      selectedRoomKeySet.delete(key);
     } else {
-      selectedRoomKeys = [...selectedRoomKeys, key];
+      selectedRoomKeySet.add(key);
     }
+    selectedRoomKeys = Array.from(selectedRoomKeySet);
   }
 
   function clearRoomSelection() {
@@ -84,7 +131,7 @@
     const selected = new Map<string, RecorderInfo>();
     for (const room of summary.recorders) {
       const key = roomKey(room);
-      if (selectedRoomKeys.includes(key)) {
+      if (selectedRoomKeySet.has(key)) {
         selected.set(key, room);
       }
     }
@@ -111,7 +158,7 @@
   function shouldIgnoreSelectionTarget(target: HTMLElement) {
     if (!target) return false;
     return !!target.closest(
-      "button, a, input, textarea, select, svg, path, .dropdown, .flowbite-dropdown"
+      "button, a, input, textarea, select, svg, path, .dropdown, .flowbite-dropdown, [data-ignore-selection]"
     );
   }
 
@@ -124,23 +171,40 @@
 
   function handleGridMouseDown(event: MouseEvent) {
     if (!multiSelect) return;
+    if (event.button !== 0) return;
     const target = event.target as HTMLElement;
     if (shouldIgnoreSelectionTarget(target)) return;
     dragSelecting = true;
     dragStart = { x: event.clientX, y: event.clientY };
     dragRect = { left: event.clientX, top: event.clientY, width: 0, height: 0 };
+    event.preventDefault();
+  }
+
+  function updateDragRect(x: number, y: number) {
+    const left = Math.min(dragStart.x, x);
+    const top = Math.min(dragStart.y, y);
+    const width = Math.abs(x - dragStart.x);
+    const height = Math.abs(y - dragStart.y);
+    dragRect = { left, top, width, height };
   }
 
   function handleDragMove(event: MouseEvent) {
     if (!dragSelecting) return;
-    const left = Math.min(dragStart.x, event.clientX);
-    const top = Math.min(dragStart.y, event.clientY);
-    const width = Math.abs(event.clientX - dragStart.x);
-    const height = Math.abs(event.clientY - dragStart.y);
-    dragRect = { left, top, width, height };
+    const x = event.clientX;
+    const y = event.clientY;
+    if (dragMoveRaf) return;
+    dragMoveRaf = requestAnimationFrame(() => {
+      dragMoveRaf = 0;
+      if (!dragSelecting) return;
+      updateDragRect(x, y);
+    });
   }
 
   function handleDragEnd() {
+    if (dragMoveRaf) {
+      cancelAnimationFrame(dragMoveRaf);
+      dragMoveRaf = 0;
+    }
     if (!dragSelecting) return;
     dragSelecting = false;
     if (!dragRect || (dragRect.width < 4 && dragRect.height < 4)) {
@@ -206,7 +270,6 @@
     if (avatar_cache.has(cache_key)) {
       return avatar_cache.get(cache_key);
     }
-    console.log("get avatar url:", url);
     const response = await get(url);
     const blob = await response.blob();
     const avatar_url = URL.createObjectURL(blob);
@@ -235,7 +298,6 @@
     if (image_cache.has(cache_key)) {
       return image_cache.get(cache_key);
     }
-    console.log("get image url:", url);
     const response = await get(url);
     const blob = await response.blob();
     const cover_url = URL.createObjectURL(blob);
@@ -243,56 +305,81 @@
     return cover_url;
   }
 
-  async function update_summary() {
+  async function update_summary(force = false) {
     if (isUpdating) return;
+    if (!force && (dragSelecting || activeRoomMenuKey !== null)) return;
     isUpdating = true;
     try {
       let new_summary = (await invoke("get_recorder_list")) as RecorderList;
-    room_count = new_summary.count;
-    room_active = new_summary.recorders.filter(
-      (room) => room.room_info.status
-    ).length;
-    room_inactive = new_summary.recorders.filter(
-      (room) => !room.room_info.status
-    ).length;
+      room_count = new_summary.count;
 
-    // sort new_summary.recorders by live_status
-    new_summary.recorders.sort((a, b) => {
-      if (a.room_info.status && !b.room_info.status) return -1;
-      if (!a.room_info.status && b.room_info.status) return 1;
-      return 0;
-    });
-
-    // process room covers in parallel
-    const avatar_promises = new_summary.recorders.map(async (room) => {
-      if (room.user_info.user_avatar != "") {
-        const next_key = build_avatar_cache_key(room.room_info.room_id, room.user_info.user_avatar);
-        cleanup_avatar_cache(room.room_info.room_id, next_key);
-        room.user_info.user_avatar = await get_avatar_url(
-          room.room_info.room_id,
-          room.user_info.user_avatar
-        );
-      } else {
-        room.user_info.user_avatar = default_avatar(room.room_info.platform);
+      let activeCount = 0;
+      for (const room of new_summary.recorders) {
+        if (room.room_info.status) activeCount += 1;
       }
-    });
+      room_active = activeCount;
+      room_inactive = new_summary.recorders.length - activeCount;
 
-    const cover_promises = new_summary.recorders.map(async (room) => {
-      if (room.room_info.room_cover != "") {
-        const next_key = build_cover_cache_key(room.room_info.room_id, room.room_info.room_cover);
-        cleanup_cover_cache(room.room_info.room_id, next_key);
-        room.room_info.room_cover = await get_image_url(
-          room.room_info.room_id,
-          room.room_info.room_cover
-        );
-      } else if (room.user_info.user_avatar != "") {
-        room.room_info.room_cover = room.user_info.user_avatar;
-      } else {
-        room.room_info.room_cover = default_cover(room.room_info.platform);
+      // sort new_summary.recorders by live_status
+      new_summary.recorders.sort((a, b) => {
+        if (a.room_info.status && !b.room_info.status) return -1;
+        if (!a.room_info.status && b.room_info.status) return 1;
+        return 0;
+      });
+
+      const mediaTasks: Promise<void>[] = [];
+
+      for (const room of new_summary.recorders) {
+        const roomId = String(room.room_info.room_id);
+        if (room.user_info.user_avatar != "") {
+          const avatarSource = room.user_info.user_avatar;
+          const nextAvatarKey = build_avatar_cache_key(roomId, avatarSource);
+          if (avatar_last_key.get(roomId) !== nextAvatarKey) {
+            cleanup_avatar_cache(roomId, nextAvatarKey);
+          }
+          const cachedAvatar = avatar_cache.get(nextAvatarKey);
+          if (cachedAvatar) {
+            room.user_info.user_avatar = cachedAvatar;
+          } else {
+            mediaTasks.push(
+              (async () => {
+                room.user_info.user_avatar = await get_avatar_url(
+                  roomId,
+                  avatarSource
+                );
+              })()
+            );
+          }
+        } else {
+          room.user_info.user_avatar = default_avatar(room.room_info.platform);
+        }
+
+        if (room.room_info.room_cover != "") {
+          const coverSource = room.room_info.room_cover;
+          const nextCoverKey = build_cover_cache_key(roomId, coverSource);
+          if (cover_last_key.get(roomId) !== nextCoverKey) {
+            cleanup_cover_cache(roomId, nextCoverKey);
+          }
+          const cachedCover = image_cache.get(nextCoverKey);
+          if (cachedCover) {
+            room.room_info.room_cover = cachedCover;
+          } else {
+            mediaTasks.push(
+              (async () => {
+                room.room_info.room_cover = await get_image_url(roomId, coverSource);
+              })()
+            );
+          }
+        } else if (room.user_info.user_avatar != "") {
+          room.room_info.room_cover = room.user_info.user_avatar;
+        } else {
+          room.room_info.room_cover = default_cover(room.room_info.platform);
+        }
       }
-    });
 
-    await Promise.all([...avatar_promises, ...cover_promises]);
+      if (mediaTasks.length > 0) {
+        await Promise.all(mediaTasks);
+      }
 
       summary = new_summary;
       const validKeys = new Set(new_summary.recorders.map((room) => roomKey(room)));
@@ -302,7 +389,7 @@
     }
   }
   update_summary();
-  setInterval(update_summary, 5000);
+  summaryTimer = setInterval(update_summary, 5000);
 
   // modals
   let deleteModal = false;
@@ -320,6 +407,14 @@
   let batchValidCount = 0;
   let batchInvalidCount = 0;
   let batchEntries: { roomId: string; platform: string }[] = [];
+  const KUAISHOU_RESERVED_ROOM_IDS = new Set([
+    "kuaishou",
+    "live",
+    "www",
+    "u",
+    "profile",
+    "home",
+  ]);
   // generate whole clip modal state
   let generateWholeClipModal = false;
   let generateWholeClipArchive: RecordItem | null = null;
@@ -341,9 +436,9 @@
       } else if (needsNumeric && !/^\d+$/.test(normalizedRoomId)) {
         addValid = false;
         addErrorMsg = "ID格式错误，请检查输入（仅限数字）";
-      } else if (needsAlphanumeric && !/^[a-z0-9]+$/i.test(normalizedRoomId)) {
+      } else if (needsAlphanumeric && !isValidKuaishouRoomId(normalizedRoomId)) {
         addValid = false;
-        addErrorMsg = "ID格式错误，请检查输入（英文加数字）";
+        addErrorMsg = "ID格式错误，请输入快手用户ID（支持字母/数字/-/_）";
       } else if (/[\u4e00-\u9fa5]/.test(normalizedRoomId)) {
         addValid = false;
         addErrorMsg = "ID包含非法字符（请勿输入汉字）";
@@ -594,6 +689,30 @@
     }
   }
 
+  async function reloadRoom(room: RecorderInfo) {
+    try {
+      await invoke("reload_recorder", {
+        roomId: room.room_info.room_id,
+        platform: room.room_info.platform,
+      });
+      await update_summary();
+    } catch (e) {
+      console.error("Failed to reload recorder:", e);
+    }
+  }
+
+  function openLivePreview(room: RecorderInfo) {
+    if (room.recording && room.live_id) {
+      invoke("open_live", {
+        platform: room.room_info.platform,
+        roomId: room.room_info.room_id,
+        liveId: room.live_id,
+      });
+      return;
+    }
+    openLiveUrl(room);
+  }
+
   function parseRoomInput(raw: string) {
     const trimmed = raw.trim();
     if (!trimmed) {
@@ -622,7 +741,7 @@
       {
         platform: "kuaishou",
         re: new RegExp(
-          String.raw`(?:bsr://)?https?://live\.kuaishou\.com/(?:u/)?([A-Za-z0-9]+)/?(?:\?.*)?`,
+          String.raw`(?:bsr://)?https?://(?:live|www)\.kuaishou\.com/(?:u|profile)/([A-Za-z0-9_-]+)/?(?:\?.*)?`,
           "i"
         ),
       },
@@ -674,11 +793,35 @@
     return { roomId: "", platform: "" };
   }
 
+  function sanitizeKuaishouRoomId(input: string) {
+    return input
+      .trim()
+      .trimStart()
+      .replace(/^@/, "")
+      .replace(/^\/+|\/+$/g, "")
+      .replace(/\.html$/i, "")
+      .trim();
+  }
+
+  function isValidKuaishouRoomId(input: string) {
+    const roomId = sanitizeKuaishouRoomId(input);
+    if (!roomId) return false;
+    if (!/^[A-Za-z0-9_-]+$/.test(roomId)) return false;
+    return !KUAISHOU_RESERVED_ROOM_IDS.has(roomId.toLowerCase());
+  }
+
   function normalizeRoomInput(raw: string, platform: string) {
     const parsed = parseRoomInput(raw);
     const trimmed = raw.trim();
-    if (parsed.roomId && (!platform || parsed.platform === platform)) {
-      return { roomId: parsed.roomId, platform: parsed.platform || platform };
+    const parsedRoomId =
+      parsed.platform === "kuaishou"
+        ? sanitizeKuaishouRoomId(parsed.roomId)
+        : parsed.roomId;
+    if (parsedRoomId && (!platform || parsed.platform === platform)) {
+      return { roomId: parsedRoomId, platform: parsed.platform || platform };
+    }
+    if (platform === "kuaishou") {
+      return { roomId: sanitizeKuaishouRoomId(trimmed), platform };
     }
     return { roomId: trimmed, platform };
   }
@@ -686,8 +829,15 @@
   function normalizeBatchInput(raw: string, defaultPlatform: string) {
     const parsed = parseRoomInput(raw);
     const trimmed = raw.trim();
-    if (parsed.roomId) {
-      return { roomId: parsed.roomId, platform: parsed.platform || defaultPlatform };
+    const parsedRoomId =
+      parsed.platform === "kuaishou"
+        ? sanitizeKuaishouRoomId(parsed.roomId)
+        : parsed.roomId;
+    if (parsedRoomId) {
+      return { roomId: parsedRoomId, platform: parsed.platform || defaultPlatform };
+    }
+    if (defaultPlatform === "kuaishou") {
+      return { roomId: sanitizeKuaishouRoomId(trimmed), platform: defaultPlatform };
     }
     return { roomId: trimmed, platform: defaultPlatform };
   }
@@ -718,7 +868,7 @@
         invalidCount += 1;
         continue;
       }
-      if (needsAlphanumeric && !/^[a-z0-9]+$/i.test(normalized.roomId)) {
+      if (needsAlphanumeric && !isValidKuaishouRoomId(normalized.roomId)) {
         invalidCount += 1;
         continue;
       }
@@ -902,9 +1052,22 @@
     generateWholeClipModal = true;
   }
 
+  onDestroy(() => {
+    if (summaryTimer) {
+      clearInterval(summaryTimer);
+      summaryTimer = null;
+    }
+    if (dragMoveRaf) {
+      cancelAnimationFrame(dragMoveRaf);
+      dragMoveRaf = 0;
+    }
+  });
+
 </script>
 
-<div class="flex-1 p-6 overflow-auto custom-scrollbar-light bg-gray-50 dark:bg-black">
+<div
+  class="flex-1 p-6 overflow-auto custom-scrollbar-light bg-gray-50 dark:bg-black"
+>
   <div class="space-y-6">
     <!-- Header -->
     <div class="flex justify-between items-center">
@@ -993,17 +1156,18 @@
 
     <!-- Room Grid -->
     <div
-      class="grid grid-cols-3 gap-4"
+      class="grid grid-cols-3 gap-4 overflow-visible"
       bind:this={gridRef}
       on:mousedown={handleGridMouseDown}
     >
       <!-- Active Room Card -->
-      {#each filteredRecorders as room (room.room_info.room_id)}
+      {#each filteredRecorders as room (roomKey(room))}
         <div
           use:cardRef={room}
           role="button"
           tabindex="0"
           class={"p-4 rounded-xl bg-white dark:bg-[#3c3c3e] border border-gray-200 dark:border-gray-700 hover:border-blue-500 dark:hover:border-blue-400 transition-colors " +
+            (isRoomMenuOpen(room) ? "relative z-20 overflow-visible " : "relative overflow-visible ") +
             (multiSelect && isRoomSelected(room)
               ? "ring-2 ring-blue-500 border-blue-500"
               : "")}
@@ -1014,7 +1178,7 @@
             }
           }}
         >
-          <div class="relative">
+          <div class="relative overflow-visible">
             <img
               src={room.room_info.room_cover}
               alt="cover"
@@ -1054,56 +1218,109 @@
                 <span>直播进行中</span>
               </div>
             {/if}
-            <button
-              id={`menu-${room.room_info.platform}-${room.room_info.room_id.toString().replace(/[^a-zA-Z0-9]/g, '_')}`}
-              class="absolute top-2 right-2 p-1.5 rounded-lg bg-gray-900/50 hover:bg-gray-900/70 transition-colors"
+            <div
+              class="absolute top-2 right-2 z-30 room-menu-container"
+              data-ignore-selection
             >
-              <Ellipsis class="w-5 h-5 icon-white" />
-            </button>
-            <Dropdown class="whitespace-nowrap" triggeredBy={`#menu-${room.room_info.platform}-${room.room_info.room_id.toString().replace(/[^a-zA-Z0-9]/g, '_')}`}>
               <button
-                class="px-4 py-2 flex items-center justify-between hover:bg-gray-100 dark:hover:bg-gray-700 cursor-pointer"
-                on:click={() => toggleEnabled(room)}
-              >
-                <span
-                  class="text-sm text-gray-700 dark:text-gray-200 font-medium"
-                  >启用直播间</span
-                >
-                <label class="toggle-switch ml-1">
-                  <input type="checkbox" checked={room.enabled} />
-                  <span class="toggle-slider"></span>
-                </label>
-              </button>
-              <DropdownItem
-                on:click={() => {
-                  openLiveUrl(room);
-                }}>打开网页直播间</DropdownItem
-              >
-              <DropdownItem
-                on:click={async () => {
-                  try {
-                    await invoke("reload_recorder", {
-                      roomId: room.room_info.room_id,
-                      platform: room.room_info.platform,
-                    });
-                    await update_summary();
-                  } catch (e) {
-                    console.error("Failed to reload recorder:", e);
+                id={menuButtonId(room)}
+                type="button"
+                class={`p-1.5 rounded-lg transition-colors ${
+                  isRoomMenuOpen(room)
+                    ? "bg-blue-600/80"
+                    : "bg-gray-900/50 hover:bg-gray-900/70"
+                }`}
+                data-ignore-selection
+                on:pointerdown|stopPropagation={(event) => {
+                  if (event.button === 2) return;
+                  event.preventDefault();
+                  toggleRoomMenu(room, event);
+                }}
+                on:mousedown|stopPropagation={() => {
+                  // Keep menu toggle isolated from grid drag-select handlers.
+                }}
+                on:click|stopPropagation={() => {
+                  // Menu toggle is handled in pointerdown for better compatibility.
+                }}
+                on:keydown|stopPropagation={(event) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    toggleRoomMenu(room, event);
+                  } else if (event.key === "Escape") {
+                    event.preventDefault();
+                    closeRoomMenu();
                   }
                 }}
-                >重载直播间</DropdownItem
               >
-              <DropdownItem
-                class="text-red-500"
-                on:click={() => {
-                  deleteMode = "single";
-                  deleteRoom = room;
-                  deleteRooms = [room];
-                  deleteModal = true;
-                }}
-                }>移除直播间</DropdownItem
-              >
-            </Dropdown>
+                <Ellipsis class="w-5 h-5 icon-white" />
+              </button>
+              {#if isRoomMenuOpen(room)}
+                <div
+                  class="fixed w-44 rounded-lg shadow-lg bg-white dark:bg-[#323234] border border-gray-200 dark:border-gray-700 overflow-hidden z-40 room-menu-container"
+                  style={`left:${roomMenuPosition.x}px;top:${roomMenuPosition.y}px;`}
+                  data-ignore-selection
+                  on:pointerdown|stopPropagation={() => {
+                    // Prevent outside handler from closing while interacting with menu items.
+                  }}
+                  on:mousedown|stopPropagation={() => {
+                    // Prevent outside handler from closing while clicking menu items.
+                  }}
+                >
+                  <button
+                    type="button"
+                    class="w-full px-4 py-2 flex items-center justify-between hover:bg-gray-100 dark:hover:bg-gray-700 cursor-pointer text-sm text-gray-700 dark:text-gray-200 font-medium"
+                    on:click={() => {
+                      toggleEnabled(room);
+                      closeRoomMenu();
+                    }}
+                  >
+                    <span>启用直播间</span>
+                    <span
+                      class={`text-xs px-2 py-0.5 rounded ${
+                        room.enabled
+                          ? "bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300"
+                          : "bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300"
+                      }`}
+                    >
+                      {room.enabled ? "已开启" : "已关闭"}
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    class="w-full px-4 py-2 text-left text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 cursor-pointer"
+                    on:click={() => {
+                      openLiveUrl(room);
+                      closeRoomMenu();
+                    }}
+                  >
+                    打开网页直播间
+                  </button>
+                  <button
+                    type="button"
+                    class="w-full px-4 py-2 text-left text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 cursor-pointer"
+                    on:click={async () => {
+                      await reloadRoom(room);
+                      closeRoomMenu();
+                    }}
+                  >
+                    重载直播间
+                  </button>
+                  <button
+                    type="button"
+                    class="w-full px-4 py-2 text-left text-sm text-red-500 hover:bg-gray-100 dark:hover:bg-gray-700 cursor-pointer"
+                    on:click={() => {
+                      deleteMode = "single";
+                      deleteRoom = room;
+                      deleteRooms = [room];
+                      deleteModal = true;
+                      closeRoomMenu();
+                    }}
+                  >
+                    移除直播间
+                  </button>
+                </div>
+              {/if}
+            </div>
           </div>
           <div class="mt-3 space-y-2">
             <div class="flex items-start justify-between">
@@ -1156,20 +1373,36 @@
                 </button>
               </div>
               <div class="flex items-center space-x-1">
-                {#if room.recording}
-                  <button
-                    class="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700"
-                    on:click={() => {
-                      invoke("open_live", {
-                        platform: room.room_info.platform,
-                        roomId: room.room_info.room_id,
-                        liveId: room.live_id,
-                      });
-                    }}
-                  >
-                    <Play class="w-5 h-5 dark:icon-white" />
-                  </button>
-                {/if}
+                <button
+                  class="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700"
+                  title={room.recording ? "播放预览" : "打开网页直播间"}
+                  on:click={() => {
+                    openLivePreview(room);
+                  }}
+                >
+                  <Play class="w-5 h-5 dark:icon-white" />
+                </button>
+                <button
+                  class="px-2 py-1 text-xs rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-200"
+                  title="重载直播间"
+                  on:click={async () => {
+                    await reloadRoom(room);
+                  }}
+                >
+                  重载
+                </button>
+                <button
+                  class="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700"
+                  title="移除直播间"
+                  on:click={() => {
+                    deleteMode = "single";
+                    deleteRoom = room;
+                    deleteRooms = [room];
+                    deleteModal = true;
+                  }}
+                >
+                  <Trash2 class="w-5 h-5 text-red-500" />
+                </button>
                 <button
                   class="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700"
                   on:click={() => {
@@ -1683,6 +1916,7 @@
 />
 
 <svelte:window
+  on:pointerdown={handleRoomMenuPointerDownOutside}
   on:mousedown={handleModalClickOutside}
   on:mousemove={handleDragMove}
   on:mouseup={handleDragEnd}
@@ -1696,53 +1930,6 @@
 {/if}
 
 <style>
-  /* macOS style toggle switch */
-  .toggle-switch {
-    position: relative;
-    display: inline-block;
-    width: 36px;
-    height: 20px;
-  }
-
-  .toggle-switch input {
-    opacity: 0;
-    width: 0;
-    height: 0;
-  }
-
-  .toggle-slider {
-    position: absolute;
-    cursor: pointer;
-    top: 0;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    background-color: rgba(120, 120, 128, 0.32);
-    transition: 0.2s;
-    border-radius: 20px;
-  }
-
-  .toggle-slider:before {
-    position: absolute;
-    content: "";
-    height: 16px;
-    width: 16px;
-    left: 2px;
-    bottom: 2px;
-    background-color: white;
-    transition: 0.2s;
-    border-radius: 50%;
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
-  }
-
-  input:checked + .toggle-slider {
-    background-color: #34c759;
-  }
-
-  input:checked + .toggle-slider:before {
-    transform: translateX(16px);
-  }
-
   @keyframes spin-slow {
     from {
       transform: rotate(0deg);

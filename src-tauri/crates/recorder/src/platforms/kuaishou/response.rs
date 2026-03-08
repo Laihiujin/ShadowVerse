@@ -159,9 +159,37 @@ pub struct UserFollowLive {
     pub caption: Option<String>,
     #[serde(default, alias = "coverUrl")]
     pub cover_url: Option<String>,
+    #[serde(default, alias = "rtCoverUrl")]
+    pub rt_cover_url: Option<String>,
     #[serde(default, alias = "liveStreamId")]
     pub live_stream_id: Option<String>,
+    #[serde(default, alias = "hlsPlayUrl")]
+    pub hls_play_url: Option<String>,
+    #[serde(default, alias = "playUrls")]
+    pub play_urls: Vec<UserFollowPlayUrl>,
+    #[serde(default, alias = "multiResolutionPlayUrls")]
+    pub multi_resolution_play_urls: Vec<UserFollowResolution>,
     pub user: Option<UserFollowUser>,
+}
+
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UserFollowPlayUrl {
+    #[serde(default)]
+    pub url: String,
+    #[serde(default)]
+    pub bitrate: Option<i64>,
+}
+
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UserFollowResolution {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default, alias = "shortName")]
+    pub short_name: Option<String>,
+    #[serde(default)]
+    pub urls: Vec<UserFollowPlayUrl>,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -185,6 +213,8 @@ pub struct UserFollowUser {
     pub user_name: Option<String>,
     #[serde(default, alias = "headurl", alias = "headUrl", alias = "avatar")]
     pub head_url: Option<String>,
+    #[serde(default)]
+    pub live: Option<bool>,
 }
 
 fn deserialize_opt_string<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>

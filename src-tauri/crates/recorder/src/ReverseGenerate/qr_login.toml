@@ -67,6 +67,7 @@ x_tt_session_dtrait = "d0_bE35DiByJiCecpHX11ckqRPbEzAjrrQ3JkwWtWfv9vGe/xUy8jsOv/
 [kuaishou]
 cookie = ""
 device_id = "web_4f0bd29cec10d14f5513adc250400eea"
+kww = ""
 user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36"
 
 [tiktok]

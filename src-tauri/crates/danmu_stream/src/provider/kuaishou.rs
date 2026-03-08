@@ -1,6 +1,8 @@
 mod messages;
 
 use std::{
+    collections::{HashMap, hash_map::DefaultHasher},
+    hash::{Hash, Hasher},
     io::Read,
     sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -21,6 +23,7 @@ use tokio::{
     time::sleep,
 };
 use tokio_tungstenite::{connect_async, tungstenite::Message as WsMessage};
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
 use crate::{
     provider::{DanmuMessageType, DanmuProvider},
@@ -47,6 +50,7 @@ const KUAISHOU_SEC_CH_UA: &str =
     "\"Not)A;Brand\";v=\"8\", \"Chromium\";v=\"120\", \"Google Chrome\";v=\"120\"";
 const KUAISHOU_SEC_CH_UA_PLATFORM: &str = "\"Windows\"";
 const HEARTBEAT_INTERVAL_SECS: u64 = 20;
+const RECV_IDLE_TIMEOUT_SECS: u64 = 90;
 
 #[derive(Clone)]
 struct KuaishouRoomInit {
@@ -154,6 +158,13 @@ impl DanmuProvider for KuaishouDanmu {
                         "Kuaishou WebSocket connection error, room_id: {}, error: {}",
                         self.room_id, e
                     );
+                    if is_non_retryable_danmu_error(&e) {
+                        warn!(
+                            "Kuaishou danmu non-retryable error, stop reconnect loop, room_id: {}",
+                            self.room_id
+                        );
+                        break;
+                    }
                     retry_count += 1;
                 }
             }
@@ -196,7 +207,22 @@ impl KuaishouDanmu {
             .to_string();
         info!("Kuaishou danmu ws url selected: {}", ws_url);
 
-        let (conn, _) = connect_async(&ws_url)
+        let mut req = ws_url
+            .clone()
+            .into_client_request()
+            .map_err(|e| DanmuStreamError::WebsocketError { err: e.to_string() })?;
+        req.headers_mut().insert(
+            "Origin",
+            HeaderValue::from_static("https://live.kuaishou.com"),
+        );
+        req.headers_mut()
+            .insert("User-Agent", HeaderValue::from_static(KUAISHOU_USER_AGENT));
+        req.headers_mut().insert(
+            "Accept-Language",
+            HeaderValue::from_static(KUAISHOU_ACCEPT_LANGUAGE),
+        );
+
+        let (conn, _) = connect_async(req)
             .await
             .map_err(|e| DanmuStreamError::WebsocketError { err: e.to_string() })?;
 
@@ -287,11 +313,29 @@ impl KuaishouDanmu {
         room_id: String,
         stop: Arc<RwLock<bool>>,
     ) -> Result<(), DanmuStreamError> {
-        while let Some(msg_result) = read.next().await {
+        loop {
             if *stop.read().await {
                 info!("Stopping Kuaishou danmu stream");
                 break;
             }
+
+            let msg_result = match tokio::time::timeout(
+                Duration::from_secs(RECV_IDLE_TIMEOUT_SECS),
+                read.next(),
+            )
+            .await
+            {
+                Ok(Some(result)) => result,
+                Ok(None) => break,
+                Err(_) => {
+                    return Err(DanmuStreamError::WebsocketError {
+                        err: format!(
+                            "Kuaishou WS idle timeout ({}s), reconnect",
+                            RECV_IDLE_TIMEOUT_SECS
+                        ),
+                    });
+                }
+            };
 
             let msg = match msg_result {
                 Ok(m) => m,
@@ -340,8 +384,8 @@ impl KuaishouDanmu {
                 None => socket_msg.payload,
             };
 
-            if PayloadType::try_from(socket_msg.payload_type).ok() == Some(PayloadType::ScFeedPush)
-            {
+            let payload_type = PayloadType::try_from(socket_msg.payload_type).ok();
+            if payload_type == Some(PayloadType::ScFeedPush) {
                 let feed = match ScWebFeedPush::decode(&*payload) {
                     Ok(f) => f,
                     Err(e) => {
@@ -349,30 +393,12 @@ impl KuaishouDanmu {
                         continue;
                     }
                 };
-                for comment in feed.comment_feeds {
-                    let user = comment.user.unwrap_or_default();
-                    let user_id = user.principal_id.parse::<u64>().unwrap_or(0);
-                    let color = parse_color(&comment.color);
-                    let ts = if comment.time > 0 {
-                        comment.time as i64
-                    } else {
-                        SystemTime::now()
-                            .duration_since(UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_millis() as i64
-                    };
-                    let danmu = DanmuMessage {
-                        room_id: room_id.clone(),
-                        user_id,
-                        user_name: user.user_name,
-                        message: comment.content,
-                        color,
-                        timestamp: ts,
-                    };
-                    if tx.send(DanmuMessageType::DanmuMessage(danmu)).is_err() {
-                        // Receiver dropped, stop
-                        return Ok(());
-                    }
+                if Self::emit_comment_feeds(&room_id, &tx, feed)? {
+                    continue;
+                }
+            } else if let Ok(feed) = ScWebFeedPush::decode(&*payload) {
+                if Self::emit_comment_feeds(&room_id, &tx, feed)? {
+                    continue;
                 }
             }
         }
@@ -381,18 +407,20 @@ impl KuaishouDanmu {
     }
 
     async fn room_init(&self) -> Result<KuaishouRoomInit, DanmuStreamError> {
-        let referer = format!("https://live.kuaishou.com/u/{}", self.room_id);
+        let referer = format!(
+            "https://live.kuaishou.com/u/{}",
+            self.lookup_principal_id()
+        );
+
+        self.prewarm_homepage().await;
 
         let mut cookie_for_danmu = self.cookie.clone();
         let mut html_from_page: Option<String> = None;
         if let Ok(html) = self.fetch_web_html().await {
             html_from_page = Some(html);
-            // If we sent no cookie, pick up any set-cookie from the page request
-            if cookie_for_danmu.trim().is_empty() {
-                if let Some(jar_cookie) = self.get_cookie_from_jar() {
-                    cookie_for_danmu = jar_cookie;
-                }
-            }
+        }
+        if let Some(jar_cookie) = self.get_cookie_from_jar_merged() {
+            cookie_for_danmu = merge_cookie_headers(&cookie_for_danmu, &jar_cookie);
         }
         let hxfalcon = html_from_page
             .as_deref()
@@ -497,10 +525,11 @@ impl KuaishouDanmu {
                 "Kuaishou danmu: calling livedetail via principalId={}",
                 self.room_id
             );
+            let principal_id = self.lookup_principal_id();
             if let Ok(resp) = self
                 .client
                 .get("https://live.kuaishou.com/live_api/liveroom/livedetail")
-                .query(&[("principalId", self.room_id.as_str())])
+                .query(&[("principalId", principal_id.as_str())])
                 .header("Referer", referer.clone())
                 .header("Origin", "https://live.kuaishou.com")
                 .header("Accept", "application/json, text/plain, */*")
@@ -594,13 +623,19 @@ impl KuaishouDanmu {
                 push_ws_url(&mut websocket_urls, url.trim());
             } else {
                 // gifshow.com (legacy) + kuaishou.com (current)
-                for group in 1..=9 {
+                for group in 1..=12 {
                     push_ws_url(
                         &mut websocket_urls,
                         &format!("wss://livejs-ws-group{group}.gifshow.com/websocket"),
                     );
                 }
-                for group in 1..=9 {
+                for group in 1..=12 {
+                    push_ws_url(
+                        &mut websocket_urls,
+                        &format!("wss://live-ws-group{group}.kuaishou.com/websocket"),
+                    );
+                }
+                for group in 1..=12 {
                     push_ws_url(
                         &mut websocket_urls,
                         &format!("wss://live-ws-pg-group{group}.kuaishou.com/websocket"),
@@ -628,7 +663,7 @@ impl KuaishouDanmu {
     }
 
     async fn fetch_web_html(&self) -> Result<String, DanmuStreamError> {
-        let url = format!("https://live.kuaishou.com/u/{}", self.room_id);
+        let url = format!("https://live.kuaishou.com/u/{}", self.lookup_principal_id());
         let response = self
             .client
             .get(&url)
@@ -668,11 +703,91 @@ impl KuaishouDanmu {
 }
 
 impl KuaishouDanmu {
-    fn get_cookie_from_jar(&self) -> Option<String> {
-        let url = url::Url::parse("https://live.kuaishou.com/").ok()?;
+    fn emit_comment_feeds(
+        room_id: &str,
+        tx: &mpsc::UnboundedSender<DanmuMessageType>,
+        feed: ScWebFeedPush,
+    ) -> Result<bool, DanmuStreamError> {
+        if feed.comment_feeds.is_empty() {
+            return Ok(false);
+        }
+        for comment in feed.comment_feeds {
+            let user = comment.user.unwrap_or_default();
+            let user_id = parse_user_id_fallback(&user.principal_id);
+            let color = parse_color(&comment.color);
+            let ts = if comment.time > 0 {
+                comment.time as i64
+            } else {
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as i64
+            };
+            let danmu = DanmuMessage {
+                room_id: room_id.to_string(),
+                user_id,
+                user_name: user.user_name,
+                message: comment.content,
+                color,
+                timestamp: ts,
+            };
+            if tx.send(DanmuMessageType::DanmuMessage(danmu)).is_err() {
+                return Err(DanmuStreamError::MessageParseError {
+                    err: "Kuaishou danmu receiver dropped".to_string(),
+                });
+            }
+        }
+        Ok(true)
+    }
+}
+
+fn parse_user_id_fallback(principal_id: &str) -> u64 {
+    if let Ok(value) = principal_id.parse::<u64>() {
+        return value;
+    }
+    let mut hasher = DefaultHasher::new();
+    principal_id.hash(&mut hasher);
+    let hashed = hasher.finish();
+    if hashed == 0 { 1 } else { hashed }
+}
+
+impl KuaishouDanmu {
+    fn lookup_principal_id(&self) -> String {
+        normalize_room_lookup_id(&self.room_id)
+    }
+
+    fn get_cookie_from_jar_for_url(&self, url_str: &str) -> Option<String> {
+        let url = url::Url::parse(url_str).ok()?;
         self.cookie_jar
             .cookies(&url)
             .and_then(|v| v.to_str().ok().map(|s| s.to_string()))
+    }
+
+    fn get_cookie_from_jar_merged(&self) -> Option<String> {
+        let mut merged = String::new();
+        for url in ["https://live.kuaishou.com/", "https://www.kuaishou.com/"] {
+            if let Some(cookie) = self.get_cookie_from_jar_for_url(url) {
+                merged = merge_cookie_headers(&merged, &cookie);
+            }
+        }
+        if merged.trim().is_empty() {
+            None
+        } else {
+            Some(merged)
+        }
+    }
+
+    async fn prewarm_homepage(&self) {
+        for url in ["https://live.kuaishou.com/", "https://www.kuaishou.com/"] {
+            let _ = self
+                .client
+                .get(url)
+                .header("Referer", "https://live.kuaishou.com/")
+                .header("Origin", "https://live.kuaishou.com")
+                .header("Accept-Language", KUAISHOU_ACCEPT_LANGUAGE)
+                .send()
+                .await;
+        }
     }
 
     async fn fetch_websocketinfo_no_sign(
@@ -683,10 +798,11 @@ impl KuaishouDanmu {
         kww: Option<&str>,
         hxfalcon: Option<&str>,
     ) -> Result<(String, Vec<String>), DanmuStreamError> {
+        let params = build_ws_query_params(cookie, live_stream_id);
         let mut ws_builder = self
             .client
             .get("https://live.kuaishou.com/live_api/liveroom/websocketinfo")
-            .query(&[("caver", "2"), ("liveStreamId", live_stream_id)]);
+            .query(&params);
         if let Some(hxfalcon) = hxfalcon {
             ws_builder = ws_builder.query(&[("__NS_hxfalcon", hxfalcon)]);
         }
@@ -724,9 +840,161 @@ impl KuaishouDanmu {
                     &ws_info[..snippet_len]
                 );
             }
+            // Fallback: try signed websocketinfo request.
+            if let Ok((signed_token, signed_urls)) = self
+                .fetch_websocketinfo_with_sign(
+                    referer,
+                    live_stream_id,
+                    cookie,
+                    kww,
+                    hxfalcon,
+                )
+                .await
+            {
+                if token.is_empty() && !signed_token.is_empty() {
+                    token = signed_token;
+                }
+                if websocket_urls.is_empty() && !signed_urls.is_empty() {
+                    websocket_urls = signed_urls;
+                }
+            }
         }
         Ok((token, websocket_urls))
     }
+
+    async fn fetch_websocketinfo_with_sign(
+        &self,
+        referer: &str,
+        live_stream_id: &str,
+        cookie: &str,
+        kww: Option<&str>,
+        hxfalcon: Option<&str>,
+    ) -> Result<(String, Vec<String>), DanmuStreamError> {
+        let params = build_ws_query_params(cookie, live_stream_id);
+        let did = params
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case("did"))
+            .map(|(_, v)| v.clone())
+            .unwrap_or_else(gen_web_did);
+        let signer = crate::kuaishou_sign::KuaishouSign::new(&did);
+
+        let mut sign_candidates = vec![
+            format!("liveStreamId={}", live_stream_id),
+            format!("caver=2&liveStreamId={}", live_stream_id),
+            build_sign_input(&params),
+        ];
+        sign_candidates.retain(|v| !v.trim().is_empty());
+        sign_candidates.sort();
+        sign_candidates.dedup();
+
+        for sign_input in sign_candidates {
+            let sign = signer.generate_sign(&sign_input);
+
+            let mut ws_builder = self
+                .client
+                .get("https://live.kuaishou.com/live_api/liveroom/websocketinfo")
+                .query(&params)
+                .query(&[("sign", sign.as_str())]);
+            if let Some(hx) = hxfalcon {
+                ws_builder = ws_builder.query(&[("__NS_hxfalcon", hx)]);
+            }
+
+            let resp = ws_builder
+                .header("Referer", referer)
+                .header("Origin", "https://live.kuaishou.com")
+                .header("Accept", "application/json, text/plain, */*")
+                .header("Accept-Language", KUAISHOU_ACCEPT_LANGUAGE)
+                .header("Sec-Fetch-Dest", "empty")
+                .header("Sec-Fetch-Mode", "cors")
+                .header("Sec-Fetch-Site", "same-origin")
+                .apply_header("Kww", kww)
+                .header("Cookie", cookie)
+                .send()
+                .await?;
+
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            let data = parse_response_data(&text)
+                .unwrap_or_else(|_| serde_json::Value::Object(Default::default()));
+            let token = extract_ws_token(&data)
+                .or_else(|| extract_ws_token_from_text(&text))
+                .unwrap_or_default();
+            let mut urls = extract_websocket_urls(&data);
+            if urls.is_empty() {
+                urls = extract_ws_urls_from_text(&text);
+            }
+
+            info!(
+                "Kuaishou danmu websocketinfo(sign) status={}, token_present={}, ws_urls={}, sign_input={}",
+                status,
+                !token.is_empty(),
+                urls.len(),
+                sign_input
+            );
+
+            if !token.is_empty() && !urls.is_empty() {
+                return Ok((token, urls));
+            }
+        }
+
+        Ok((String::new(), Vec::new()))
+    }
+}
+
+fn normalize_room_lookup_id(room_id: &str) -> String {
+    let trimmed = room_id.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+        if let Ok(parsed) = url::Url::parse(trimmed) {
+            let fragment = parsed.fragment().map(str::trim).unwrap_or_default();
+            for (key, value) in parsed.query_pairs() {
+                if key.eq_ignore_ascii_case("principalId")
+                    || key.eq_ignore_ascii_case("userId")
+                    || key.eq_ignore_ascii_case("user_id")
+                {
+                    let candidate = value.trim();
+                    if !candidate.is_empty() {
+                        return candidate.to_string();
+                    }
+                }
+            }
+            if let Some(mut segments) = parsed.path_segments() {
+                let mut previous = "";
+                for segment in segments.by_ref() {
+                    let seg = segment.trim();
+                    if previous.eq_ignore_ascii_case("u") || previous.eq_ignore_ascii_case("profile")
+                    {
+                        if !seg.is_empty() && !seg.eq_ignore_ascii_case("kuaishou") {
+                            return seg.to_string();
+                        }
+                    }
+                    previous = seg;
+                }
+            }
+            if !fragment.is_empty()
+                && !fragment.contains('/')
+                && !fragment.contains('?')
+                && !fragment.contains('&')
+                && !fragment.contains('=')
+            {
+                return fragment.to_string();
+            }
+        }
+        return trimmed.to_string();
+    }
+
+    if let Some((prefix, suffix)) = trimmed.split_once('#') {
+        if prefix.trim().eq_ignore_ascii_case("kuaishou") {
+            let principal_id = suffix.trim();
+            if !principal_id.is_empty() {
+                return principal_id.to_string();
+            }
+        }
+    }
+
+    trimmed.trim_start_matches('@').to_string()
 }
 
 fn extract_kww(cookie: &str) -> Option<String> {
@@ -756,6 +1024,89 @@ fn extract_hxfalcon(html: &str) -> Option<String> {
         }
     }
     None
+}
+
+fn merge_cookie_headers(primary: &str, extra: &str) -> String {
+    let mut map: HashMap<String, String> = HashMap::new();
+    for source in [extra, primary] {
+        for part in source.split(';').map(str::trim) {
+            if part.is_empty() {
+                continue;
+            }
+            if let Some((k, v)) = part.split_once('=') {
+                let key = k.trim();
+                let value = v.trim();
+                if !key.is_empty() && !value.is_empty() {
+                    map.insert(key.to_string(), value.to_string());
+                }
+            }
+        }
+    }
+    let mut pairs: Vec<String> = map.into_iter().map(|(k, v)| format!("{k}={v}")).collect();
+    pairs.sort();
+    pairs.join("; ")
+}
+
+fn build_ws_query_params(cookie: &str, live_stream_id: &str) -> Vec<(String, String)> {
+    let did = extract_cookie_value_ci(cookie, "did")
+        .or_else(|| extract_cookie_value_ci(cookie, "_did"))
+        .unwrap_or_else(gen_web_did);
+    let kpn = extract_cookie_value_ci(cookie, "kpn").unwrap_or_else(|| "GAME_ZONE".to_string());
+    let kpf = extract_cookie_value_ci(cookie, "kpf").unwrap_or_else(|| "PC_WEB".to_string());
+    let mut params = vec![
+        ("caver".to_string(), "2".to_string()),
+        ("liveStreamId".to_string(), live_stream_id.to_string()),
+        ("did".to_string(), did),
+        ("kpn".to_string(), kpn),
+        ("kpf".to_string(), kpf),
+    ];
+    if let Some(clientid) = extract_cookie_value_ci(cookie, "clientid") {
+        params.push(("clientid".to_string(), clientid));
+    }
+    if let Some(webid) = extract_cookie_value_ci(cookie, "webid") {
+        params.push(("webid".to_string(), webid));
+    }
+    if let Some(kwscode) = extract_cookie_value_ci(cookie, "kwscode") {
+        params.push(("kwscode".to_string(), kwscode));
+    }
+    if let Some(kwfv1) = extract_cookie_value_ci(cookie, "kwfv1") {
+        params.push(("kwfv1".to_string(), kwfv1));
+    }
+    if let Some(kww) = extract_cookie_value_ci(cookie, "kww") {
+        params.push(("kww".to_string(), kww));
+    }
+    params
+}
+
+fn build_sign_input(params: &[(String, String)]) -> String {
+    let mut pairs: Vec<String> = params.iter().map(|(k, v)| format!("{k}={v}")).collect();
+    pairs.sort();
+    pairs.join("&")
+}
+
+fn extract_cookie_value_ci(cookie: &str, key: &str) -> Option<String> {
+    let target = key.to_ascii_lowercase();
+    for part in cookie.split(';').map(str::trim) {
+        if let Some((k, v)) = part.split_once('=') {
+            if k.trim().to_ascii_lowercase() == target {
+                let value = v.trim();
+                if !value.is_empty() {
+                    return Some(value.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+fn is_non_retryable_danmu_error(err: &DanmuStreamError) -> bool {
+    match err {
+        DanmuStreamError::MessageParseError { err } => {
+            let lower = err.to_ascii_lowercase();
+            lower.contains("livestreamid missing") || lower.contains("room is not live")
+        }
+        _ => false,
+    }
 }
 
 fn extract_livedetail_from_html(html: &str) -> Option<Value> {
@@ -960,7 +1311,7 @@ fn extract_ws_token(data: &Value) -> Option<String> {
 
 fn extract_ws_token_from_text(text: &str) -> Option<String> {
     let named_re = Regex::new(
-        r#"(?i)"(?:token|websocketToken|webSocketToken|websocket_token|authToken|accessToken)"\s*:\s*"([^"]{50,})""#,
+        r#"(?i)"(?:token|websocketToken|webSocketToken|websocket_token|authToken|accessToken|wsToken|socketToken|websocketAuthToken)"\s*:\s*"([^"]{8,})""#,
     )
     .ok()?;
     if let Some(token) = named_re
@@ -981,7 +1332,10 @@ fn extract_ws_token_from_text(text: &str) -> Option<String> {
 
 fn extract_ws_urls_from_text(text: &str) -> Vec<String> {
     let mut urls = Vec::new();
-    let re = Regex::new(r#"(?i)wss://(?:livejs-ws-group\d+\.gifshow\.com|live-ws-pg-group\d+\.kuaishou\.com)/websocket"#).ok();
+    let re = Regex::new(
+        r#"(?i)wss://(?:livejs-ws-group\d+\.gifshow\.com|live-ws-group\d+\.kuaishou\.com|live-ws-pg-group\d+\.kuaishou\.com)/websocket"#,
+    )
+    .ok();
     if let Some(re) = re {
         for cap in re.captures_iter(text) {
             if let Some(m) = cap.get(0) {

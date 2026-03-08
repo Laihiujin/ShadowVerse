@@ -377,10 +377,12 @@ fn build_cookie_string(map: &HashMap<String, String>) -> String {
 }
 
 fn has_login_cookie(map: &HashMap<String, String>) -> bool {
-    map.contains_key("sessionid")
-        || map.contains_key("sessionid_ss")
-        || map.contains_key("sid_tt")
-        || map.contains_key("sid_guard")
+    map.keys().any(|key| {
+        matches!(
+            key.to_ascii_lowercase().as_str(),
+            "sessionid" | "sessionid_ss" | "sid_tt" | "sid_guard" | "uid_tt" | "uid_tt_ss"
+        )
+    })
 }
 
 fn parse_cookie_header(header: &str) -> HashMap<String, String> {
@@ -395,6 +397,150 @@ fn parse_cookie_header(header: &str) -> HashMap<String, String> {
         }
     }
     map
+}
+
+fn merge_cookie_pair(map: &mut HashMap<String, String>, key: &str, value: &str) {
+    let key = key.trim();
+    if key.is_empty() {
+        return;
+    }
+    map.insert(key.to_string(), value.trim().to_string());
+}
+
+fn is_cookie_attr_key(key: &str) -> bool {
+    matches!(
+        key.to_ascii_lowercase().as_str(),
+        "path"
+            | "domain"
+            | "expires"
+            | "max-age"
+            | "secure"
+            | "httponly"
+            | "samesite"
+            | "priority"
+            | "partitioned"
+            | "comment"
+            | "version"
+    )
+}
+
+fn merge_cookie_header_string(map: &mut HashMap<String, String>, raw: &str) {
+    for part in raw.split(';').map(str::trim) {
+        if part.is_empty() {
+            continue;
+        }
+        if let Some((name, value)) = part.split_once('=') {
+            if is_cookie_attr_key(name.trim()) {
+                continue;
+            }
+            merge_cookie_pair(map, name, value);
+        }
+    }
+}
+
+fn merge_set_cookie_line(map: &mut HashMap<String, String>, raw: &str) {
+    if let Some(pair) = raw.split(';').next() {
+        if let Some((name, value)) = pair.split_once('=') {
+            merge_cookie_pair(map, name, value);
+        }
+    }
+}
+
+fn merge_cookie_map_from_url(map: &mut HashMap<String, String>, raw: &str) {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || (!trimmed.starts_with("http://") && !trimmed.starts_with("https://")) {
+        return;
+    }
+    let Ok(url) = Url::parse(trimmed) else {
+        return;
+    };
+    for (k, v) in url.query_pairs() {
+        let key_lower = k.to_ascii_lowercase();
+        if key_lower.contains("set_cookie") || key_lower.contains("set-cookie") {
+            merge_set_cookie_line(map, &v);
+        } else if key_lower.contains("cookie") {
+            merge_cookie_header_string(map, &v);
+        }
+    }
+    if let Some(fragment) = url.fragment() {
+        for (k, v) in url::form_urlencoded::parse(fragment.as_bytes()) {
+            let key_lower = k.to_ascii_lowercase();
+            if key_lower.contains("set_cookie") || key_lower.contains("set-cookie") {
+                merge_set_cookie_line(map, &v);
+            } else if key_lower.contains("cookie") {
+                merge_cookie_header_string(map, &v);
+            }
+        }
+    }
+}
+
+fn merge_cookie_map_from_json_inner(
+    map: &mut HashMap<String, String>,
+    value: &Value,
+    key_hint: Option<&str>,
+    depth: usize,
+) {
+    if depth > 8 {
+        return;
+    }
+    match value {
+        Value::Object(obj) => {
+            let hint_is_cookie = key_hint
+                .map(|v| v.to_ascii_lowercase().contains("cookie"))
+                .unwrap_or(false);
+            let looks_cookie_obj = obj.contains_key("domain")
+                || obj.contains_key("path")
+                || obj.contains_key("expires")
+                || obj.contains_key("httpOnly")
+                || obj.contains_key("sameSite");
+            if hint_is_cookie || looks_cookie_obj {
+                if let (Some(name), Some(val)) = (
+                    obj.get("name").and_then(Value::as_str),
+                    obj.get("value").and_then(Value::as_str),
+                ) {
+                    merge_cookie_pair(map, name, val);
+                }
+            }
+            if let (Some(name), Some(val)) = (
+                obj.get("cookieName").and_then(Value::as_str),
+                obj.get("cookieValue").and_then(Value::as_str),
+            ) {
+                merge_cookie_pair(map, name, val);
+            }
+            for (key, child) in obj {
+                merge_cookie_map_from_json_inner(map, child, Some(key), depth + 1);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                merge_cookie_map_from_json_inner(map, item, key_hint, depth + 1);
+            }
+        }
+        Value::String(raw) => {
+            let hint = key_hint.unwrap_or_default().to_ascii_lowercase();
+            if hint.contains("set_cookie") || hint.contains("set-cookie") || hint == "setcookie" {
+                merge_set_cookie_line(map, raw);
+                return;
+            }
+            if hint.contains("cookie") {
+                merge_cookie_header_string(map, raw);
+                return;
+            }
+            if hint == "location"
+                || hint.ends_with("url")
+                || hint.ends_with("uri")
+                || raw.starts_with("http://")
+                || raw.starts_with("https://")
+            {
+                merge_cookie_map_from_url(map, raw);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn merge_cookie_map_from_json(map: &mut HashMap<String, String>, value: &Value) {
+    merge_cookie_map_from_json_inner(map, value, None, 0);
 }
 
 fn to_iso_8859_1_bytes(value: &str) -> Vec<u8> {
@@ -1618,6 +1764,7 @@ async fn fetch_cookies_with_redirects(
         })?;
     let mut current = start_url.to_string();
     let mut collected = HashMap::new();
+    merge_cookie_map_from_url(&mut collected, &current);
     if let Some(cookie_header) = headers.get("cookie").and_then(|v| v.to_str().ok()) {
         merge_cookie_maps(&mut collected, parse_cookie_header(cookie_header));
     }
@@ -1660,6 +1807,7 @@ async fn fetch_cookies_with_redirects(
                         next_url
                     );
                     current = next_url.to_string();
+                    merge_cookie_map_from_url(&mut collected, &current);
                     continue;
                 }
                 if let Ok(next_url) = Url::parse(location) {
@@ -1669,6 +1817,7 @@ async fn fetch_cookies_with_redirects(
                         next_url
                     );
                     current = next_url.to_string();
+                    merge_cookie_map_from_url(&mut collected, &current);
                     continue;
                 }
             }
@@ -1777,6 +1926,8 @@ pub async fn get_qr_login(client: &Client) -> Result<TikTokQrInfo, RecorderError
         .headers(headers.clone())
         .send()
         .await?;
+    let resp_headers = resp.headers().clone();
+    merge_cookie_maps(&mut cookies, collect_cookie_map(&resp_headers));
     if let Some(ms_header) = resp.headers().get("x-ms-token") {
         if let Ok(value) = ms_header.to_str() {
             ms_token = value.to_string();
@@ -1784,6 +1935,7 @@ pub async fn get_qr_login(client: &Client) -> Result<TikTokQrInfo, RecorderError
         }
     }
     let json: serde_json::Value = resp.json().await?;
+    merge_cookie_map_from_json(&mut cookies, &json);
     log::info!("TikTok get_qrcode response: {}", json);
     let data = json.get("data").ok_or_else(|| RecorderError::ApiError {
         error: "TikTok QR: missing data".to_string(),
@@ -1829,6 +1981,11 @@ pub async fn get_qr_login(client: &Client) -> Result<TikTokQrInfo, RecorderError
     if !ticket.is_empty() {
         oauth_key.push('|');
         oauth_key.push_str(ticket);
+    }
+    let bootstrap_cookies = build_cookie_string(&cookies);
+    if !bootstrap_cookies.is_empty() {
+        oauth_key.push('|');
+        oauth_key.push_str(&general_purpose::STANDARD.encode(bootstrap_cookies.as_bytes()));
     }
 
     // Attempt to persist if we got a new ttwid
@@ -1937,6 +2094,11 @@ pub async fn get_qr_login_status(
     let verify_fp = parts.next().unwrap_or_default();
     let ms_token = parts.next().unwrap_or_default();
     let ttwid_ticket = parts.next();
+    let bootstrap_cookie_header = parts
+        .next()
+        .and_then(|encoded| general_purpose::STANDARD.decode(encoded).ok())
+        .and_then(|bytes| String::from_utf8(bytes).ok())
+        .unwrap_or_default();
 
     let proxy_url = proxy_url_from_env();
     let request_client = if let Some(proxy_url) = proxy_url.as_deref() {
@@ -1946,7 +2108,10 @@ pub async fn get_qr_login_status(
     };
 
     // Initial cookies bootstrap
-    let cookies = bootstrap_tiktok_cookies(&request_client, verify_fp, Some(ms_token)).await;
+    let mut cookies = bootstrap_tiktok_cookies(&request_client, verify_fp, Some(ms_token)).await;
+    if !bootstrap_cookie_header.trim().is_empty() {
+        merge_cookie_maps(&mut cookies, parse_cookie_header(&bootstrap_cookie_header));
+    }
 
     let params = build_qr_params(Some(token), device_id, verify_fp, ms_token);
     let query = build_query(&params);
@@ -1979,6 +2144,7 @@ pub async fn get_qr_login_status(
         {
             merge_cookie_maps(&mut response_cookies, collect_cookie_map(resp.headers()));
             if let Ok(current) = resp.json::<serde_json::Value>().await {
+                merge_cookie_map_from_json(&mut response_cookies, &current);
                 let is_error = current.get("message").and_then(Value::as_str) == Some("error");
                 if is_error {
                     log::warn!("[TikTok] QR check failed on {}: {}", host, current);

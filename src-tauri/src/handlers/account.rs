@@ -197,17 +197,6 @@ fn strip_cookie_fields(cookies: &str, fields: &[&str]) -> String {
 }
 
 fn filter_kuaishou_cookie_header(cookies: &str) -> String {
-    let allow = [
-        "kwssectoken",
-        "kuaishou.live.web_st",
-        "kuaishou.live.web_ph",
-        "kuaishou.live.web.at",
-        "passtoken",
-        "ssecurity",
-        "did",
-        "didv",
-        "userid",
-    ];
     let mut kept: Vec<String> = Vec::new();
     for part in cookies.split(';') {
         let trimmed = part.trim();
@@ -217,10 +206,12 @@ fn filter_kuaishou_cookie_header(cookies: &str) -> String {
         let Some((k, v)) = trimmed.split_once('=') else {
             continue;
         };
-        let key_lower = k.trim().to_ascii_lowercase();
-        if allow.iter().any(|item| *item == key_lower) {
-            kept.push(format!("{}={}", k.trim(), v.trim()));
+        let key = k.trim();
+        let val = v.trim();
+        if key.is_empty() || val.is_empty() {
+            continue;
         }
+        kept.push(format!("{}={}", key, val));
     }
     kept.join("; ")
 }

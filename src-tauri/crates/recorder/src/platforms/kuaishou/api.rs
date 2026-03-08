@@ -1,4 +1,4 @@
-use super::response::{LiveStream, LiveStreamResponse, UserFollowCountResponse};
+use super::response::{LiveStream, LiveStreamResponse, UserFollowCountResponse, UserFollowLive};
 use crate::account::Account;
 use crate::errors::RecorderError;
 use chrono::Utc;
@@ -8,28 +8,95 @@ use reqwest::Client;
 use serde::Deserialize;
 use serde_json::{Map, Value};
 use std::collections::HashMap;
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Duration;
+use tokio::sync::Mutex;
 
 const USER_AGENT: &str =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
-const WEB_RATE_LIMIT_COOLDOWN_SECS: i64 = 10;
-const WEB_RATE_LIMIT_RETRY_SECS: u64 = 10;
+const WEB_RATE_LIMIT_COOLDOWN_SECS: i64 = 90;
+const WEB_RATE_LIMIT_RETRY_SECS: u64 = 20;
+const WEB_MIN_REQUEST_GAP_MS: u64 = 1200;
+const WEB_MIN_REQUEST_GAP_JITTER_MS: u64 = 800;
+const FOLLOW_INFO_CACHE_TTL_SECS: i64 = 300;
+const FOLLOW_INFO_MISS_TTL_SECS: i64 = 90;
 
 static WEB_COOLDOWN_UNTIL: AtomicI64 = AtomicI64::new(0);
+static WEB_LAST_REQUEST_TS_MS: AtomicI64 = AtomicI64::new(0);
+static WEB_REQUEST_GATE: OnceLock<Mutex<()>> = OnceLock::new();
+static FOLLOW_INFO_CACHE: OnceLock<Mutex<HashMap<String, FollowInfoCacheEntry>>> = OnceLock::new();
+
+fn read_env_u64(key: &str, default: u64) -> u64 {
+    std::env::var(key)
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(default)
+}
+
+fn parse_env_bool(raw: &str) -> Option<bool> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Some(true),
+        "0" | "false" | "no" | "off" => Some(false),
+        _ => None,
+    }
+}
+
+fn read_env_bool(key: &str) -> Option<bool> {
+    std::env::var(key)
+        .ok()
+        .and_then(|raw| parse_env_bool(&raw))
+}
+
+fn web_cooldown_secs() -> i64 {
+    read_env_u64(
+        "BSR_KUAISHOU_WEB_COOLDOWN_SECS",
+        WEB_RATE_LIMIT_COOLDOWN_SECS as u64,
+    ) as i64
+}
+
+fn web_retry_secs() -> u64 {
+    read_env_u64("BSR_KUAISHOU_WEB_RETRY_SECS", WEB_RATE_LIMIT_RETRY_SECS)
+}
+
+fn web_min_request_gap_ms() -> u64 {
+    read_env_u64("BSR_KUAISHOU_WEB_MIN_GAP_MS", WEB_MIN_REQUEST_GAP_MS)
+}
+
+fn web_request_jitter_ms() -> u64 {
+    read_env_u64(
+        "BSR_KUAISHOU_WEB_MIN_GAP_JITTER_MS",
+        WEB_MIN_REQUEST_GAP_JITTER_MS,
+    )
+}
 
 fn is_rate_limit_message(message: &str) -> bool {
     let trimmed = message.trim();
     !trimmed.is_empty()
         && (trimmed.contains("\u{64cd}\u{4f5c}\u{592a}\u{5feb}")
+            || trimmed.contains("\u{8bf7}\u{6c42}\u{8fc7}\u{5feb}")
             || trimmed.contains("\u{8bbf}\u{95ee}\u{8fc7}\u{4e8e}\u{9891}\u{7e41}")
             || trimmed.contains("\u{8bbf}\u{95ee}\u{9891}\u{7e41}")
             || trimmed.contains("\u{8bbf}\u{95ee}\u{592a}\u{5feb}")
+            || trimmed.contains("\u{8bf7}\u{6c42}\u{9891}\u{7e41}")
             || trimmed.contains("\u{8bf7}\u{7a0d}\u{540e}\u{518d}\u{8bd5}")
             || trimmed.contains("\u{8bf7}\u{7a0d}\u{5019}\u{518d}\u{8bd5}")
             || trimmed.contains("\u{7a0d}\u{5019}\u{518d}\u{8bd5}")
             || trimmed.contains("\u{7a0d}\u{540e}\u{518d}\u{8bd5}")
             || trimmed.contains("\u{8bf7}\u{6c42}\u{8fc7}\u{4e8e}\u{9891}\u{7e41}"))
+}
+
+fn is_captcha_message(message: &str) -> bool {
+    let trimmed = message.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    trimmed.contains("请完成滑块验证")
+        || trimmed.contains("滑块验证")
+        || trimmed.contains("人机验证")
+        || trimmed.contains("安全验证")
+        || trimmed.contains("行为验证")
+        || trimmed.to_ascii_lowercase().contains("captcha")
 }
 
 fn is_room_disabled_message(message: &str) -> bool {
@@ -38,11 +105,12 @@ fn is_room_disabled_message(message: &str) -> bool {
 }
 
 fn set_web_cooldown(reason: &str) {
-    let until = Utc::now().timestamp() + WEB_RATE_LIMIT_COOLDOWN_SECS;
+    let cooldown_secs = web_cooldown_secs();
+    let until = Utc::now().timestamp() + cooldown_secs;
     WEB_COOLDOWN_UNTIL.store(until, Ordering::Relaxed);
     log::info!(
         "[Kuaishou] Web cooldown set ({}s): {}",
-        WEB_RATE_LIMIT_COOLDOWN_SECS,
+        cooldown_secs,
         reason
     );
 }
@@ -52,9 +120,58 @@ fn web_api_allowed() -> bool {
     now >= WEB_COOLDOWN_UNTIL.load(Ordering::Relaxed)
 }
 
+fn should_use_global_web_cooldown(account: &Account) -> bool {
+    if account.is_guest() {
+        return true;
+    }
+    read_env_bool("BSR_KUAISHOU_LOGIN_GLOBAL_COOLDOWN").unwrap_or(false)
+}
+
+async fn wait_for_web_request_slot(scene: &str) {
+    let gate = WEB_REQUEST_GATE.get_or_init(|| Mutex::new(()));
+    let _guard = gate.lock().await;
+
+    let min_gap_ms = web_min_request_gap_ms();
+    let jitter_max_ms = web_request_jitter_ms();
+    let jitter_ms = if jitter_max_ms == 0 {
+        0
+    } else {
+        rand::random_range(0..=jitter_max_ms)
+    };
+    let required_gap_ms = min_gap_ms.saturating_add(jitter_ms);
+
+    if required_gap_ms > 0 {
+        let now_ms = Utc::now().timestamp_millis();
+        let last_ms = WEB_LAST_REQUEST_TS_MS.load(Ordering::Relaxed);
+        if last_ms > 0 {
+            let elapsed_ms = now_ms.saturating_sub(last_ms);
+            let wait_ms = (required_gap_ms as i64).saturating_sub(elapsed_ms);
+            if wait_ms > 0 {
+                log::debug!(
+                    "[Kuaishou] {} request throttled for {}ms (gap={}ms, jitter={}ms)",
+                    scene,
+                    wait_ms,
+                    min_gap_ms,
+                    jitter_ms
+                );
+                tokio::time::sleep(Duration::from_millis(wait_ms as u64)).await;
+            }
+        }
+    }
+
+    WEB_LAST_REQUEST_TS_MS.store(Utc::now().timestamp_millis(), Ordering::Relaxed);
+}
+
 pub fn is_rate_limited_error(error: &RecorderError) -> bool {
     match error {
         RecorderError::ApiError { error } => is_rate_limit_message(error),
+        _ => false,
+    }
+}
+
+pub fn is_captcha_error(error: &RecorderError) -> bool {
+    match error {
+        RecorderError::ApiError { error } => is_captcha_message(error),
         _ => false,
     }
 }
@@ -425,14 +542,6 @@ fn ensure_kuaishou_base_cookies(cookies: &str) -> String {
 }
 
 fn filter_kuaishou_cookie_header(cookies: &str) -> String {
-    let allow = [
-        "kwssectoken",
-        "kuaishou.live.web_st",
-        "kuaishou.live.web_ph",
-        "did",
-        "didv",
-        "userid",
-    ];
     let mut kept = Vec::new();
     for part in cookies.split(';').map(str::trim) {
         if part.is_empty() {
@@ -441,30 +550,71 @@ fn filter_kuaishou_cookie_header(cookies: &str) -> String {
         let Some((k, v)) = part.split_once('=') else {
             continue;
         };
-        let key_lower = k.trim().to_ascii_lowercase();
-        if allow.iter().any(|item| *item == key_lower) {
-            kept.push(format!("{}={}", k.trim(), v.trim()));
+        let key = k.trim();
+        let val = v.trim();
+        if key.is_empty() || val.is_empty() {
+            continue;
         }
+        kept.push(format!("{key}={val}"));
     }
     kept.join("; ")
 }
 
 fn extract_user_id_from_url(url: &str) -> String {
+    if let Some(query) = url.split('?').nth(1) {
+        for pair in query.split('&') {
+            let (key, value) = match pair.split_once('=') {
+                Some((key, value)) => (key.trim(), value.trim()),
+                None => continue,
+            };
+            if value.is_empty() {
+                continue;
+            }
+            if key.eq_ignore_ascii_case("principalId")
+                || key.eq_ignore_ascii_case("userId")
+                || key.eq_ignore_ascii_case("user_id")
+            {
+                return value.to_string();
+            }
+        }
+    }
+
+    let fragment = url.split('#').nth(1).map(str::trim).unwrap_or("");
     let url_no_fragment = url.split('#').next().unwrap_or(url);
     let url_no_query = url_no_fragment.split('?').next().unwrap_or(url_no_fragment);
     let trimmed = url_no_query.trim_end_matches('/');
 
     if let Some(pos) = trimmed.find("/u/") {
-        return trimmed[(pos + 3)..].to_string();
+        let tail = &trimmed[(pos + 3)..];
+        let candidate = tail.split('/').next().unwrap_or(tail).trim();
+        if !candidate.is_empty() && !candidate.eq_ignore_ascii_case("kuaishou") {
+            return candidate.to_string();
+        }
     }
     if let Some(pos) = trimmed.find("/profile/") {
-        return trimmed[(pos + 9)..].to_string();
+        let tail = &trimmed[(pos + 9)..];
+        let candidate = tail.split('/').next().unwrap_or(tail).trim();
+        if !candidate.is_empty() && !candidate.eq_ignore_ascii_case("kuaishou") {
+            return candidate.to_string();
+        }
     }
 
     if trimmed.contains("kuaishou.com") {
         if let Some(last) = trimmed.rsplit('/').next() {
-            return last.to_string();
+            let candidate = last.trim();
+            if !candidate.is_empty() && !candidate.eq_ignore_ascii_case("kuaishou") {
+                return candidate.to_string();
+            }
         }
+    }
+
+    if !fragment.is_empty()
+        && !fragment.contains('/')
+        && !fragment.contains('?')
+        && !fragment.contains('&')
+        && !fragment.contains('=')
+    {
+        return fragment.to_string();
     }
 
     String::new()
@@ -535,19 +685,22 @@ async fn fetch_web_html(
     }
 
     for attempt in 0..2 {
-        if !web_api_allowed() {
+        if should_use_global_web_cooldown(account) && !web_api_allowed() {
+            let retry_secs = web_retry_secs();
             log::info!(
                 "[Kuaishou] Web rate limited, retrying after {}s (attempt {})",
-                WEB_RATE_LIMIT_RETRY_SECS,
+                retry_secs,
                 attempt + 1
             );
-            tokio::time::sleep(Duration::from_secs(WEB_RATE_LIMIT_RETRY_SECS)).await;
+            let retry_jitter = rand::random_range(0..=2);
+            tokio::time::sleep(Duration::from_secs(retry_secs + retry_jitter)).await;
         }
 
-        // Best-effort pre-warm: visit homepage before jumping to room URL.
-        {
+        // Homepage prewarm is only needed for guest mode by default.
+        if should_homepage_prewarm(account) {
             let mut pre_headers = headers.clone();
             pre_headers.insert("Referer", "https://live.kuaishou.com/".parse().unwrap());
+            wait_for_web_request_slot("homepage_prewarm").await;
             match client
                 .get("https://live.kuaishou.com/")
                 .headers(pre_headers)
@@ -575,7 +728,9 @@ async fn fetch_web_html(
                         log::warn!("[Kuaishou] Homepage prewarm status: {}", status);
                     }
                     if let Some(msg) = extract_rate_limit_message_from_body(&body) {
-                        set_web_cooldown(&msg);
+                        if should_use_global_web_cooldown(account) {
+                            set_web_cooldown(&msg);
+                        }
                     }
                     if !prewarm_map.is_empty() {
                         let mut merged: HashMap<String, String> = HashMap::new();
@@ -602,6 +757,8 @@ async fn fetch_web_html(
                     log::debug!("[Kuaishou] Homepage prewarm failed: {}", err);
                 }
             }
+        } else {
+            log::debug!("[Kuaishou] Skip homepage prewarm for login account");
         }
 
         let mut last_error: Option<RecorderError> = None;
@@ -618,6 +775,7 @@ async fn fetch_web_html(
                 req_headers.insert("Cookie", cookie_header.parse().unwrap());
             }
             req_headers.insert("Referer", referer.parse().unwrap());
+            wait_for_web_request_slot("room_page").await;
 
             let response = client.get(&candidate).headers(req_headers).send().await?;
             let status = response.status();
@@ -631,7 +789,9 @@ async fn fetch_web_html(
                     final_url
                 );
                 if let Some(msg) = extract_rate_limit_message_from_body(&html_str) {
-                    set_web_cooldown(&msg);
+                    if should_use_global_web_cooldown(account) {
+                        set_web_cooldown(&msg);
+                    }
                     last_error = Some(RecorderError::ApiError { error: msg });
                     continue;
                 }
@@ -655,7 +815,9 @@ async fn fetch_web_html(
                     final_url
                 );
                 if let Some(msg) = extract_rate_limit_message_from_body(&html_str) {
-                    set_web_cooldown(&msg);
+                    if should_use_global_web_cooldown(account) {
+                        set_web_cooldown(&msg);
+                    }
                     last_error = Some(RecorderError::ApiError { error: msg });
                     continue;
                 }
@@ -683,11 +845,13 @@ async fn fetch_web_html(
 
         if let RecorderError::ApiError { error } = &err {
             if is_rate_limit_message(error) && attempt == 0 {
+                let retry_secs = web_retry_secs();
                 log::info!(
                     "[Kuaishou] Web rate limited, retrying after {}s",
-                    WEB_RATE_LIMIT_RETRY_SECS
+                    retry_secs
                 );
-                tokio::time::sleep(Duration::from_secs(WEB_RATE_LIMIT_RETRY_SECS)).await;
+                let retry_jitter = rand::random_range(0..=2);
+                tokio::time::sleep(Duration::from_secs(retry_secs + retry_jitter)).await;
                 continue;
             }
         }
@@ -710,15 +874,184 @@ fn normalize_image_url(url: &str) -> String {
 
 #[derive(Clone, Debug)]
 struct FollowLiveInfo {
+    principal_id: Option<String>,
     caption: Option<String>,
     cover_url: Option<String>,
     user_name: Option<String>,
     user_id: Option<String>,
     user_avatar: Option<String>,
+    live: Option<bool>,
+    streams: Vec<StreamInfo>,
+}
+
+#[derive(Clone, Debug)]
+struct FollowInfoCacheEntry {
+    ts: i64,
+    info: Option<FollowLiveInfo>,
 }
 
 fn normalize_id(value: &str) -> String {
     value.trim().to_ascii_lowercase()
+}
+
+fn follow_match_target_ids(room_id: &str, author_id: &str, author_name: &str) -> Vec<String> {
+    let mut targets = Vec::new();
+    let mut push = |value: String| {
+        let normalized = normalize_id(&value);
+        if normalized.is_empty() {
+            return;
+        }
+        if !targets.iter().any(|item| item == &normalized) {
+            targets.push(normalized);
+        }
+    };
+
+    for raw in [room_id, author_id, author_name] {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        push(trimmed.to_string());
+        let extracted = extract_user_id_from_url(trimmed);
+        if !extracted.is_empty() {
+            push(extracted);
+        }
+        let resolved = resolve_principal_id(trimmed);
+        if !resolved.is_empty() {
+            push(resolved);
+        }
+    }
+
+    targets
+}
+
+fn follow_item_matches(item: &UserFollowLive, room_id: &str, author_id: &str, author_name: &str) -> bool {
+    let targets = follow_match_target_ids(room_id, author_id, author_name);
+    if targets.is_empty() {
+        return false;
+    }
+
+    let principal_id = item
+        .user
+        .as_ref()
+        .and_then(|user| user.principal_id.as_deref())
+        .map(normalize_id)
+        .unwrap_or_default();
+    let user_id = item
+        .user
+        .as_ref()
+        .and_then(|user| user.user_id.as_deref())
+        .map(normalize_id)
+        .unwrap_or_default();
+    let user_name = item
+        .user
+        .as_ref()
+        .and_then(|user| user.user_name.as_deref())
+        .map(normalize_id)
+        .unwrap_or_default();
+    let live_stream_id = item
+        .live_stream_id
+        .as_deref()
+        .map(normalize_id)
+        .unwrap_or_default();
+
+    targets.iter().any(|target| {
+        (!principal_id.is_empty() && target == &principal_id)
+            || (!user_id.is_empty() && target == &user_id)
+            || (!user_name.is_empty() && target == &user_name)
+            || (!live_stream_id.is_empty() && target == &live_stream_id)
+    })
+}
+
+fn should_homepage_prewarm(account: &Account) -> bool {
+    if let Some(enabled) = read_env_bool("BSR_KUAISHOU_HOMEPAGE_PREWARM") {
+        return enabled;
+    }
+    account.is_guest()
+}
+
+fn follow_info_cache_ttl_secs() -> i64 {
+    read_env_u64(
+        "BSR_KUAISHOU_FOLLOW_CACHE_TTL_SECS",
+        FOLLOW_INFO_CACHE_TTL_SECS as u64,
+    ) as i64
+}
+
+fn follow_info_miss_ttl_secs() -> i64 {
+    read_env_u64(
+        "BSR_KUAISHOU_FOLLOW_MISS_TTL_SECS",
+        FOLLOW_INFO_MISS_TTL_SECS as u64,
+    ) as i64
+}
+
+fn follow_info_cache_key(room_id: &str, author_id: &str, author_name: &str) -> Option<String> {
+    if !room_id.trim().is_empty() {
+        return Some(format!("room:{}", normalize_id(room_id)));
+    }
+    if !author_id.trim().is_empty() {
+        return Some(format!("author:{}", normalize_id(author_id)));
+    }
+    if !author_name.trim().is_empty() {
+        return Some(format!("name:{}", normalize_id(author_name)));
+    }
+    None
+}
+
+async fn get_cached_follow_info(key: &str) -> Option<Option<FollowLiveInfo>> {
+    let cache = FOLLOW_INFO_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut guard = cache.lock().await;
+    let now = Utc::now().timestamp();
+    if let Some(entry) = guard.get(key) {
+        let ttl_secs = if entry.info.is_some() {
+            follow_info_cache_ttl_secs()
+        } else {
+            follow_info_miss_ttl_secs()
+        };
+        if now.saturating_sub(entry.ts) <= ttl_secs {
+            return Some(entry.info.clone());
+        }
+    }
+    guard.remove(key);
+    None
+}
+
+async fn set_cached_follow_info(key: String, info: Option<FollowLiveInfo>) {
+    let cache = FOLLOW_INFO_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut guard = cache.lock().await;
+    guard.insert(
+        key,
+        FollowInfoCacheEntry {
+            ts: Utc::now().timestamp(),
+            info,
+        },
+    );
+}
+
+async fn fetch_follow_live_info_cached(
+    client: &Client,
+    account: &Account,
+    room_id: &str,
+    author_id: &str,
+    author_name: &str,
+) -> Option<FollowLiveInfo> {
+    let cache_key = follow_info_cache_key(room_id, author_id, author_name);
+    if let Some(key) = cache_key.as_deref() {
+        if let Some(cached) = get_cached_follow_info(key).await {
+            return cached;
+        }
+    }
+
+    let fetched = match fetch_follow_live_info(client, account, room_id, author_id, author_name).await
+    {
+        Some(info) => Some(info),
+        None => fetch_livedetail_info(client, account, room_id).await,
+    };
+
+    if let Some(key) = cache_key {
+        set_cached_follow_info(key, fetched.clone()).await;
+    }
+
+    fetched
 }
 
 fn extract_kuaishou_kww(cookies: &str) -> Option<String> {
@@ -736,6 +1069,51 @@ fn extract_kuaishou_kww(cookies: &str) -> Option<String> {
     None
 }
 
+fn get_kuaishou_kww_override() -> Option<String> {
+    for key in ["BSR_KUAISHOU_KWW", "KUAISHOU_KWW"] {
+        if let Ok(value) = std::env::var(key) {
+            let trimmed = value.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+    if let Some(overrides) = crate::reverse_generate::qr_login::fetch_kuaishou_overrides() {
+        if let Some(value) = overrides.get("kww").or_else(|| overrides.get("kwfv1")) {
+            let trimmed = value.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn resolve_kuaishou_kww(cookies: &str) -> Option<String> {
+    extract_kuaishou_kww(cookies).or_else(get_kuaishou_kww_override)
+}
+
+fn extract_kuaishou_kww_from_html(html: &str) -> Option<String> {
+    let patterns = [
+        r#"(?i)"kww"\s*:\s*"([^"]+)""#,
+        r#"(?i)"kwfv1"\s*:\s*"([^"]+)""#,
+        r#"(?i)\bkww\s*=\s*"([^"]+)""#,
+        r#"(?i)\bkwfv1\s*=\s*"([^"]+)""#,
+    ];
+    for pattern in patterns {
+        let Ok(re) = Regex::new(pattern) else {
+            continue;
+        };
+        if let Some(m) = re.captures(html).and_then(|caps| caps.get(1)) {
+            let value = m.as_str().trim();
+            if !value.is_empty() {
+                return Some(value.to_string());
+            }
+        }
+    }
+    None
+}
+
 async fn fetch_follow_live_info(
     client: &Client,
     account: &Account,
@@ -743,23 +1121,45 @@ async fn fetch_follow_live_info(
     author_id: &str,
     author_name: &str,
 ) -> Option<FollowLiveInfo> {
+    if should_use_global_web_cooldown(account) && !web_api_allowed() {
+        return None;
+    }
+    let referer_principal = resolve_principal_id(room_id);
+    let referer = if referer_principal.is_empty() {
+        "https://live.kuaishou.com/".to_string()
+    } else {
+        format!("https://live.kuaishou.com/u/{referer_principal}")
+    };
+
     let mut headers = reqwest::header::HeaderMap::new();
     headers.insert("User-Agent", USER_AGENT.parse().ok()?);
     headers.insert("Accept", "application/json, text/plain, */*".parse().ok()?);
     headers.insert("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8".parse().ok()?);
-    headers.insert("Referer", "https://live.kuaishou.com/".parse().ok()?);
+    headers.insert(
+        "sec-ch-ua",
+        "\"Not:A-Brand\";v=\"99\", \"Google Chrome\";v=\"145\", \"Chromium\";v=\"145\""
+            .parse()
+            .ok()?,
+    );
+    headers.insert("sec-ch-ua-mobile", "?0".parse().ok()?);
+    headers.insert("sec-ch-ua-platform", "\"macOS\"".parse().ok()?);
+    headers.insert("Sec-Fetch-Dest", "empty".parse().ok()?);
+    headers.insert("Sec-Fetch-Mode", "cors".parse().ok()?);
+    headers.insert("Sec-Fetch-Site", "same-origin".parse().ok()?);
+    headers.insert("Referer", referer.parse().ok()?);
     headers.insert("Origin", "https://live.kuaishou.com".parse().ok()?);
 
     let cookie_header = ensure_kuaishou_request_cookie(&account.cookies);
     if !cookie_header.is_empty() {
         headers.insert("Cookie", cookie_header.parse().ok()?);
     }
-    if let Some(kww) = extract_kuaishou_kww(&cookie_header) {
+    if let Some(kww) = resolve_kuaishou_kww(&cookie_header) {
         if let Ok(value) = kww.parse() {
             headers.insert("kww", value);
         }
     }
 
+    wait_for_web_request_slot("follow_live_info").await;
     let response = client
         .get("https://live.kuaishou.com/live_api/baseuser/userFollowCount")
         .headers(headers)
@@ -773,46 +1173,32 @@ async fn fetch_follow_live_info(
     }
 
     let body = response.text().await.ok()?;
+    if let Some(msg) = extract_rate_limit_message_from_body(&body) {
+        if should_use_global_web_cooldown(account) {
+            set_web_cooldown(&msg);
+        }
+        return None;
+    }
     let data: UserFollowCountResponse = serde_json::from_str(&body).ok()?;
     let follow_list = data.data?.follow;
-
-    let room_id_norm = normalize_id(room_id);
-    let author_id_norm = normalize_id(author_id);
-    let author_name_norm = normalize_id(author_name);
+    let stream_cookie = normalize_record_cookie(&account.cookies);
 
     for item in follow_list {
-        let Some(user) = item.user else {
+        if !follow_item_matches(&item, room_id, author_id, author_name) {
             continue;
-        };
-        let principal_id = user
-            .principal_id
-            .as_deref()
-            .map(normalize_id)
-            .unwrap_or_default();
-        let user_id = user
-            .user_id
-            .as_deref()
-            .map(normalize_id)
-            .unwrap_or_default();
-        let user_name = user
-            .user_name
-            .as_deref()
-            .map(normalize_id)
-            .unwrap_or_default();
-
-        let matches = (!room_id_norm.is_empty() && principal_id == room_id_norm)
-            || (!author_id_norm.is_empty() && user_id == author_id_norm)
-            || (!author_name_norm.is_empty() && user_name == author_name_norm);
-
-        if matches {
-            return Some(FollowLiveInfo {
-                caption: item.caption,
-                cover_url: item.cover_url,
-                user_name: user.user_name,
-                user_id: user.user_id,
-                user_avatar: user.head_url,
-            });
         }
+        let streams = parse_stream_infos_from_follow_item(&item, &stream_cookie);
+        let user = item.user.as_ref();
+        return Some(FollowLiveInfo {
+            principal_id: user.and_then(|v| v.principal_id.clone()),
+            caption: item.caption,
+            cover_url: item.cover_url.or(item.rt_cover_url),
+            user_name: user.and_then(|v| v.user_name.clone()),
+            user_id: user.and_then(|v| v.user_id.clone()),
+            user_avatar: user.and_then(|v| v.head_url.clone()),
+            live: user.and_then(|v| v.live),
+            streams,
+        });
     }
 
     None
@@ -823,62 +1209,467 @@ async fn fetch_livedetail_info(
     account: &Account,
     room_id: &str,
 ) -> Option<FollowLiveInfo> {
-    let cookie_header = ensure_kuaishou_request_cookie(&account.cookies);
-    let did = get_cookie_value_ci(&cookie_header, "did")
-        .or_else(|| get_cookie_value_ci(&cookie_header, "_did"))
-        .unwrap_or_else(gen_web_did);
-    let signer = crate::reverse_generate::kuaishou_sign::KuaishouSign::new(&did);
-    let query_str = format!("principalId={}", room_id);
-    let sign = signer.generate_sign(&query_str);
-
-    let mut headers = reqwest::header::HeaderMap::new();
-    headers.insert("User-Agent", USER_AGENT.parse().ok()?);
-    headers.insert("Accept", "application/json, text/plain, */*".parse().ok()?);
-    headers.insert("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8".parse().ok()?);
-    headers.insert(
-        "Referer",
-        format!("https://live.kuaishou.com/u/{room_id}")
-            .parse()
-            .ok()?,
-    );
-    headers.insert("Origin", "https://live.kuaishou.com".parse().ok()?);
-
-    if !cookie_header.is_empty() {
-        headers.insert("Cookie", cookie_header.parse().ok()?);
-    }
-    if let Some(kww) = extract_kuaishou_kww(&cookie_header) {
-        if let Ok(value) = kww.parse() {
-            headers.insert("kww", value);
-        }
-    }
-
-    let response = client
-        .get("https://live.kuaishou.com/live_api/liveroom/livedetail")
-        .query(&[("principalId", room_id), ("sign", sign.as_str())])
-        .headers(headers)
-        .send()
+    let principal_id = resolve_principal_id(room_id);
+    let value = fetch_livedetail_value(client, account, &principal_id)
         .await
-        .ok()?;
-
-    if !response.status().is_success() {
-        log::debug!("[Kuaishou] livedetail status: {}", response.status());
-        return None;
-    }
-
-    let body = response.text().await.ok()?;
-    let value: Value = serde_json::from_str(&body).ok()?;
+        .ok()
+        .flatten()?;
 
     let caption = find_string_value(&value, &["caption", "title", "liveTitle", "streamTitle"]);
     let cover_url = find_image_url(&value, &["coverUrl", "cover", "poster", "snapshot"]);
     let user_info = find_user_info(&value);
 
     Some(FollowLiveInfo {
+        principal_id: Some(principal_id),
         caption,
         cover_url,
         user_name: user_info.as_ref().map(|u| u.user_name.clone()),
         user_id: user_info.as_ref().map(|u| u.user_id.clone()),
         user_avatar: user_info.as_ref().map(|u| u.user_avatar.clone()),
+        live: None,
+        streams: Vec::new(),
     })
+}
+
+fn resolve_principal_id(input: &str) -> String {
+    let extracted = extract_user_id_from_url(input);
+    if !extracted.is_empty() {
+        return extracted;
+    }
+    let trimmed = input.trim();
+    if let Some((prefix, suffix)) = trimmed.split_once('#') {
+        if prefix.trim().eq_ignore_ascii_case("kuaishou") && !suffix.trim().is_empty() {
+            return suffix.trim().to_string();
+        }
+    }
+    trimmed
+        .trim_start_matches('@')
+        .trim_end_matches('/')
+        .to_string()
+}
+
+fn normalize_principal_candidate(value: &str) -> Option<String> {
+    let normalized = value.trim().trim_matches('/').trim_start_matches('@').to_string();
+    if normalized.is_empty() {
+        return None;
+    }
+    if normalized.contains("://")
+        || normalized.contains('/')
+        || normalized.contains('?')
+        || normalized.contains('&')
+        || normalized.contains('=')
+        || normalized.eq_ignore_ascii_case("kuaishou")
+    {
+        return None;
+    }
+    Some(normalized)
+}
+
+fn principal_id_candidates(input: &str) -> Vec<String> {
+    let mut candidates: Vec<String> = Vec::new();
+    let mut push = |value: String| {
+        let Some(normalized) = normalize_principal_candidate(&value) else {
+            return;
+        };
+        if !candidates.iter().any(|item| item.eq_ignore_ascii_case(&normalized)) {
+            candidates.push(normalized);
+        }
+    };
+
+    let trimmed = input.trim().to_string();
+    if let Some((prefix, suffix)) = trimmed.split_once('#') {
+        if prefix.trim().eq_ignore_ascii_case("kuaishou") && !suffix.trim().is_empty() {
+            push(suffix.trim().to_string());
+        }
+    }
+
+    let extracted = extract_user_id_from_url(&trimmed);
+    if !extracted.is_empty() {
+        push(extracted);
+    }
+    push(resolve_principal_id(&trimmed));
+    candidates
+}
+
+fn room_info_score(room: &RoomInfo) -> i64 {
+    let mut score = 0;
+    if room.live_status {
+        score += 8;
+    }
+    if !room.streams.is_empty() {
+        score += 16;
+    }
+    if !room.user_id.trim().is_empty() {
+        score += 4;
+    }
+    if !room.user_name.trim().is_empty() {
+        score += 2;
+    }
+    if !room.room_title.trim().is_empty() {
+        score += 1;
+    }
+    score
+}
+
+fn find_bool_value(value: &Value, keys: &[&str]) -> Option<bool> {
+    match value {
+        Value::Object(map) => {
+            for key in keys {
+                if let Some(found) = map.get(*key) {
+                    match found {
+                        Value::Bool(v) => return Some(*v),
+                        Value::Number(v) => {
+                            if let Some(n) = v.as_i64() {
+                                return Some(n != 0);
+                            }
+                        }
+                        Value::String(v) => {
+                            let lower = v.trim().to_ascii_lowercase();
+                            if matches!(lower.as_str(), "1" | "true" | "yes" | "on" | "live") {
+                                return Some(true);
+                            }
+                            if matches!(lower.as_str(), "0" | "false" | "no" | "off") {
+                                return Some(false);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            for child in map.values() {
+                if let Some(found) = find_bool_value(child, keys) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        Value::Array(values) => {
+            for child in values {
+                if let Some(found) = find_bool_value(child, keys) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+fn build_livedetail_query_params(
+    cookie: &str,
+    principal_id: &str,
+    kww_override: Option<&str>,
+) -> Vec<(String, String)> {
+    let did = get_cookie_value_ci(cookie, "did")
+        .or_else(|| get_cookie_value_ci(cookie, "_did"))
+        .unwrap_or_else(gen_web_did);
+    let kpn = get_cookie_value_ci(cookie, "kpn").unwrap_or_else(|| "GAME_ZONE".to_string());
+    let kpf = get_cookie_value_ci(cookie, "kpf").unwrap_or_else(|| "PC_WEB".to_string());
+
+    let mut params = vec![
+        ("principalId".to_string(), principal_id.to_string()),
+        ("caver".to_string(), "2".to_string()),
+        ("did".to_string(), did),
+        ("kpn".to_string(), kpn),
+        ("kpf".to_string(), kpf),
+    ];
+
+    for key in ["clientid", "webid", "kwscode", "kwfv1", "kww"] {
+        if let Some(v) = get_cookie_value_ci(cookie, key) {
+            params.push((key.to_string(), v));
+        }
+    }
+    if params
+        .iter()
+        .all(|(k, v)| !k.eq_ignore_ascii_case("kww") || v.trim().is_empty())
+    {
+        if let Some(v) = kww_override {
+            let trimmed = v.trim();
+            if !trimmed.is_empty() {
+                params.push(("kww".to_string(), trimmed.to_string()));
+            }
+        }
+    }
+    params
+}
+
+fn build_sorted_query_string(params: &[(String, String)]) -> String {
+    let mut pairs: Vec<String> = params.iter().map(|(k, v)| format!("{k}={v}")).collect();
+    pairs.sort();
+    pairs.join("&")
+}
+
+async fn fetch_livedetail_value(
+    client: &Client,
+    account: &Account,
+    principal_id: &str,
+) -> Result<Option<Value>, RecorderError> {
+    if principal_id.trim().is_empty() {
+        return Ok(None);
+    }
+    if should_use_global_web_cooldown(account) && !web_api_allowed() {
+        return Ok(None);
+    }
+
+    // Keep original cookies as much as possible in reverse-API mode.
+    let cookie_header = normalize_record_cookie(&account.cookies);
+
+    let mut headers = reqwest::header::HeaderMap::new();
+    headers.insert("User-Agent", USER_AGENT.parse().unwrap());
+    headers.insert("Accept", "application/json, text/plain, */*".parse().unwrap());
+    headers.insert("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8".parse().unwrap());
+    headers.insert(
+        "sec-ch-ua",
+        "\"Not:A-Brand\";v=\"99\", \"Google Chrome\";v=\"145\", \"Chromium\";v=\"145\""
+            .parse()
+            .unwrap(),
+    );
+    headers.insert("sec-ch-ua-mobile", "?0".parse().unwrap());
+    headers.insert("sec-ch-ua-platform", "\"macOS\"".parse().unwrap());
+    headers.insert("Sec-Fetch-Dest", "empty".parse().unwrap());
+    headers.insert("Sec-Fetch-Mode", "cors".parse().unwrap());
+    headers.insert("Sec-Fetch-Site", "same-origin".parse().unwrap());
+    headers.insert(
+        "Referer",
+        format!("https://live.kuaishou.com/u/{principal_id}")
+            .parse()
+            .unwrap(),
+    );
+    headers.insert("Origin", "https://live.kuaishou.com".parse().unwrap());
+
+    if !cookie_header.is_empty() {
+        headers.insert("Cookie", cookie_header.parse().unwrap());
+    }
+    let mut resolved_kww = resolve_kuaishou_kww(&cookie_header);
+    if resolved_kww.is_none() {
+        let probe_url = format!("https://live.kuaishou.com/u/{}", resolve_principal_id(principal_id));
+        if let Ok((html, _)) = fetch_web_html(client, account, &probe_url).await {
+            resolved_kww = extract_kuaishou_kww_from_html(&html);
+            if resolved_kww.is_some() {
+                log::info!("[Kuaishou] Extracted kww from room page HTML");
+            }
+        }
+    }
+    if let Some(kww) = resolved_kww.as_deref() {
+        if let Ok(value) = kww.parse() {
+            headers.insert("kww", value);
+        }
+    }
+
+    for principal in principal_id_candidates(principal_id) {
+        let params_full =
+            build_livedetail_query_params(&cookie_header, &principal, resolved_kww.as_deref());
+        let params_basic = vec![("principalId".to_string(), principal.clone())];
+        let param_candidates = [params_basic, params_full];
+
+        for params in param_candidates {
+            let did = params
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("did"))
+                .map(|(_, v)| v.clone())
+                .unwrap_or_else(gen_web_did);
+            let signer = crate::reverse_generate::kuaishou_sign::KuaishouSign::new(&did);
+            let sign_inputs = [
+                format!("principalId={principal}"),
+                build_sorted_query_string(&params),
+            ];
+
+            // Try unsigned first, then signed variants.
+            for attempt in 0..=sign_inputs.len() {
+                let mut req = client
+                    .get("https://live.kuaishou.com/live_api/liveroom/livedetail")
+                    .query(&params)
+                    .headers(headers.clone());
+                let mut sign_note = "none".to_string();
+
+                if attempt > 0 {
+                    let sign_input = &sign_inputs[attempt - 1];
+                    if !sign_input.trim().is_empty() {
+                        let sign = signer.generate_sign(sign_input);
+                        req = req.query(&[("sign", sign.as_str())]);
+                        sign_note = sign_input.clone();
+                    }
+                }
+
+                wait_for_web_request_slot("live_detail").await;
+                let response = req.send().await?;
+                let status = response.status();
+                let body = response.text().await?;
+
+                if let Some(msg) = extract_rate_limit_message_from_body(&body) {
+                    if should_use_global_web_cooldown(account) {
+                        set_web_cooldown(&msg);
+                    }
+                    return Err(RecorderError::ApiError { error: msg });
+                }
+
+                log::debug!(
+                    "[Kuaishou] livedetail attempt status={}, sign_input={}, principalId={}",
+                    status,
+                    sign_note,
+                    principal
+                );
+
+                if !status.is_success() {
+                    continue;
+                }
+
+                if body.contains("请完成滑块验证") || body.to_ascii_lowercase().contains("captcha")
+                {
+                    return Err(RecorderError::ApiError {
+                        error: "请完成滑块验证".to_string(),
+                    });
+                }
+
+                if let Ok(value) = serde_json::from_str::<Value>(&body) {
+                    return Ok(Some(value));
+                }
+            }
+        }
+    }
+
+    Ok(None)
+}
+
+fn parse_room_info_from_livedetail_value(
+    value: &Value,
+    principal_id: &str,
+    cookies: &str,
+) -> Result<Option<RoomInfo>, RecorderError> {
+    let live_data = find_live_stream_response(value);
+    if let Some(error) = live_data
+        .as_ref()
+        .and_then(|data| data.error_type.as_ref())
+    {
+        return Err(RecorderError::ApiError {
+            error: format!("{}: {}", error.title, error.content),
+        });
+    }
+
+    let fallback_hls = find_string_value(value, &["hlsPlayUrl", "hls_play_url"])
+        .filter(|url| url.contains(".m3u8"))
+        .map(|url| StreamInfo {
+            url,
+            quality: "蓝光质臻".to_string(),
+            bitrate: None,
+            cookie: Some(cookies.to_string()),
+        });
+
+    let live_stream = live_data.as_ref().and_then(|data| data.live_stream.clone());
+    let mut streams = if let Some(stream) = live_stream.clone() {
+        parse_stream_infos_from_live_stream(stream, fallback_hls.clone(), cookies)
+            .unwrap_or_else(|_| fallback_hls.clone().into_iter().collect())
+    } else {
+        fallback_hls.clone().into_iter().collect()
+    };
+
+    // livedetail schema varies (array playUrls / multiResolutionPlayUrls),
+    // recursively parse follow-like nodes as fallback.
+    let parsed_from_value = parse_stream_infos_from_livedetail_value(value, cookies);
+    if !parsed_from_value.is_empty() {
+        let mut seen = streams
+            .iter()
+            .map(|stream| stream.url.clone())
+            .collect::<std::collections::HashSet<_>>();
+        for stream in parsed_from_value {
+            if seen.insert(stream.url.clone()) {
+                streams.push(stream);
+            }
+        }
+        sort_stream_infos(&mut streams);
+    }
+
+    let author = live_data
+        .as_ref()
+        .and_then(|data| data.author.clone())
+        .unwrap_or_default();
+    let user_info = find_user_info(value);
+
+    let user_name = if !author.name.trim().is_empty() {
+        author.name.trim().to_string()
+    } else {
+        user_info
+            .as_ref()
+            .map(|u| u.user_name.trim().to_string())
+            .filter(|v| !v.is_empty())
+            .unwrap_or_else(|| "Kuaishou Live".to_string())
+    };
+    let user_id = if !author.id.trim().is_empty() {
+        author.id.trim().to_string()
+    } else {
+        user_info
+            .as_ref()
+            .map(|u| u.user_id.trim().to_string())
+            .filter(|v| !v.is_empty())
+            .unwrap_or_else(|| principal_id.to_string())
+    };
+    let user_avatar = author
+        .head_url
+        .as_ref()
+        .map(|url| normalize_image_url(url))
+        .filter(|url| !url.is_empty())
+        .or_else(|| {
+            user_info
+                .as_ref()
+                .map(|u| normalize_image_url(&u.user_avatar))
+                .filter(|url| !url.is_empty())
+        })
+        .unwrap_or_default();
+
+    let title = live_stream
+        .as_ref()
+        .and_then(|stream| stream.caption.clone())
+        .or_else(|| {
+            live_data
+                .as_ref()
+                .and_then(|data| data.config.as_ref().and_then(|c| c.caption.clone()))
+        })
+        .or_else(|| find_string_value(value, &["caption", "title", "liveTitle", "streamTitle"]))
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| user_name.clone());
+
+    let room_cover_url = live_stream
+        .as_ref()
+        .and_then(|stream| stream.cover_url.clone())
+        .map(|url| normalize_image_url(&url))
+        .filter(|url| !url.is_empty())
+        .or_else(|| find_image_url(value, &["coverUrl", "cover", "poster", "snapshot"]))
+        .unwrap_or_else(|| user_avatar.clone());
+
+    let live_status = if !streams.is_empty() {
+        true
+    } else {
+        find_bool_value(
+            value,
+            &["living", "isLiving", "liveStatus", "live_status", "isLive"],
+        )
+        .unwrap_or(false)
+    };
+
+    if streams.is_empty() && title.trim().is_empty() && user_id.trim().is_empty() {
+        return Ok(None);
+    }
+
+    Ok(Some(RoomInfo {
+        live_status,
+        room_title: title,
+        room_cover_url,
+        user_id,
+        user_name,
+        user_avatar,
+        streams,
+    }))
+}
+
+async fn get_room_info_via_livedetail(
+    client: &Client,
+    account: &Account,
+    principal_id: &str,
+) -> Result<Option<RoomInfo>, RecorderError> {
+    let Some(value) = fetch_livedetail_value(client, account, principal_id).await? else {
+        return Ok(None);
+    };
+    parse_room_info_from_livedetail_value(&value, principal_id, &account.cookies)
 }
 
 fn extract_image_url(value: &Value) -> Option<String> {
@@ -1055,6 +1846,164 @@ pub struct StreamInfo {
     pub cookie: Option<String>,
 }
 
+fn normalize_stream_url(url: &str) -> Option<String> {
+    let mut normalized = url.trim().to_string();
+    if normalized.is_empty() {
+        return None;
+    }
+
+    // Some Kuaishou responses occasionally return `sidc=xxxtsc=origin` without '&'.
+    if normalized.contains("sidc=") && normalized.contains("tsc=") && !normalized.contains("&tsc=")
+    {
+        static SIDC_TSC_FIX_RE: OnceLock<Regex> = OnceLock::new();
+        let re = SIDC_TSC_FIX_RE.get_or_init(|| Regex::new(r"(sidc=[^&#]+)tsc=").unwrap());
+        normalized = re.replace(&normalized, "$1&tsc=").to_string();
+    }
+
+    while normalized.contains("&&") {
+        normalized = normalized.replace("&&", "&");
+    }
+    Some(normalized)
+}
+
+fn sort_stream_infos(streams: &mut [StreamInfo]) {
+    streams.sort_by(|a, b| {
+        let a_m3u8 = a.url.contains(".m3u8");
+        let b_m3u8 = b.url.contains(".m3u8");
+        b_m3u8
+            .cmp(&a_m3u8)
+            .then_with(|| b.bitrate.unwrap_or(0).cmp(&a.bitrate.unwrap_or(0)))
+            .then_with(|| quality_rank(&b.quality).cmp(&quality_rank(&a.quality)))
+    });
+}
+
+fn push_stream_info_unique(
+    urls: &mut Vec<StreamInfo>,
+    seen: &mut std::collections::HashSet<String>,
+    raw_url: &str,
+    quality: String,
+    bitrate: Option<i64>,
+    cookie: &str,
+) {
+    let Some(url) = normalize_stream_url(raw_url) else {
+        return;
+    };
+    if !seen.insert(url.clone()) {
+        return;
+    }
+    urls.push(StreamInfo {
+        url,
+        quality,
+        bitrate,
+        cookie: Some(cookie.to_string()),
+    });
+}
+
+fn parse_stream_infos_from_follow_item(item: &UserFollowLive, cookie: &str) -> Vec<StreamInfo> {
+    let mut urls: Vec<StreamInfo> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    if let Some(hls) = item.hls_play_url.as_ref() {
+        push_stream_info_unique(
+            &mut urls,
+            &mut seen,
+            hls,
+            "蓝光质臻".to_string(),
+            None,
+            cookie,
+        );
+    }
+
+    for level in &item.multi_resolution_play_urls {
+        let quality = level
+            .name
+            .as_deref()
+            .or(level.short_name.as_deref())
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        for play in &level.urls {
+            push_stream_info_unique(
+                &mut urls,
+                &mut seen,
+                &play.url,
+                quality.clone(),
+                play.bitrate,
+                cookie,
+            );
+        }
+    }
+
+    for play in &item.play_urls {
+        let quality = play
+            .bitrate
+            .map(|b| format!("{b}kbps"))
+            .unwrap_or_else(|| "标清".to_string());
+        push_stream_info_unique(
+            &mut urls,
+            &mut seen,
+            &play.url,
+            quality,
+            play.bitrate,
+            cookie,
+        );
+    }
+
+    sort_stream_infos(&mut urls);
+    urls
+}
+
+fn collect_stream_infos_from_livedetail_value(
+    value: &Value,
+    cookie: &str,
+    urls: &mut Vec<StreamInfo>,
+    seen: &mut std::collections::HashSet<String>,
+) {
+    match value {
+        Value::Object(map) => {
+            if map.contains_key("hlsPlayUrl")
+                || map.contains_key("playUrls")
+                || map.contains_key("multiResolutionPlayUrls")
+            {
+                if let Ok(item) = serde_json::from_value::<UserFollowLive>(Value::Object(map.clone()))
+                {
+                    for stream in parse_stream_infos_from_follow_item(&item, cookie) {
+                        if seen.insert(stream.url.clone()) {
+                            urls.push(stream);
+                        }
+                    }
+                } else if let Some(hls) = map.get("hlsPlayUrl").and_then(|v| v.as_str()) {
+                    push_stream_info_unique(
+                        urls,
+                        seen,
+                        hls,
+                        "蓝光质臻".to_string(),
+                        None,
+                        cookie,
+                    );
+                }
+            }
+            for child in map.values() {
+                collect_stream_infos_from_livedetail_value(child, cookie, urls, seen);
+            }
+        }
+        Value::Array(list) => {
+            for child in list {
+                collect_stream_infos_from_livedetail_value(child, cookie, urls, seen);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn parse_stream_infos_from_livedetail_value(value: &Value, cookie: &str) -> Vec<StreamInfo> {
+    let mut urls = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    collect_stream_infos_from_livedetail_value(value, cookie, &mut urls, &mut seen);
+    sort_stream_infos(&mut urls);
+    urls
+}
+
 fn parse_stream_infos_from_live_stream(
     live_stream: LiveStream,
     fallback_hls: Option<StreamInfo>,
@@ -1090,12 +2039,13 @@ fn parse_stream_infos_from_live_stream(
 
     let mut seen_urls = std::collections::HashSet::new();
     urls.extend(all_representations.into_iter().filter_map(|rep| {
-        if seen_urls.contains(&rep.url) {
+        let normalized = normalize_stream_url(&rep.url)?;
+        if seen_urls.contains(&normalized) {
             return None;
         }
-        seen_urls.insert(rep.url.clone());
+        seen_urls.insert(normalized.clone());
         Some(StreamInfo {
-            url: rep.url,
+            url: normalized,
             quality: rep.name.or(rep.quality_type).unwrap_or_default(),
             bitrate: rep.bitrate,
             cookie: Some(cookie.to_string()),
@@ -1108,14 +2058,7 @@ fn parse_stream_infos_from_live_stream(
         }
     }
 
-    urls.sort_by(|a, b| {
-        let a_m3u8 = a.url.contains(".m3u8");
-        let b_m3u8 = b.url.contains(".m3u8");
-        b_m3u8
-            .cmp(&a_m3u8)
-            .then_with(|| b.bitrate.unwrap_or(0).cmp(&a.bitrate.unwrap_or(0)))
-            .then_with(|| quality_rank(&b.quality).cmp(&quality_rank(&a.quality)))
-    });
+    sort_stream_infos(&mut urls);
 
     if !urls.iter().any(|stream| stream.url.contains(".m3u8")) {
         if let Some(flv_url) = urls
@@ -1126,15 +2069,17 @@ fn parse_stream_infos_from_live_stream(
             let guessed_hls = flv_url.replacen(".flv", ".m3u8", 1);
             if guessed_hls != flv_url {
                 log::info!("[Kuaishou] No m3u8 found, guessing HLS from FLV URL");
-                urls.insert(
-                    0,
-                    StreamInfo {
-                        url: guessed_hls,
-                        quality: "蓝光质臻".to_string(),
-                        bitrate: None,
-                        cookie: Some(cookie.to_string()),
-                    },
-                );
+                if let Some(url) = normalize_stream_url(&guessed_hls) {
+                    urls.insert(
+                        0,
+                        StreamInfo {
+                            url,
+                            quality: "蓝光质臻".to_string(),
+                            bitrate: None,
+                            cookie: Some(cookie.to_string()),
+                        },
+                    );
+                }
             }
         }
     }
@@ -1273,7 +2218,57 @@ fn extract_qr_scan_user(value: &Value) -> (Option<String>, Option<String>, Optio
     (user_id, user_name, user_avatar)
 }
 
-/// Get room information from web page
+fn room_info_from_follow_info(candidate: &str, info: FollowLiveInfo) -> RoomInfo {
+    let user_name = info
+        .user_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| "Kuaishou Live".to_string());
+    let user_id = info
+        .user_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            info.principal_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| candidate.to_string());
+    let user_avatar = info.user_avatar.unwrap_or_default();
+    let room_title = info
+        .caption
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| user_name.clone());
+    let room_cover_url = info
+        .cover_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| user_avatar.clone());
+    let live_status = !info.streams.is_empty() || info.live.unwrap_or(false);
+
+    RoomInfo {
+        live_status,
+        room_title,
+        room_cover_url,
+        user_id,
+        user_name,
+        user_avatar,
+        streams: info.streams,
+    }
+}
+
+/// Get room information from Kuaishou reverse APIs only.
 pub async fn get_room_info(
     client: &Client,
     account: &Account,
@@ -1281,318 +2276,61 @@ pub async fn get_room_info(
 ) -> Result<RoomInfo, RecorderError> {
     let account_obj = ensure_guest_cookie(account);
     let account = &account_obj;
-    let (html_str, _final_url) = fetch_web_html(client, account, url).await?;
-    if is_rate_limit_message(&html_str) {
-        let message = "访问太快，请稍后再试。";
-        set_web_cooldown(message);
-        return Err(RecorderError::ApiError {
-            error: message.to_string(),
-        });
+    let mut best_room: Option<RoomInfo> = None;
+    let mut best_score = i64::MIN;
+    let mut last_error: Option<RecorderError> = None;
+
+    for principal_id in principal_id_candidates(url) {
+        match get_room_info_via_livedetail(client, account, &principal_id).await {
+            Ok(Some(room)) => {
+                if room.live_status && !room.streams.is_empty() {
+                    return Ok(room);
+                }
+                let score = room_info_score(&room);
+                if score > best_score {
+                    best_score = score;
+                    best_room = Some(room);
+                }
+            }
+            Ok(None) => {}
+            Err(err) => {
+                if is_rate_limited_error(&err) || is_captcha_error(&err) {
+                    return Err(err);
+                }
+                last_error = Some(err);
+            }
+        }
     }
-    let fallback_hls = extract_hls_play_url(&html_str).map(|hls_url| StreamInfo {
-        url: hls_url,
-        quality: "蓝光质臻".to_string(),
-        bitrate: None,
-        cookie: Some(account.cookies.clone()),
-    });
-    let has_fallback_stream = fallback_hls.is_some();
-    let fallback_user_id = extract_user_id_from_url(url);
-    let (html_title, html_cover, html_avatar) = extract_metadata_from_html(&html_str);
 
-    let fallback_user_name = html_title
-        .clone()
-        .unwrap_or_else(|| "Kuaishou Live".to_string());
-
-    let fallback_title = html_title
-        .clone()
-        .unwrap_or_else(|| format!("{}'s live", fallback_user_name));
-    let mut fallback_room_info = RoomInfo {
-        live_status: has_fallback_stream,
-        room_title: fallback_title.clone(),
-        room_cover_url: html_cover.clone().unwrap_or_default(),
-        user_id: fallback_user_id.clone(),
-        user_name: fallback_user_name.clone(),
-        user_avatar: html_avatar.clone().unwrap_or_default(),
-        streams: fallback_hls.clone().into_iter().collect(),
-    };
-
-    if fallback_room_info.room_title == fallback_title {
-        let follow_info = match fetch_follow_live_info(
-            client,
-            account,
-            &fallback_user_id,
-            &fallback_room_info.user_id,
-            &fallback_room_info.user_name,
-        )
-        .await
+    // Fallback to userFollowCount reverse API, which can include direct play URLs.
+    for candidate in principal_id_candidates(url) {
+        if let Some(info) =
+            fetch_follow_live_info_cached(client, account, &candidate, &candidate, &candidate)
+                .await
         {
-            Some(info) => Some(info),
-            None => fetch_livedetail_info(client, account, &fallback_user_id).await,
-        };
-
-        if let Some(info) = follow_info {
-            if let Some(caption) = info
-                .caption
-                .as_deref()
-                .map(str::trim)
-                .filter(|v| !v.is_empty())
-            {
-                fallback_room_info.room_title = caption.to_string();
+            let room = room_info_from_follow_info(&candidate, info);
+            if room.live_status && !room.streams.is_empty() {
+                return Ok(room);
             }
-            if let Some(name) = info
-                .user_name
-                .as_deref()
-                .map(str::trim)
-                .filter(|v| !v.is_empty())
-            {
-                fallback_room_info.user_name = name.to_string();
-            }
-            if let Some(uid) = info
-                .user_id
-                .as_deref()
-                .map(str::trim)
-                .filter(|v| !v.is_empty())
-            {
-                fallback_room_info.user_id = uid.to_string();
-            }
-            if fallback_room_info.room_cover_url.is_empty() {
-                if let Some(cover) = info
-                    .cover_url
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|v| !v.is_empty())
-                {
-                    fallback_room_info.room_cover_url = normalize_image_url(cover);
-                }
-            }
-            if fallback_room_info.user_avatar.is_empty() {
-                if let Some(avatar) = info
-                    .user_avatar
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|v| !v.is_empty())
-                {
-                    fallback_room_info.user_avatar = normalize_image_url(avatar);
-                }
+            let score = room_info_score(&room);
+            if score > best_score {
+                best_score = score;
+                best_room = Some(room);
             }
         }
     }
-    if fallback_room_info.room_title == fallback_title {
-        if !fallback_room_info.user_name.trim().is_empty() {
-            fallback_room_info.room_title = fallback_room_info.user_name.clone();
-        }
+
+    if let Some(room) = best_room {
+        return Ok(room);
     }
-
-    // Parse JSON from script tag
-    let json_str = match extract_initial_state(&html_str) {
-        Some(json_str) => json_str,
-        None => {
-            return Ok(fallback_room_info.clone());
-        }
-    };
-
-    let state_value = serde_json::from_str::<Value>(&json_str).ok();
-
-    let live_data = match parse_live_stream_response(&json_str) {
-        Ok(live_data) => live_data,
-        Err(_) => {
-            return Ok(fallback_room_info.clone());
-        }
-    };
-
-    // Check for errors
-    if let Some(error) = live_data.error_type {
-        return Err(RecorderError::ApiError {
-            error: format!("{}: {}", error.title, error.content),
-        });
+    if let Some(err) = last_error {
+        return Err(err);
     }
-
-    let live_stream = live_data.live_stream.ok_or(RecorderError::ApiError {
-        error: "No liveStream found in response".to_string(),
-    })?;
-
-    let streams = parse_stream_infos_from_live_stream(
-        live_stream.clone(),
-        fallback_hls.clone(),
-        &account.cookies,
-    )
-    .unwrap_or_else(|_| fallback_hls.clone().into_iter().collect());
-
-    let author = live_data.author.unwrap_or_default();
-    let mut author_name = if author.name.is_empty() {
-        fallback_user_name.clone()
-    } else {
-        author.name.clone()
-    };
-    let mut author_id = if author.id.is_empty() {
-        fallback_user_id.clone()
-    } else {
-        author.id.clone()
-    };
-    let author_avatar = author
-        .head_url
-        .clone()
-        .map(|url| normalize_image_url(&url))
-        .filter(|url| !url.is_empty())
-        .or_else(|| {
-            state_value.as_ref().and_then(|value| {
-                find_image_url(
-                    value,
-                    &[
-                        "headurl",
-                        "headUrl",
-                        "avatar",
-                        "avatarUrl",
-                        "portrait",
-                        "profilePic",
-                        "avatarThumb",
-                    ],
-                )
-            })
-        })
-        .unwrap_or_default();
-
-    let is_live = live_stream.play_urls.is_some()
-        && live_stream
-            .play_urls
-            .as_ref()
-            .and_then(|p| p.h264.as_ref())
-            .and_then(|h| h.adaptation_set.as_ref())
-            .map(|a| !a.representation.is_empty())
-            .unwrap_or(false);
-
-    let cover_url = live_stream
-        .cover_url
-        .clone()
-        .map(|url| normalize_image_url(&url))
-        .filter(|url| !url.is_empty());
-
-    let room_cover_url = if let Some(url) = cover_url {
-        url
-    } else {
-        // Try finding cover recursively, BUT explicitly exclude avatar-like keys first
-        if let Some(value) = state_value.as_ref() {
-            find_image_url(value, &["cover", "coverUrl", "poster", "image"])
-                .or_else(|| {
-                    // Try regex fallback for poster/cover patterns in HTML
-                    let patterns = [
-                        r#""poster"\s*:\s*"([^"]+)""#,
-                        r#""coverUrl"\s*:\s*"([^"]+)""#,
-                        r#""cover"\s*:\s*"([^"]+)""#,
-                    ];
-                    for pattern in patterns {
-                        if let Ok(re) = Regex::new(pattern) {
-                            if let Some(cap) = re.captures(&json_str) {
-                                if let Some(m) = cap.get(1) {
-                                    return decode_json_string(m.as_str());
-                                }
-                            }
-                        }
-                    }
-                    None
-                })
-                .unwrap_or_else(|| author_avatar.clone())
-        } else {
-            author_avatar.clone()
-        }
-    };
-
-    let fallback_title = format!("{}'s live", author_name);
-    let extra_title = state_value
-        .as_ref()
-        .and_then(|value| {
-            find_string_value(value, &["caption", "title", "liveTitle", "streamTitle"])
-        })
-        .filter(|t| is_title_useful(t, &author_name));
-
-    let mut final_title = live_stream
-        .caption
-        .clone()
-        .or_else(|| live_data.config.and_then(|c| c.caption))
-        .filter(|s| !s.is_empty())
-        .or(html_title)
-        .or(extra_title)
-        .unwrap_or_else(|| fallback_title.clone());
-
-    let mut final_cover = if room_cover_url.is_empty() {
-        html_cover.unwrap_or_default()
-    } else {
-        room_cover_url
-    };
-
-    let mut final_avatar = if author_avatar.is_empty() {
-        html_avatar.unwrap_or_default()
-    } else {
-        author_avatar
-    };
-
-    if final_title == fallback_title {
-        let follow_info = match fetch_follow_live_info(
-            client,
-            account,
-            &fallback_user_id,
-            &author_id,
-            &author_name,
-        )
-        .await
-        {
-            Some(info) => Some(info),
-            None => fetch_livedetail_info(client, account, &fallback_user_id).await,
-        };
-        if let Some(follow_info) = follow_info {
-            if let Some(caption) = follow_info
-                .caption
-                .as_deref()
-                .map(str::trim)
-                .filter(|v| !v.is_empty())
-            {
-                final_title = caption.to_string();
-            }
-            if author_name.is_empty() {
-                if let Some(name) = follow_info.user_name {
-                    if !name.trim().is_empty() {
-                        author_name = name;
-                    }
-                }
-            }
-            if author_id.is_empty() {
-                if let Some(id) = follow_info.user_id {
-                    if !id.trim().is_empty() {
-                        author_id = id;
-                    }
-                }
-            }
-            if final_cover.is_empty() {
-                if let Some(cover) = follow_info.cover_url {
-                    if !cover.trim().is_empty() {
-                        final_cover = normalize_image_url(&cover);
-                    }
-                }
-            }
-            if final_avatar.is_empty() {
-                if let Some(avatar) = follow_info.user_avatar {
-                    if !avatar.trim().is_empty() {
-                        final_avatar = normalize_image_url(&avatar);
-                    }
-                }
-            }
-        }
-    }
-    if final_title == fallback_title && !author_name.trim().is_empty() {
-        final_title = author_name.clone();
-    }
-
-    Ok(RoomInfo {
-        live_status: is_live,
-        room_title: final_title,
-        room_cover_url: final_cover,
-        user_id: author_id,
-        user_name: author_name,
-        user_avatar: final_avatar,
-        streams,
+    Err(RecorderError::ApiError {
+        error: "Failed to fetch Kuaishou room info via livedetail".to_string(),
     })
 }
-/// Get stream URLs from Kuaishou web page
+/// Get stream URLs from Kuaishou reverse APIs only.
 pub async fn get_stream_urls(
     client: &Client,
     account: &Account,
@@ -1600,106 +2338,42 @@ pub async fn get_stream_urls(
 ) -> Result<Vec<StreamInfo>, RecorderError> {
     let account_obj = ensure_guest_cookie(account);
     let account = &account_obj;
-    let (html_str, _final_url) = fetch_web_html(client, account, url).await?;
-    let fallback_hls = extract_hls_play_url(&html_str).map(|hls_url| StreamInfo {
-        url: hls_url,
-        quality: "蓝光质臻".to_string(), // HLS adaptive streaming, typically delivers 720p+
-        bitrate: None,
-        cookie: Some(account.cookies.clone()),
-    });
-    let mut urls = Vec::new();
-
-    let json_str = match extract_initial_state(&html_str) {
-        Some(json_str) => json_str,
-        None => {
-            if let Some(fallback) = fallback_hls.clone() {
-                urls.push(fallback);
+    let mut last_error: Option<RecorderError> = None;
+    for principal_id in principal_id_candidates(url) {
+        match get_room_info_via_livedetail(client, account, &principal_id).await {
+            Ok(Some(room)) if !room.streams.is_empty() => return Ok(room.streams),
+            Ok(Some(_)) => {
+                last_error = Some(RecorderError::ApiError {
+                    error: "Kuaishou livedetail returned empty stream list".to_string(),
+                });
             }
-            if !urls.is_empty() {
-                return Ok(urls);
-            }
-            return Err(RecorderError::ApiError {
-                error: "Failed to extract JSON data from page".to_string(),
-            });
-        }
-    };
-
-    let live_data = match parse_live_stream_response(&json_str) {
-        Ok(live_data) => live_data,
-        Err(e) => {
-            if let Some(fallback) = fallback_hls.clone() {
-                urls.push(fallback);
-            }
-            if !urls.is_empty() {
-                return Ok(urls);
-            }
-            return Err(e);
-        }
-    };
-
-    let live_stream = match live_data.live_stream {
-        Some(live_stream) => live_stream,
-        None => {
-            if !urls.is_empty() {
-                return Ok(urls);
-            }
-            return Err(RecorderError::ApiError {
-                error: "No liveStream found in response".to_string(),
-            });
-        }
-    };
-
-    let play_urls = match live_stream.play_urls {
-        Some(play_urls) => play_urls,
-        None => {
-            if !urls.is_empty() {
-                return Ok(urls);
-            }
-            return Err(RecorderError::ApiError {
-                error: "No playUrls found in response".to_string(),
-            });
-        }
-    };
-
-    urls = parse_stream_infos_from_live_stream(
-        LiveStream {
-            play_urls: Some(play_urls),
-            cover_url: None,
-            caption: None,
-        },
-        fallback_hls.clone(),
-        &account.cookies,
-    )?;
-
-    // Log available stream qualities for debugging
-    if !urls.is_empty() {
-        log::info!("[Kuaishou] Found {} stream(s):", urls.len());
-        for (i, stream) in urls.iter().enumerate() {
-            log::info!(
-                "  [{}] Quality: {}, Bitrate: {}, Format: {}",
-                i,
-                if stream.quality.is_empty() {
-                    "unknown"
-                } else {
-                    &stream.quality
-                },
-                stream
-                    .bitrate
-                    .map_or("unknown".to_string(), |b| format!("{} kbps", b)),
-                if stream.url.contains(".m3u8") {
-                    "HLS"
-                } else if stream.url.contains(".flv") {
-                    "FLV"
-                } else {
-                    "other"
+            Ok(None) => {}
+            Err(err) => {
+                if is_rate_limited_error(&err) || is_captcha_error(&err) {
+                    return Err(err);
                 }
-            );
+                last_error = Some(err);
+            }
         }
-    } else {
-        log::warn!("[Kuaishou] No streams found");
     }
 
-    Ok(urls)
+    for candidate in principal_id_candidates(url) {
+        if let Some(info) =
+            fetch_follow_live_info_cached(client, account, &candidate, &candidate, &candidate)
+                .await
+        {
+            if !info.streams.is_empty() {
+                return Ok(info.streams);
+            }
+        }
+    }
+
+    if let Some(err) = last_error {
+        return Err(err);
+    }
+    Err(RecorderError::ApiError {
+        error: "Failed to fetch Kuaishou stream list via livedetail".to_string(),
+    })
 }
 
 fn ensure_guest_cookie(account: &crate::account::Account) -> crate::account::Account {
@@ -1996,7 +2670,7 @@ async fn fetch_baseuser_info(client: &Client, account: &Account) -> Option<crate
     if !cookie_header.is_empty() {
         headers.insert("Cookie", cookie_header.parse().ok()?);
     }
-    if let Some(kww) = extract_kuaishou_kww(&cookie_header) {
+    if let Some(kww) = resolve_kuaishou_kww(&cookie_header) {
         if let Ok(value) = kww.parse() {
             headers.insert("kww", value);
         }

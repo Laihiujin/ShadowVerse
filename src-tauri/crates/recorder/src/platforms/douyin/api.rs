@@ -10,7 +10,7 @@ use crate::reverse_generate::abogus;
 use base64::{engine::general_purpose, Engine as _};
 use reqwest::header::SET_COOKIE;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -774,6 +774,170 @@ fn format_cookie_header(cookies: &HashMap<String, String>) -> String {
         .join("; ")
 }
 
+fn merge_cookie_pair(cookies: &mut HashMap<String, String>, name: &str, value: &str) {
+    let name = name.trim();
+    if name.is_empty() {
+        return;
+    }
+    cookies.insert(name.to_string(), value.trim().to_string());
+}
+
+fn is_cookie_attr_key(key: &str) -> bool {
+    matches!(
+        key.to_ascii_lowercase().as_str(),
+        "path"
+            | "domain"
+            | "expires"
+            | "max-age"
+            | "secure"
+            | "httponly"
+            | "samesite"
+            | "priority"
+            | "partitioned"
+            | "comment"
+            | "version"
+    )
+}
+
+fn merge_cookie_header_string(cookies: &mut HashMap<String, String>, raw: &str) {
+    for part in raw.split(';').map(str::trim) {
+        if part.is_empty() {
+            continue;
+        }
+        if let Some((name, value)) = part.split_once('=') {
+            if is_cookie_attr_key(name.trim()) {
+                continue;
+            }
+            merge_cookie_pair(cookies, name, value);
+        }
+    }
+}
+
+fn merge_set_cookie_line(cookies: &mut HashMap<String, String>, raw: &str) {
+    if let Some(pair) = raw.split(';').next() {
+        if let Some((name, value)) = pair.split_once('=') {
+            merge_cookie_pair(cookies, name, value);
+        }
+    }
+}
+
+fn merge_cookie_map_from_url(cookies: &mut HashMap<String, String>, raw: &str) {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || (!trimmed.starts_with("http://") && !trimmed.starts_with("https://")) {
+        return;
+    }
+    let Ok(url) = url::Url::parse(trimmed) else {
+        return;
+    };
+    for (k, v) in url.query_pairs() {
+        let key_lower = k.to_ascii_lowercase();
+        if key_lower.contains("set_cookie") || key_lower.contains("set-cookie") {
+            merge_set_cookie_line(cookies, &v);
+        } else if key_lower.contains("cookie") {
+            merge_cookie_header_string(cookies, &v);
+        }
+    }
+    if let Some(fragment) = url.fragment() {
+        for (k, v) in url::form_urlencoded::parse(fragment.as_bytes()) {
+            let key_lower = k.to_ascii_lowercase();
+            if key_lower.contains("set_cookie") || key_lower.contains("set-cookie") {
+                merge_set_cookie_line(cookies, &v);
+            } else if key_lower.contains("cookie") {
+                merge_cookie_header_string(cookies, &v);
+            }
+        }
+    }
+}
+
+fn merge_cookie_map_from_json_inner(
+    cookies: &mut HashMap<String, String>,
+    value: &Value,
+    key_hint: Option<&str>,
+    depth: usize,
+) {
+    if depth > 8 {
+        return;
+    }
+    match value {
+        Value::Object(map) => {
+            let hint_is_cookie = key_hint
+                .map(|v| v.to_ascii_lowercase().contains("cookie"))
+                .unwrap_or(false);
+            let looks_cookie_obj = map.contains_key("domain")
+                || map.contains_key("path")
+                || map.contains_key("expires")
+                || map.contains_key("httpOnly")
+                || map.contains_key("sameSite");
+            if hint_is_cookie || looks_cookie_obj {
+                if let (Some(name), Some(val)) = (
+                    map.get("name").and_then(|v| v.as_str()),
+                    map.get("value").and_then(|v| v.as_str()),
+                ) {
+                    merge_cookie_pair(cookies, name, val);
+                }
+            }
+            if let (Some(name), Some(val)) = (
+                map.get("cookieName").and_then(|v| v.as_str()),
+                map.get("cookieValue").and_then(|v| v.as_str()),
+            ) {
+                merge_cookie_pair(cookies, name, val);
+            }
+            for (key, child) in map {
+                merge_cookie_map_from_json_inner(cookies, child, Some(key), depth + 1);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                merge_cookie_map_from_json_inner(cookies, item, key_hint, depth + 1);
+            }
+        }
+        Value::String(raw) => {
+            let hint = key_hint.unwrap_or_default().to_ascii_lowercase();
+            if hint.contains("set_cookie") || hint.contains("set-cookie") || hint == "setcookie" {
+                merge_set_cookie_line(cookies, raw);
+                return;
+            }
+            if hint.contains("cookie") {
+                merge_cookie_header_string(cookies, raw);
+                return;
+            }
+            if hint == "location"
+                || hint.ends_with("url")
+                || hint.ends_with("uri")
+                || raw.starts_with("http://")
+                || raw.starts_with("https://")
+            {
+                merge_cookie_map_from_url(cookies, raw);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn merge_cookie_map_from_json(cookies: &mut HashMap<String, String>, value: &Value) {
+    merge_cookie_map_from_json_inner(cookies, value, None, 0);
+}
+
+fn ensure_query_param(query: &str, key: &str, value: &str) -> String {
+    if query.trim().is_empty() {
+        return format!("{key}={value}");
+    }
+    let mut params: Vec<(String, String)> = url::form_urlencoded::parse(query.as_bytes())
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+    let mut found = false;
+    for (k, v) in params.iter_mut() {
+        if k == key {
+            *v = value.to_string();
+            found = true;
+        }
+    }
+    if !found {
+        params.push((key.to_string(), value.to_string()));
+    }
+    build_query_string_owned(&params)
+}
+
 fn has_login_cookie(cookies: &HashMap<String, String>) -> bool {
     for key in cookies.keys() {
         let lower = key.to_ascii_lowercase();
@@ -1475,6 +1639,7 @@ pub async fn get_qr_login(client: &Client) -> Result<DouyinQrInfo, RecorderError
     let resp_headers = resp.headers().clone();
     let json: serde_json::Value = resp.json().await?;
     log::warn!("[Douyin] get_qr_login response: {}", json);
+    merge_cookie_map_from_json(&mut cookies, &json);
     let data = json.get("data").ok_or_else(|| RecorderError::ApiError {
         error: "Douyin QR: missing data".to_string(),
     })?;
@@ -1569,7 +1734,8 @@ pub async fn get_qr_login_status(
             .or_else(|| read_env("DOUYIN_PASSPORT_PARAMS_RAW_STATUS"))
             .or_else(|| read_env("DOUYIN_PASSPORT_PARAMS_RAW"));
         let param_str = if let Some(raw) = raw_query {
-            normalize_params_raw(&raw)
+            let normalized = normalize_params_raw(&raw);
+            ensure_query_param(&normalized, "token", token)
         } else {
             let mut query_params = build_douyin_passport_params(false, Some(&overrides));
             push_param(&mut query_params, "token", token.to_string());
@@ -1614,6 +1780,7 @@ pub async fn get_qr_login_status(
         }
     }
     let data = json.get("data");
+    merge_cookie_map_from_json(&mut cookie_map, &json);
     let status = data
         .and_then(|v| v.get("status"))
         .and_then(|v| v.as_str())
@@ -1663,6 +1830,7 @@ pub async fn get_qr_login_status(
         let resp_cookies = parse_set_cookies(&resp_headers);
         let mut merged_cookies = cookie_map.clone();
         merged_cookies.extend(resp_cookies);
+        merge_cookie_map_from_json(&mut merged_cookies, &json);
         if has_login_cookie(&merged_cookies) {
             let cookie_str = format_cookie_header(&merged_cookies);
             log::info!(
@@ -1681,6 +1849,7 @@ pub async fn get_qr_login_status(
             .and_then(|v| v.as_str())
             .unwrap_or("");
         if !redirect_url.is_empty() {
+            merge_cookie_map_from_url(&mut merged_cookies, redirect_url);
             let merged_header = format_cookie_header(&merged_cookies);
             let mut redirect_req = request_client.get(redirect_url).headers(headers.clone());
             if !merged_header.is_empty() {

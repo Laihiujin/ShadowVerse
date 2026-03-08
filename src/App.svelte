@@ -20,6 +20,12 @@
   }
 
   onMount(async () => {
+    try {
+      log.info("App mounted");
+    } catch (e) {
+      console.error("Failed to log mount", e);
+    }
+
     const theme = localStorage.getItem("theme");
     const isDark = theme ? theme === "dark" : true;
     applyTheme(isDark);

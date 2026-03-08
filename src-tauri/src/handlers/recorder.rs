@@ -25,8 +25,92 @@ use recorder::RecorderInfo;
 use serde::Deserialize;
 use serde::Serialize;
 
+fn is_reserved_kuaishou_room_id(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "kuaishou" | "live" | "www" | "u" | "profile" | "home"
+    )
+}
+
+fn normalize_kuaishou_candidate(value: &str) -> Option<String> {
+    let candidate = value
+        .trim()
+        .trim_start_matches('@')
+        .trim_matches('/')
+        .trim_end_matches(".html")
+        .trim()
+        .to_string();
+    if candidate.is_empty() {
+        return None;
+    }
+    if candidate.contains("://")
+        || candidate.contains('/')
+        || candidate.contains('?')
+        || candidate.contains('&')
+        || candidate.contains('=')
+        || is_reserved_kuaishou_room_id(&candidate)
+    {
+        return None;
+    }
+    Some(candidate)
+}
+
 fn normalize_kuaishou_room_id(room_id: &str) -> String {
     let trimmed = room_id.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+
+    if let Some((prefix, suffix)) = trimmed.split_once('#') {
+        if prefix.trim().eq_ignore_ascii_case("kuaishou") {
+            return normalize_kuaishou_candidate(suffix).unwrap_or_default();
+        }
+    }
+
+    if let Ok(parsed) = Url::parse(trimmed) {
+        for (key, value) in parsed.query_pairs() {
+            if key.eq_ignore_ascii_case("principalId")
+                || key.eq_ignore_ascii_case("userId")
+                || key.eq_ignore_ascii_case("user_id")
+            {
+                if let Some(normalized) = normalize_kuaishou_candidate(value.as_ref()) {
+                    return normalized;
+                }
+            }
+        }
+
+        if let Some(mut segments) = parsed.path_segments() {
+            let segs: Vec<String> = segments
+                .by_ref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+                .collect();
+
+            if segs.len() >= 2
+                && (segs[0].eq_ignore_ascii_case("u") || segs[0].eq_ignore_ascii_case("profile"))
+            {
+                if let Some(normalized) = normalize_kuaishou_candidate(&segs[1]) {
+                    return normalized;
+                }
+            }
+
+            if segs.len() == 1 {
+                if let Some(normalized) = normalize_kuaishou_candidate(&segs[0]) {
+                    return normalized;
+                }
+            }
+        }
+
+        if let Some(fragment) = parsed.fragment() {
+            if let Some(normalized) = normalize_kuaishou_candidate(fragment) {
+                return normalized;
+            }
+        }
+
+        return String::new();
+    }
+
     if let Some(query) = trimmed.split('?').nth(1) {
         for pair in query.split('&') {
             let (key, value) = match pair.split_once('=') {
@@ -34,36 +118,18 @@ fn normalize_kuaishou_room_id(room_id: &str) -> String {
                 None => continue,
             };
             let key = key.trim();
-            let value = value.trim().trim_matches('/').trim_end_matches(".html");
-            if value.is_empty() {
+            if !key.eq_ignore_ascii_case("principalId")
+                && !key.eq_ignore_ascii_case("userId")
+                && !key.eq_ignore_ascii_case("user_id")
+            {
                 continue;
             }
-            if key.eq_ignore_ascii_case("principalId")
-                || key.eq_ignore_ascii_case("userId")
-                || key.eq_ignore_ascii_case("user_id")
-            {
-                return value.to_string();
+            if let Some(normalized) = normalize_kuaishou_candidate(value) {
+                return normalized;
             }
         }
     }
-    let without_query = trimmed.split('?').next().unwrap_or(trimmed);
-    let without_trailing = without_query.trim_end_matches('/');
-
-    if let Some(pos) = without_trailing.find("/u/") {
-        return without_trailing[(pos + 3)..].to_string();
-    }
-
-    if let Some(pos) = without_trailing.find("/profile/") {
-        return without_trailing[(pos + 9)..].to_string();
-    }
-
-    if without_trailing.contains("kuaishou.com") {
-        if let Some(last) = without_trailing.rsplit('/').next() {
-            return last.to_string();
-        }
-    }
-
-    trimmed.to_string()
+    normalize_kuaishou_candidate(trimmed).unwrap_or_default()
 }
 
 fn normalize_tiktok_room_id(room_id: &str) -> String {
@@ -172,6 +238,9 @@ pub async fn add_recorder(
         if normalized != room_id {
             log::info!("Normalized kuaishou room id: {} -> {}", room_id, normalized);
             room_id = normalized;
+        }
+        if room_id.is_empty() {
+            return Err("快手直播间ID无效，请输入 live.kuaishou.com/u/后的ID".to_string());
         }
     }
     if platform == PlatformType::TikTok {

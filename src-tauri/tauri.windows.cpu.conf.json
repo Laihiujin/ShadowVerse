@@ -1,5 +1,5 @@
 {
-  "productName": "ShadowVerse-CUDA",
+  "productName": "ShadowVerse-CPU",
   "app": {
     "windows": [
       {
@@ -8,7 +8,7 @@
         "resizable": true,
         "title": "ShadowVerse",
         "width": 1300,
-        "height": 600,
+        "height": 700,
         "transparent": false,
         "decorations": true,
         "theme": "Dark"
@@ -16,13 +16,6 @@
     ]
   },
   "bundle": {
-    "resources": [
-      "ffmpeg.exe",
-      "ffplay.exe",
-      "ffprobe.exe",
-      "cudart64*.dll",
-      "cublas64*.dll",
-      "cublasLt64*.dll"
-    ]
+    "resources": ["ffmpeg.exe", "ffplay.exe", "ffprobe.exe"]
   }
 }

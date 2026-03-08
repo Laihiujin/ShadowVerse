@@ -81,14 +81,6 @@ fn merge_kuaishou_extra_cookies(platform: &str, cookies: &str, extra: &str) -> S
 }
 
 fn filter_kuaishou_cookie_header(cookies: &str) -> String {
-    let allow = [
-        "kwssectoken",
-        "kuaishou.live.web_st",
-        "kuaishou.live.web_ph",
-        "did",
-        "didv",
-        "userid",
-    ];
     let mut kept = Vec::new();
     for part in cookies.split(';').map(str::trim) {
         if part.is_empty() {
@@ -98,10 +90,11 @@ fn filter_kuaishou_cookie_header(cookies: &str) -> String {
             continue;
         };
         let key = k.trim();
-        let key_lower = key.to_ascii_lowercase();
-        if allow.iter().any(|item| *item == key_lower) {
-            kept.push(format!("{}={}", key, v.trim()));
+        let val = v.trim();
+        if key.is_empty() || val.is_empty() {
+            continue;
         }
+        kept.push(format!("{}={}", key, val));
     }
     kept.join("; ")
 }

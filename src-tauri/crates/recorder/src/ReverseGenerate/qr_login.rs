@@ -312,6 +312,7 @@ pub fn ensure_qr_login_defaults(path: &Path) -> Result<(), std::io::Error> {
         );
         changed |= set_if_empty(kuaishou_table, "cookie", "");
         changed |= set_if_empty(kuaishou_table, "device_id", "");
+        changed |= set_if_empty(kuaishou_table, "kww", "");
     }
 
     if changed {
