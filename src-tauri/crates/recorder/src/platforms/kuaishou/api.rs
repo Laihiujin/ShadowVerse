@@ -48,6 +48,14 @@ fn read_env_bool(key: &str) -> Option<bool> {
         .and_then(|raw| parse_env_bool(&raw))
 }
 
+fn use_public_page_fallback() -> bool {
+    read_env_bool("BSR_KUAISHOU_ENABLE_PUBLIC_PAGE_FALLBACK").unwrap_or(false)
+}
+
+fn use_room_page_kww_probe() -> bool {
+    read_env_bool("BSR_KUAISHOU_ENABLE_KWW_PROBE").unwrap_or(false)
+}
+
 fn web_cooldown_secs() -> i64 {
     read_env_u64(
         "BSR_KUAISHOU_WEB_COOLDOWN_SECS",
@@ -91,14 +99,13 @@ fn is_captcha_message(message: &str) -> bool {
     if trimmed.is_empty() {
         return false;
     }
-    trimmed.contains("请完成滑块验证")
-        || trimmed.contains("滑块验证")
-        || trimmed.contains("人机验证")
-        || trimmed.contains("安全验证")
-        || trimmed.contains("行为验证")
+    trimmed.contains("\u{6ed1}\u{5757}")
+        || trimmed.contains("\u{9a8c}\u{8bc1}")
+        || trimmed.contains("\u{4eba}\u{673a}")
+        || trimmed.contains("\u{5b89}\u{5168}\u{9a8c}\u{8bc1}")
+        || trimmed.contains("\u{884c}\u{4e3a}\u{9a8c}\u{8bc1}")
         || trimmed.to_ascii_lowercase().contains("captcha")
 }
-
 fn is_room_disabled_message(message: &str) -> bool {
     let trimmed = message.trim();
     !trimmed.is_empty() && trimmed.contains("\u{672a}\u{542f}\u{7528}")
@@ -1356,7 +1363,7 @@ async fn get_room_info_via_public_page(
             user_avatar,
             streams: vec![StreamInfo {
                 url: hls_url,
-                quality: "钃濆厜璐ㄨ嚮".to_string(),
+                quality: "Blue".to_string(),
                 bitrate: None,
                 cookie: Some(normalize_record_cookie(&account.cookies)),
             }],
@@ -1576,8 +1583,11 @@ async fn fetch_livedetail_value(
         headers.insert("Cookie", cookie_header.parse().unwrap());
     }
     let mut resolved_kww = resolve_kuaishou_kww(&cookie_header);
-    if resolved_kww.is_none() {
-        let probe_url = format!("https://live.kuaishou.com/u/{}", resolve_principal_id(principal_id));
+    if resolved_kww.is_none() && use_room_page_kww_probe() {
+        let probe_url = format!(
+            "https://live.kuaishou.com/u/{}",
+            resolve_principal_id(principal_id)
+        );
         if let Ok((html, _)) = fetch_web_html(client, account, &probe_url).await {
             resolved_kww = extract_kuaishou_kww_from_html(&html);
             if resolved_kww.is_some() {
@@ -1590,6 +1600,9 @@ async fn fetch_livedetail_value(
             headers.insert("kww", value);
         }
     }
+
+    let mut best_value: Option<Value> = None;
+    let mut best_score: i64 = i64::MIN;
 
     for principal in principal_id_candidates(principal_id) {
         let params_full =
@@ -1649,23 +1662,60 @@ async fn fetch_livedetail_value(
                     continue;
                 }
 
-                if body.contains("请完成滑块验证") || body.to_ascii_lowercase().contains("captcha")
-                {
+                if is_captcha_message(&body) || body.to_ascii_lowercase().contains("captcha") {
                     return Err(RecorderError::ApiError {
-                        error: "请完成滑块验证".to_string(),
+                        error: "Please complete captcha verification".to_string(),
                     });
                 }
 
-                if let Ok(value) = serde_json::from_str::<Value>(&body) {
-                    return Ok(Some(value));
+                let Ok(value) = serde_json::from_str::<Value>(&body) else {
+                    continue;
+                };
+
+                if let Ok(Some(room)) =
+                    parse_room_info_from_livedetail_value(&value, &principal, &cookie_header)
+                {
+                    if room.live_status && !room.streams.is_empty() {
+                        return Ok(Some(value));
+                    }
+                }
+
+                let score = score_livedetail_value(&value, &principal, &cookie_header);
+                if score > best_score {
+                    best_score = score;
+                    best_value = Some(value);
                 }
             }
         }
     }
 
-    Ok(None)
+    Ok(best_value)
 }
 
+fn score_livedetail_value(value: &Value, principal_id: &str, cookies: &str) -> i64 {
+    let mut score = 0;
+
+    if find_live_stream_response(value).is_some() {
+        score += 1;
+    }
+
+    if let Ok(Some(room)) = parse_room_info_from_livedetail_value(value, principal_id, cookies) {
+        if room.live_status {
+            score += 1_000;
+        }
+        if !room.streams.is_empty() {
+            score += 100_000 + room.streams.len() as i64 * 10;
+        }
+        if !is_placeholder_user_name(&room.user_name) {
+            score += 100;
+        }
+        if !room.room_title.trim().is_empty() && room.room_title != room.user_name {
+            score += 50;
+        }
+    }
+
+    score
+}
 fn parse_room_info_from_livedetail_value(
     value: &Value,
     principal_id: &str,
@@ -1685,7 +1735,7 @@ fn parse_room_info_from_livedetail_value(
         .filter(|url| url.contains(".m3u8"))
         .map(|url| StreamInfo {
             url,
-            quality: "蓝光质臻".to_string(),
+            quality: "Blue".to_string(),
             bitrate: None,
             cookie: Some(cookies.to_string()),
         });
@@ -1873,7 +1923,6 @@ fn find_image_url(value: &Value, keys: &[&str]) -> Option<String> {
 fn quality_rank(label: &str) -> i64 {
     let lower = label.trim().to_ascii_lowercase();
 
-    // Explicit resolutions
     if lower.contains("4k") || lower.contains("2160") || lower.contains("uhd") {
         return 20000;
     }
@@ -1881,77 +1930,61 @@ fn quality_rank(label: &str) -> i64 {
         return 15000;
     }
 
-    // Kuaishou specific high quality
-    if lower.contains("质臻") {
-        return 12000; // Premium 1080p+ / High bitrate
+    if lower.contains("original")
+        || lower.contains("source")
+        || lower.contains("\u{539f}\u{753b}")
+    {
+        return 30000;
     }
 
-    // Source / Original
-    if lower.contains("original") || lower.contains("source") || lower.contains("原画") {
-        return 30000; // Highest priority
-    }
-
-    // Blu-ray variants
-    if lower.contains("蓝光") || lower.contains("blue") {
+    if lower.contains("\u{84dd}\u{5149}") || lower.contains("blue") {
         if lower.contains("8m") {
             return 8500;
         }
         if lower.contains("4m") {
             return 4500;
         }
-        return 4200; // Default Blu-ray (slightly above standard 1080p)
+        return 4200;
     }
 
     if lower.contains("1080") || lower.contains("fhd") {
         return 4000;
     }
-
-    if lower.contains("超清") {
-        return 2500; // Super Clear (usually > 720p)
+    if lower.contains("\u{8d85}\u{6e05}") {
+        return 2500;
     }
-
     if lower.contains("720") || lower.contains("hd") {
         return 2000;
     }
-
-    if lower.contains("高清") {
-        return 1500; // High Clear
+    if lower.contains("\u{9ad8}\u{6e05}") {
+        return 1500;
     }
-
     if lower.contains("540") {
         return 1200;
     }
-
-    if lower.contains("480") || lower.contains("sd") || lower.contains("标清") {
+    if lower.contains("480") || lower.contains("sd") || lower.contains("\u{6807}\u{6e05}") {
         return 1000;
     }
-
-    if lower.contains("360") || lower.contains("ld") || lower.contains("流畅") {
+    if lower.contains("360") || lower.contains("ld") || lower.contains("\u{6d41}\u{7545}") {
         return 600;
     }
 
-    // Extract digits as fallback (e.g., just "1080", "720")
-    // Only if the string is mostly digits to avoid matching "mp4" or similar blindly if we were less careful
-    // But simplistic extraction is explicitly requested in previous versions, so we keep a robust version.
     let mut digits = String::new();
     for ch in lower.chars() {
         if ch.is_ascii_digit() {
             digits.push(ch);
         } else if !digits.is_empty() {
-            // Stop at first non-digit after finding digits to handle things like "720p"
             break;
         }
     }
     if let Ok(val) = digits.parse::<i64>() {
         if val > 100 {
-            // Avoid parsing small numbers like "5" as quality
             return val;
         }
     }
 
     0
 }
-
 /// QR code information for login
 #[derive(Debug, Clone, serde::Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -2043,7 +2076,7 @@ fn parse_stream_infos_from_follow_item(item: &UserFollowLive, cookie: &str) -> V
             &mut urls,
             &mut seen,
             hls,
-            "蓝光质臻".to_string(),
+            "Blue".to_string(),
             None,
             cookie,
         );
@@ -2073,7 +2106,7 @@ fn parse_stream_infos_from_follow_item(item: &UserFollowLive, cookie: &str) -> V
         let quality = play
             .bitrate
             .map(|b| format!("{b}kbps"))
-            .unwrap_or_else(|| "标清".to_string());
+            .unwrap_or_else(|| "Unknown".to_string());
         push_stream_info_unique(
             &mut urls,
             &mut seen,
@@ -2112,7 +2145,7 @@ fn collect_stream_infos_from_livedetail_value(
                         urls,
                         seen,
                         hls,
-                        "蓝光质臻".to_string(),
+                        "Blue".to_string(),
                         None,
                         cookie,
                     );
@@ -2209,7 +2242,7 @@ fn parse_stream_infos_from_live_stream(
                         0,
                         StreamInfo {
                             url,
-                            quality: "蓝光质臻".to_string(),
+                            quality: "Blue".to_string(),
                             bitrate: None,
                             cookie: Some(cookie.to_string()),
                         },
@@ -2532,26 +2565,28 @@ pub async fn get_room_info(
         }
     }
 
-    // Public page fallback: anonymous page can expose stream URLs even when
-    // livedetail returns masked payloads (e.g. result=2 + undefined URL).
-    for principal_id in &candidates {
-        match get_room_info_via_public_page(client, account, principal_id).await {
-            Ok(Some(room)) => {
-                if room.live_status && !room.streams.is_empty() {
-                    return Ok(room);
+    if use_public_page_fallback() {
+        // Public page fallback: anonymous page can expose stream URLs even when
+        // livedetail returns masked payloads (e.g. result=2 + undefined URL).
+        for principal_id in &candidates {
+            match get_room_info_via_public_page(client, account, principal_id).await {
+                Ok(Some(room)) => {
+                    if room.live_status && !room.streams.is_empty() {
+                        return Ok(room);
+                    }
+                    let score = room_info_score(&room);
+                    if score > best_score {
+                        best_score = score;
+                        best_room = Some(room);
+                    }
                 }
-                let score = room_info_score(&room);
-                if score > best_score {
-                    best_score = score;
-                    best_room = Some(room);
+                Ok(None) => {}
+                Err(err) => {
+                    if is_rate_limited_error(&err) || is_captcha_error(&err) {
+                        return Err(err);
+                    }
+                    last_error = Some(err);
                 }
-            }
-            Ok(None) => {}
-            Err(err) => {
-                if is_rate_limited_error(&err) || is_captcha_error(&err) {
-                    return Err(err);
-                }
-                last_error = Some(err);
             }
         }
     }
@@ -2645,15 +2680,17 @@ pub async fn get_stream_urls(
         }
     }
 
-    for principal_id in &candidates {
-        match get_room_info_via_public_page(client, account, principal_id).await {
-            Ok(Some(room)) if !room.streams.is_empty() => return Ok(room.streams),
-            Ok(Some(_)) | Ok(None) => {}
-            Err(err) => {
-                if is_rate_limited_error(&err) || is_captcha_error(&err) {
-                    return Err(err);
+    if use_public_page_fallback() {
+        for principal_id in &candidates {
+            match get_room_info_via_public_page(client, account, principal_id).await {
+                Ok(Some(room)) if !room.streams.is_empty() => return Ok(room.streams),
+                Ok(Some(_)) | Ok(None) => {}
+                Err(err) => {
+                    if is_rate_limited_error(&err) || is_captcha_error(&err) {
+                        return Err(err);
+                    }
+                    last_error = Some(err);
                 }
-                last_error = Some(err);
             }
         }
     }
@@ -2870,59 +2907,38 @@ fn get_string_field(map: &Map<String, Value>, keys: &[&str]) -> Option<String> {
 }
 
 fn user_info_from_map(map: &Map<String, Value>) -> Option<crate::UserInfo> {
-    let user_id = get_string_field(map, &["user_id", "userId", "userIdStr", "uid"]);
-    let user_name = get_string_field(map, &["user_name", "userName", "nickname", "nickName"]);
-    if let (Some(user_id), Some(user_name)) = (user_id, user_name) {
-        if user_id == "1" || user_name == "英雄联盟" {
-            return None;
-        }
-        let user_avatar = get_string_field(
-            map,
-            &[
-                "headurl",
-                "headUrl",
-                "avatar",
-                "avatarUrl",
-                "portrait",
-                "profilePic",
-            ],
-        )
-        .unwrap_or_default();
-        return Some(crate::UserInfo {
-            user_id,
-            user_name,
-            user_avatar,
-        });
+    let user_id = get_string_field(map, &["user_id", "userId", "userIdStr", "uid"])
+        .or_else(|| get_string_field(map, &["id"]));
+    let user_name = get_string_field(map, &["user_name", "userName", "nickname", "nickName"])
+        .or_else(|| get_string_field(map, &["name"]));
+
+    let (Some(user_id), Some(user_name)) = (user_id, user_name) else {
+        return None;
+    };
+
+    if user_id == "1" || is_placeholder_user_name(&user_name) {
+        return None;
     }
 
-    let user_id = get_string_field(map, &["id"]);
-    let user_name = get_string_field(map, &["name"]);
-    if let (Some(user_id), Some(user_name)) = (user_id, user_name) {
-        if user_id == "1" || user_name == "英雄联盟" {
-            return None;
-        }
-        let user_avatar = get_string_field(
-            map,
-            &[
-                "headurl",
-                "headUrl",
-                "avatar",
-                "avatarUrl",
-                "portrait",
-                "profilePic",
-            ],
-        )
-        .unwrap_or_default();
-        return Some(crate::UserInfo {
-            user_id,
-            user_name,
-            user_avatar,
-        });
-    }
+    let user_avatar = get_string_field(
+        map,
+        &[
+            "headurl",
+            "headUrl",
+            "avatar",
+            "avatarUrl",
+            "portrait",
+            "profilePic",
+        ],
+    )
+    .unwrap_or_default();
 
-    None
+    Some(crate::UserInfo {
+        user_id,
+        user_name,
+        user_avatar,
+    })
 }
-
 fn find_user_info(value: &Value) -> Option<crate::UserInfo> {
     match value {
         Value::Object(map) => {
