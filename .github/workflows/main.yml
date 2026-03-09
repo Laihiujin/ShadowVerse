@@ -12,30 +12,25 @@ jobs:
           - platform: "macos-latest" # for Intel based macs.
             args: "--target x86_64-apple-darwin"
             target: "x86_64-apple-darwin"
-            cmake_arch_flags: ""  # x86_64 does NOT support -march=armv8-a
             tauri_config: ""
             include_updater_json: true
           - platform: "macos-latest" # for Apple Silicon macs.
             args: "--target aarch64-apple-darwin"
             target: "aarch64-apple-darwin"
-            cmake_arch_flags: "-march=armv8-a"  # ARM64 only
             tauri_config: ""
             include_updater_json: true
           - platform: "ubuntu-22.04"
             args: ""
-            cmake_arch_flags: ""
             tauri_config: ""
             include_updater_json: true
           - platform: "windows-latest"
             args: "--features cuda"
             features: "cuda"
-            cmake_arch_flags: ""
             tauri_config: "--config src-tauri/tauri.windows.cuda.conf.json"
             include_updater_json: false
           - platform: "windows-latest"
             args: ""
             features: "cpu"
-            cmake_arch_flags: ""
             tauri_config: "--config src-tauri/tauri.windows.cpu.conf.json"
             include_updater_json: true
 
@@ -123,9 +118,6 @@ jobs:
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           CMAKE_OSX_DEPLOYMENT_TARGET: "13.3"
-          # Only set ARM arch flags for the aarch64 target; x86_64 does NOT support -march=armv8-a
-          CMAKE_C_FLAGS: ${{ matrix.cmake_arch_flags }}
-          CMAKE_CXX_FLAGS: ${{ matrix.cmake_arch_flags }}
           GGML_METAL_EMBED_LIBRARY: ${{ matrix.platform == 'macos-latest' && '1' || '' }}
         with:
           tagName: v__VERSION__
