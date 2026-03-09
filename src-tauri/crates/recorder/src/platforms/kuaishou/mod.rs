@@ -372,7 +372,7 @@ impl KuaishouRecorder {
         std::env::var("BSR_KUAISHOU_STARTUP_STAGGER_SECS")
             .ok()
             .and_then(|v| v.trim().parse::<u64>().ok())
-            .unwrap_or(8)
+            .unwrap_or(2)
     }
 
     fn startup_stagger_secs(&self) -> u64 {
@@ -398,6 +398,14 @@ impl KuaishouRecorder {
 
     fn rate_limit_max_backoff_secs() -> u64 {
         Self::read_env_u64("BSR_KUAISHOU_RATE_LIMIT_MAX_BACKOFF_SECS", 300)
+    }
+
+    fn max_idle_poll_secs() -> u64 {
+        Self::read_env_u64("BSR_KUAISHOU_MAX_IDLE_POLL_SECS", 18)
+    }
+
+    fn fast_probe_rounds() -> u64 {
+        Self::read_env_u64("BSR_KUAISHOU_FAST_PROBE_ROUNDS", 4)
     }
 
     fn apply_rate_limit_backoff(&self) {
@@ -972,6 +980,7 @@ impl RecorderTrait<KuaishouExtra> for KuaishouRecorder {
                 ));
                 tokio::time::sleep(Duration::from_secs(startup_stagger)).await;
             }
+            let mut fast_probe_budget = Self::fast_probe_rounds();
             while !self_clone.quit.load(atomic::Ordering::Relaxed) {
                 let now = Utc::now().timestamp();
                 let rate_limit_until = self_clone
@@ -1021,6 +1030,7 @@ impl RecorderTrait<KuaishouExtra> for KuaishouRecorder {
                             }
                         }
 
+                        fast_probe_budget = Self::fast_probe_rounds();
                         let _ = self_clone.event_channel.send(RecorderEvent::RecordEnd {
                             recorder: self_clone.info().await,
                         });
@@ -1066,8 +1076,17 @@ impl RecorderTrait<KuaishouExtra> for KuaishouRecorder {
                 }
 
                 let interval = self_clone.update_interval.load(atomic::Ordering::Relaxed);
-                let mut sleep_secs = crate::utils::jitter_interval_secs(interval, 10);
-                sleep_secs = sleep_secs.max(interval);
+                let effective_interval = interval.min(Self::max_idle_poll_secs()).max(3);
+
+                if fast_probe_budget > 0 {
+                    fast_probe_budget = fast_probe_budget.saturating_sub(1);
+                    let quick_sleep = 2 + (rand::random::<u64>() % 3);
+                    tokio::time::sleep(Duration::from_secs(quick_sleep)).await;
+                    continue;
+                }
+
+                let mut sleep_secs = crate::utils::jitter_interval_secs(effective_interval, 6);
+                sleep_secs = sleep_secs.max(effective_interval);
                 let error_backoff = std::env::var("BSR_KUAISHOU_ERROR_BACKOFF_SECS")
                     .ok()
                     .and_then(|v| v.trim().parse::<u64>().ok())

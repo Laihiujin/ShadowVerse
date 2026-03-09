@@ -19,8 +19,8 @@ const WEB_RATE_LIMIT_COOLDOWN_SECS: i64 = 90;
 const WEB_RATE_LIMIT_RETRY_SECS: u64 = 20;
 const WEB_MIN_REQUEST_GAP_MS: u64 = 1200;
 const WEB_MIN_REQUEST_GAP_JITTER_MS: u64 = 800;
-const FOLLOW_INFO_CACHE_TTL_SECS: i64 = 300;
-const FOLLOW_INFO_MISS_TTL_SECS: i64 = 90;
+const FOLLOW_INFO_CACHE_TTL_SECS: i64 = 18;
+const FOLLOW_INFO_MISS_TTL_SECS: i64 = 6;
 
 static WEB_COOLDOWN_UNTIL: AtomicI64 = AtomicI64::new(0);
 static WEB_LAST_REQUEST_TS_MS: AtomicI64 = AtomicI64::new(0);
@@ -1041,11 +1041,9 @@ async fn fetch_follow_live_info_cached(
         }
     }
 
-    let fetched = match fetch_follow_live_info(client, account, room_id, author_id, author_name).await
-    {
-        Some(info) => Some(info),
-        None => fetch_livedetail_info(client, account, room_id).await,
-    };
+    // Cache only follow-list results. Livedetail fallback is handled by outer
+    // room-info flow; mixing fallback here can poison follow cache for too long.
+    let fetched = fetch_follow_live_info(client, account, room_id, author_id, author_name).await;
 
     if let Some(key) = cache_key {
         set_cached_follow_info(key, fetched.clone()).await;
