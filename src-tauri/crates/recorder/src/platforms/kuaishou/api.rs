@@ -267,6 +267,19 @@ fn extract_initial_state(html_str: &str) -> Option<String> {
     None
 }
 
+fn clean_json_state(raw: &str) -> String {
+    let mut trimmed = raw.trim().trim_end_matches(';').trim().to_string();
+    if let (Some(start), Some(end)) = (trimmed.find('{'), trimmed.rfind('}')) {
+        if end > start {
+            trimmed = trimmed[start..=end].to_string();
+        }
+    }
+    if trimmed.contains("undefined") {
+        trimmed = trimmed.replace("undefined", "null");
+    }
+    trimmed
+}
+
 fn extract_metadata_from_html(html_str: &str) -> (Option<String>, Option<String>, Option<String>) {
     let mut title = None;
     let mut cover = None;
@@ -408,6 +421,33 @@ fn parse_live_stream_response(json_str: &str) -> Result<LiveStreamResponse, Reco
     find_live_stream_response(&state).ok_or(RecorderError::ApiError {
         error: "Failed to extract liveStream data".to_string(),
     })
+}
+
+fn parse_room_info_from_initial_state(
+    json_str: &str,
+    principal_id: &str,
+    cookies: &str,
+) -> Result<Option<RoomInfo>, RecorderError> {
+    let state: Value = serde_json::from_str(json_str)
+        .or_else(|_| serde_json::from_str(&clean_json_state(json_str)))
+        .map_err(|e| RecorderError::ApiError {
+            error: format!("Failed to parse __INITIAL_STATE__: {}", e),
+        })?;
+
+    if let Some(play_item) = state
+        .get("liveroom")
+        .and_then(|v| v.get("playList"))
+        .and_then(|v| v.as_array())
+        .and_then(|list| list.first())
+    {
+        if let Some(room) = parse_room_info_from_livedetail_value(play_item, principal_id, cookies)? {
+            if room.live_status || !room.streams.is_empty() {
+                return Ok(Some(room));
+            }
+        }
+    }
+
+    parse_room_info_from_livedetail_value(&state, principal_id, cookies)
 }
 
 fn normalize_cookie_header(cookies: &str) -> String {
@@ -1230,6 +1270,100 @@ async fn fetch_livedetail_info(
         live: None,
         streams: Vec::new(),
     })
+}
+
+async fn get_room_info_via_public_page(
+    client: &Client,
+    account: &Account,
+    principal_id: &str,
+) -> Result<Option<RoomInfo>, RecorderError> {
+    if principal_id.trim().is_empty() {
+        return Ok(None);
+    }
+    if should_use_global_web_cooldown(account) && !web_api_allowed() {
+        return Ok(None);
+    }
+
+    let principal = resolve_principal_id(principal_id);
+    let url = format!("https://live.kuaishou.com/u/{principal}");
+
+    let mut headers = reqwest::header::HeaderMap::new();
+    headers.insert("User-Agent", USER_AGENT.parse().unwrap());
+    headers.insert(
+        "Accept",
+        "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+            .parse()
+            .unwrap(),
+    );
+    headers.insert("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8".parse().unwrap());
+    headers.insert("Referer", "https://live.kuaishou.com/".parse().unwrap());
+    headers.insert("Origin", "https://live.kuaishou.com".parse().unwrap());
+    headers.insert("Sec-Fetch-Dest", "document".parse().unwrap());
+    headers.insert("Sec-Fetch-Mode", "navigate".parse().unwrap());
+    headers.insert("Sec-Fetch-Site", "none".parse().unwrap());
+    headers.insert("Sec-Fetch-User", "?1".parse().unwrap());
+    headers.insert("Upgrade-Insecure-Requests", "1".parse().unwrap());
+
+    wait_for_web_request_slot("room_page_public").await;
+    let response = client.get(&url).headers(headers).send().await?;
+    if !response.status().is_success() {
+        return Ok(None);
+    }
+    let html_str = response.text().await?;
+
+    if let Some(msg) = extract_rate_limit_message_from_body(&html_str) {
+        if should_use_global_web_cooldown(account) {
+            set_web_cooldown(&msg);
+        }
+        return Err(RecorderError::ApiError { error: msg });
+    }
+
+    if let Some(json_str) = extract_initial_state(&html_str) {
+        let stream_cookie = normalize_record_cookie(&account.cookies);
+        if let Some(room) =
+            parse_room_info_from_initial_state(&json_str, &principal, &stream_cookie)?
+        {
+            if !room.streams.is_empty() {
+                log::debug!(
+                    "[Kuaishou] public page fallback resolved streams: principalId={}, streams={}",
+                    principal,
+                    room.streams.len()
+                );
+            }
+            return Ok(Some(room));
+        }
+    }
+
+    if let Some(hls_url) = extract_hls_play_url(&html_str) {
+        let (title, cover, avatar) = extract_metadata_from_html(&html_str);
+        let user_name = title
+            .as_ref()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+            .unwrap_or_else(|| "Kuaishou Live".to_string());
+        let user_avatar = avatar.unwrap_or_default();
+        let room_cover_url = cover.unwrap_or_else(|| user_avatar.clone());
+        log::debug!(
+            "[Kuaishou] public page fallback resolved hlsPlayUrl directly: principalId={}",
+            principal
+        );
+        return Ok(Some(RoomInfo {
+            live_status: true,
+            room_title: user_name.clone(),
+            room_cover_url,
+            user_id: principal.clone(),
+            user_name,
+            user_avatar,
+            streams: vec![StreamInfo {
+                url: hls_url,
+                quality: "钃濆厜璐ㄨ嚮".to_string(),
+                bitrate: None,
+                cookie: Some(normalize_record_cookie(&account.cookies)),
+            }],
+        }));
+    }
+
+    Ok(None)
 }
 
 fn resolve_principal_id(input: &str) -> String {
@@ -2398,6 +2532,30 @@ pub async fn get_room_info(
         }
     }
 
+    // Public page fallback: anonymous page can expose stream URLs even when
+    // livedetail returns masked payloads (e.g. result=2 + undefined URL).
+    for principal_id in &candidates {
+        match get_room_info_via_public_page(client, account, principal_id).await {
+            Ok(Some(room)) => {
+                if room.live_status && !room.streams.is_empty() {
+                    return Ok(room);
+                }
+                let score = room_info_score(&room);
+                if score > best_score {
+                    best_score = score;
+                    best_room = Some(room);
+                }
+            }
+            Ok(None) => {}
+            Err(err) => {
+                if is_rate_limited_error(&err) || is_captcha_error(&err) {
+                    return Err(err);
+                }
+                last_error = Some(err);
+            }
+        }
+    }
+
     if let Some(room) = best_room {
         return Ok(room);
     }
@@ -2483,6 +2641,19 @@ pub async fn get_stream_urls(
         {
             if !info.streams.is_empty() {
                 return Ok(info.streams);
+            }
+        }
+    }
+
+    for principal_id in &candidates {
+        match get_room_info_via_public_page(client, account, principal_id).await {
+            Ok(Some(room)) if !room.streams.is_empty() => return Ok(room.streams),
+            Ok(Some(_)) | Ok(None) => {}
+            Err(err) => {
+                if is_rate_limited_error(&err) || is_captcha_error(&err) {
+                    return Err(err);
+                }
+                last_error = Some(err);
             }
         }
     }
