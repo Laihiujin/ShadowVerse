@@ -7,7 +7,7 @@ use regex::Regex;
 use reqwest::Client;
 use serde::Deserialize;
 use serde_json::{Map, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Duration;
@@ -1214,13 +1214,16 @@ async fn fetch_livedetail_info(
         .await
         .ok()
         .flatten()?;
+    let principal_hint = find_string_value(&value, &["principalId", "principal_id", "eid"])
+        .and_then(|v| normalize_principal_candidate(&v))
+        .unwrap_or_else(|| principal_id.clone());
 
     let caption = find_string_value(&value, &["caption", "title", "liveTitle", "streamTitle"]);
     let cover_url = find_image_url(&value, &["coverUrl", "cover", "poster", "snapshot"]);
     let user_info = find_user_info(&value);
 
     Some(FollowLiveInfo {
-        principal_id: Some(principal_id),
+        principal_id: Some(principal_hint),
         caption,
         cover_url,
         user_name: user_info.as_ref().map(|u| u.user_name.clone()),
@@ -2268,6 +2271,43 @@ fn room_info_from_follow_info(candidate: &str, info: FollowLiveInfo) -> RoomInfo
     }
 }
 
+fn is_placeholder_user_name(value: &str) -> bool {
+    let lower = value.trim().to_ascii_lowercase();
+    lower.is_empty() || lower == "kuaishou live" || lower == "kuaishou"
+}
+
+fn push_follow_lookup_candidate(
+    lookups: &mut Vec<(String, String, String)>,
+    seen: &mut HashSet<String>,
+    room_id: &str,
+    author_id: &str,
+    author_name: &str,
+) {
+    let room = room_id.trim();
+    if room.is_empty() {
+        return;
+    }
+    let aid = if author_id.trim().is_empty() {
+        room
+    } else {
+        author_id.trim()
+    };
+    let aname = if author_name.trim().is_empty() {
+        aid
+    } else {
+        author_name.trim()
+    };
+    let key = format!(
+        "{}|{}|{}",
+        normalize_id(room),
+        normalize_id(aid),
+        normalize_id(aname)
+    );
+    if seen.insert(key) {
+        lookups.push((room.to_string(), aid.to_string(), aname.to_string()));
+    }
+}
+
 /// Get room information from Kuaishou reverse APIs only.
 pub async fn get_room_info(
     client: &Client,
@@ -2279,10 +2319,45 @@ pub async fn get_room_info(
     let mut best_room: Option<RoomInfo> = None;
     let mut best_score = i64::MIN;
     let mut last_error: Option<RecorderError> = None;
+    let candidates = principal_id_candidates(url);
+    let mut follow_lookups: Vec<(String, String, String)> = Vec::new();
+    let mut follow_lookup_seen: HashSet<String> = HashSet::new();
 
-    for principal_id in principal_id_candidates(url) {
+    for principal_id in &candidates {
+        push_follow_lookup_candidate(
+            &mut follow_lookups,
+            &mut follow_lookup_seen,
+            principal_id,
+            principal_id,
+            principal_id,
+        );
         match get_room_info_via_livedetail(client, account, &principal_id).await {
             Ok(Some(room)) => {
+                push_follow_lookup_candidate(
+                    &mut follow_lookups,
+                    &mut follow_lookup_seen,
+                    principal_id,
+                    &room.user_id,
+                    &room.user_name,
+                );
+                if !room.user_id.trim().is_empty() {
+                    push_follow_lookup_candidate(
+                        &mut follow_lookups,
+                        &mut follow_lookup_seen,
+                        &room.user_id,
+                        &room.user_id,
+                        &room.user_name,
+                    );
+                }
+                if !is_placeholder_user_name(&room.user_name) {
+                    push_follow_lookup_candidate(
+                        &mut follow_lookups,
+                        &mut follow_lookup_seen,
+                        principal_id,
+                        principal_id,
+                        &room.user_name,
+                    );
+                }
                 if room.live_status && !room.streams.is_empty() {
                     return Ok(room);
                 }
@@ -2303,12 +2378,17 @@ pub async fn get_room_info(
     }
 
     // Fallback to userFollowCount reverse API, which can include direct play URLs.
-    for candidate in principal_id_candidates(url) {
-        if let Some(info) =
-            fetch_follow_live_info_cached(client, account, &candidate, &candidate, &candidate)
-                .await
+    for (lookup_room, lookup_author_id, lookup_author_name) in follow_lookups {
+        if let Some(info) = fetch_follow_live_info_cached(
+            client,
+            account,
+            &lookup_room,
+            &lookup_author_id,
+            &lookup_author_name,
+        )
+        .await
         {
-            let room = room_info_from_follow_info(&candidate, info);
+            let room = room_info_from_follow_info(&lookup_room, info);
             if room.live_status && !room.streams.is_empty() {
                 return Ok(room);
             }
@@ -2339,10 +2419,46 @@ pub async fn get_stream_urls(
     let account_obj = ensure_guest_cookie(account);
     let account = &account_obj;
     let mut last_error: Option<RecorderError> = None;
-    for principal_id in principal_id_candidates(url) {
+    let candidates = principal_id_candidates(url);
+    let mut follow_lookups: Vec<(String, String, String)> = Vec::new();
+    let mut follow_lookup_seen: HashSet<String> = HashSet::new();
+
+    for principal_id in &candidates {
+        push_follow_lookup_candidate(
+            &mut follow_lookups,
+            &mut follow_lookup_seen,
+            principal_id,
+            principal_id,
+            principal_id,
+        );
         match get_room_info_via_livedetail(client, account, &principal_id).await {
             Ok(Some(room)) if !room.streams.is_empty() => return Ok(room.streams),
-            Ok(Some(_)) => {
+            Ok(Some(room)) => {
+                push_follow_lookup_candidate(
+                    &mut follow_lookups,
+                    &mut follow_lookup_seen,
+                    principal_id,
+                    &room.user_id,
+                    &room.user_name,
+                );
+                if !room.user_id.trim().is_empty() {
+                    push_follow_lookup_candidate(
+                        &mut follow_lookups,
+                        &mut follow_lookup_seen,
+                        &room.user_id,
+                        &room.user_id,
+                        &room.user_name,
+                    );
+                }
+                if !is_placeholder_user_name(&room.user_name) {
+                    push_follow_lookup_candidate(
+                        &mut follow_lookups,
+                        &mut follow_lookup_seen,
+                        principal_id,
+                        principal_id,
+                        &room.user_name,
+                    );
+                }
                 last_error = Some(RecorderError::ApiError {
                     error: "Kuaishou livedetail returned empty stream list".to_string(),
                 });
@@ -2357,10 +2473,15 @@ pub async fn get_stream_urls(
         }
     }
 
-    for candidate in principal_id_candidates(url) {
-        if let Some(info) =
-            fetch_follow_live_info_cached(client, account, &candidate, &candidate, &candidate)
-                .await
+    for (lookup_room, lookup_author_id, lookup_author_name) in follow_lookups {
+        if let Some(info) = fetch_follow_live_info_cached(
+            client,
+            account,
+            &lookup_room,
+            &lookup_author_id,
+            &lookup_author_name,
+        )
+        .await
         {
             if !info.streams.is_empty() {
                 return Ok(info.streams);
