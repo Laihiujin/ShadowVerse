@@ -1,6 +1,7 @@
 name: Publish
 
 on:
+  workflow_dispatch:
   push:
     tags:
       - "v*"
@@ -8,6 +9,10 @@ on:
 # 关键：必须有 contents: write 才能创建 Release
 permissions:
   contents: write
+
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   publish-tauri:
@@ -142,7 +147,9 @@ jobs:
       - name: Build and publish Tauri app
         uses: tauri-apps/tauri-action@v0
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # If RELEASE_TOKEN exists (PAT with repo scope), prefer it.
+          # Fallback to the default GITHUB_TOKEN.
+          GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN != '' && secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
@@ -162,3 +169,21 @@ jobs:
           prerelease: false
           includeUpdaterJson: ${{ matrix.include-updater-json }}
           args: ${{ matrix.args }} ${{ matrix.tauri-config }}
+
+      - name: Upload macOS DMG artifact
+        if: startsWith(matrix.label, 'macos-')
+        uses: actions/upload-artifact@v4
+        with:
+          name: ShadowVerse-${{ matrix.label }}-dmg
+          path: src-tauri/target/${{ matrix.rust-target }}/release/bundle/dmg/*.dmg
+          if-no-files-found: error
+
+      - name: Upload Windows CPU artifact
+        if: matrix.label == 'windows-cpu'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ShadowVerse-windows-cpu
+          path: |
+            src-tauri/target/release/bundle/nsis/*.exe
+            src-tauri/target/release/bundle/msi/*.msi
+          if-no-files-found: error
