@@ -74,6 +74,7 @@ jobs:
         run: |
           # Create universal app bundle
           mkdir -p src-tauri/target/universal-apple-darwin/release/bundle/macos
+          mkdir -p src-tauri/target/universal-apple-darwin/release/bundle/dmg
           cp -r src-tauri/target/aarch64-apple-darwin/release/bundle/macos/ShadowVerse.app \
                 src-tauri/target/universal-apple-darwin/release/bundle/macos/ShadowVerse.app
           
@@ -93,7 +94,7 @@ jobs:
           codesign --verify --deep --strict --verbose=2 "$UNIVERSAL_APP"
           
           # Create DMG for universal app bundle
-          UNIVERSAL_DMG="src-tauri/target/universal-apple-darwin/release/bundle/macos/ShadowVerse_universal.dmg"
+          UNIVERSAL_DMG="src-tauri/target/universal-apple-darwin/release/bundle/dmg/ShadowVerse_universal.dmg"
           rm -f "$UNIVERSAL_DMG"
           hdiutil create -volname "ShadowVerse" -srcfolder "$UNIVERSAL_APP" -ov -format UDZO "$UNIVERSAL_DMG"
 
@@ -118,23 +119,23 @@ jobs:
           }
           
           # Find and rename aarch64 DMG
-          AARCH64_DMG=$(find_final_dmg "src-tauri/target/aarch64-apple-darwin/release/bundle/macos")
+          AARCH64_DMG=$(find_final_dmg "src-tauri/target/aarch64-apple-darwin/release/bundle/dmg")
           if [ -n "$AARCH64_DMG" ]; then
-            cp "$AARCH64_DMG" "src-tauri/target/aarch64-apple-darwin/release/bundle/macos/ShadowVerse_${VERSION}_aarch64.dmg"
+            cp "$AARCH64_DMG" "src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/ShadowVerse_${VERSION}_aarch64.dmg"
             echo "Created: ShadowVerse_${VERSION}_aarch64.dmg"
           fi
           
           # Find and rename x86_64 DMG
-          X86_64_DMG=$(find_final_dmg "src-tauri/target/x86_64-apple-darwin/release/bundle/macos")
+          X86_64_DMG=$(find_final_dmg "src-tauri/target/x86_64-apple-darwin/release/bundle/dmg")
           if [ -n "$X86_64_DMG" ]; then
-            cp "$X86_64_DMG" "src-tauri/target/x86_64-apple-darwin/release/bundle/macos/ShadowVerse_${VERSION}_x86_64.dmg"
+            cp "$X86_64_DMG" "src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/ShadowVerse_${VERSION}_x86_64.dmg"
             echo "Created: ShadowVerse_${VERSION}_x86_64.dmg"
           fi
           
           # Find and rename universal DMG
-          UNIVERSAL_DMG=$(find_final_dmg "src-tauri/target/universal-apple-darwin/release/bundle/macos")
+          UNIVERSAL_DMG=$(find_final_dmg "src-tauri/target/universal-apple-darwin/release/bundle/dmg")
           if [ -n "$UNIVERSAL_DMG" ]; then
-            cp "$UNIVERSAL_DMG" "src-tauri/target/universal-apple-darwin/release/bundle/macos/ShadowVerse_${VERSION}_universal.dmg"
+            cp "$UNIVERSAL_DMG" "src-tauri/target/universal-apple-darwin/release/bundle/dmg/ShadowVerse_${VERSION}_universal.dmg"
             echo "Created: ShadowVerse_${VERSION}_universal.dmg"
           fi
 
@@ -146,9 +147,9 @@ jobs:
           fi
 
           for DMG in \
-            src-tauri/target/aarch64-apple-darwin/release/bundle/macos/ShadowVerse_${{ steps.version.outputs.version }}_aarch64.dmg \
-            src-tauri/target/x86_64-apple-darwin/release/bundle/macos/ShadowVerse_${{ steps.version.outputs.version }}_x86_64.dmg \
-            src-tauri/target/universal-apple-darwin/release/bundle/macos/ShadowVerse_${{ steps.version.outputs.version }}_universal.dmg; do
+            src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/ShadowVerse_${{ steps.version.outputs.version }}_aarch64.dmg \
+            src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/ShadowVerse_${{ steps.version.outputs.version }}_x86_64.dmg \
+            src-tauri/target/universal-apple-darwin/release/bundle/dmg/ShadowVerse_${{ steps.version.outputs.version }}_universal.dmg; do
             if [ -f "$DMG" ]; then
               xcrun notarytool submit "$DMG" --apple-id "${APPLE_ID}" --password "${APPLE_PASSWORD}" --team-id "${APPLE_TEAM_ID}" --wait
               xcrun stapler staple "$DMG"
@@ -167,9 +168,9 @@ jobs:
             fi
           done
           for DMG in \
-            src-tauri/target/aarch64-apple-darwin/release/bundle/macos/ShadowVerse_${{ steps.version.outputs.version }}_aarch64.dmg \
-            src-tauri/target/x86_64-apple-darwin/release/bundle/macos/ShadowVerse_${{ steps.version.outputs.version }}_x86_64.dmg \
-            src-tauri/target/universal-apple-darwin/release/bundle/macos/ShadowVerse_${{ steps.version.outputs.version }}_universal.dmg; do
+            src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/ShadowVerse_${{ steps.version.outputs.version }}_aarch64.dmg \
+            src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/ShadowVerse_${{ steps.version.outputs.version }}_x86_64.dmg \
+            src-tauri/target/universal-apple-darwin/release/bundle/dmg/ShadowVerse_${{ steps.version.outputs.version }}_universal.dmg; do
             if [ -f "$DMG" ]; then
               hdiutil verify "$DMG"
             fi
@@ -180,7 +181,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ShadowVerse-macOS-aarch64
-          path: src-tauri/target/aarch64-apple-darwin/release/bundle/macos/ShadowVerse_${{ steps.version.outputs.version }}_aarch64.dmg
+          path: src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/ShadowVerse_${{ steps.version.outputs.version }}_aarch64.dmg
           if-no-files-found: warn
 
       - name: Upload Intel DMG
@@ -188,7 +189,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ShadowVerse-macOS-x86_64
-          path: src-tauri/target/x86_64-apple-darwin/release/bundle/macos/ShadowVerse_${{ steps.version.outputs.version }}_x86_64.dmg
+          path: src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/ShadowVerse_${{ steps.version.outputs.version }}_x86_64.dmg
           if-no-files-found: warn
 
       - name: Upload Universal DMG
@@ -196,7 +197,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ShadowVerse-macOS-universal
-          path: src-tauri/target/universal-apple-darwin/release/bundle/macos/ShadowVerse_${{ steps.version.outputs.version }}_universal.dmg
+          path: src-tauri/target/universal-apple-darwin/release/bundle/dmg/ShadowVerse_${{ steps.version.outputs.version }}_universal.dmg
           if-no-files-found: warn
 
       - name: Create Release (on tag push)
@@ -204,9 +205,9 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           files: |
-            src-tauri/target/aarch64-apple-darwin/release/bundle/macos/ShadowVerse_${{ steps.version.outputs.version }}_aarch64.dmg
-            src-tauri/target/x86_64-apple-darwin/release/bundle/macos/ShadowVerse_${{ steps.version.outputs.version }}_x86_64.dmg
-            src-tauri/target/universal-apple-darwin/release/bundle/macos/ShadowVerse_${{ steps.version.outputs.version }}_universal.dmg
+            src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/ShadowVerse_${{ steps.version.outputs.version }}_aarch64.dmg
+            src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/ShadowVerse_${{ steps.version.outputs.version }}_x86_64.dmg
+            src-tauri/target/universal-apple-darwin/release/bundle/dmg/ShadowVerse_${{ steps.version.outputs.version }}_universal.dmg
           draft: true
           prerelease: false
         env:

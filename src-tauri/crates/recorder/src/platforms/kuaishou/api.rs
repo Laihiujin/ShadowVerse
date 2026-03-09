@@ -21,11 +21,14 @@ const WEB_MIN_REQUEST_GAP_MS: u64 = 1200;
 const WEB_MIN_REQUEST_GAP_JITTER_MS: u64 = 800;
 const FOLLOW_INFO_CACHE_TTL_SECS: i64 = 18;
 const FOLLOW_INFO_MISS_TTL_SECS: i64 = 6;
+const KWW_PROBE_CACHE_TTL_SECS: i64 = 3600;
+const KWW_PROBE_MISS_TTL_SECS: i64 = 300;
 
 static WEB_COOLDOWN_UNTIL: AtomicI64 = AtomicI64::new(0);
 static WEB_LAST_REQUEST_TS_MS: AtomicI64 = AtomicI64::new(0);
 static WEB_REQUEST_GATE: OnceLock<Mutex<()>> = OnceLock::new();
 static FOLLOW_INFO_CACHE: OnceLock<Mutex<HashMap<String, FollowInfoCacheEntry>>> = OnceLock::new();
+static KWW_PROBE_CACHE: OnceLock<Mutex<HashMap<String, KwwProbeCacheEntry>>> = OnceLock::new();
 
 fn read_env_u64(key: &str, default: u64) -> u64 {
     std::env::var(key)
@@ -361,47 +364,99 @@ fn extract_metadata_from_html(html_str: &str) -> (Option<String>, Option<String>
     (title, cover, avatar)
 }
 
-fn find_live_stream_response(value: &Value) -> Option<LiveStreamResponse> {
-    match value {
-        Value::Object(map) => {
-            if map.contains_key("liveStream") || map.contains_key("live_stream") {
-                let mut cloned = map.clone();
-                if !cloned.contains_key("liveStream") {
-                    if let Some(v) = cloned.remove("live_stream") {
-                        cloned.insert("liveStream".to_string(), v);
-                    }
-                }
-                if let Ok(response) =
-                    serde_json::from_value::<LiveStreamResponse>(Value::Object(cloned))
-                {
-                    // Check if this looks like a valid response with metadata
-                    // Prioritize ones that have author info
-                    if (response.live_stream.is_some() && response.author.is_some())
-                        || response.error_type.is_some()
-                    {
-                        return Some(response);
-                    }
-                }
-            }
+fn score_live_stream_response(response: &LiveStreamResponse) -> i64 {
+    let mut score = 0;
 
-            for child in map.values() {
-                if let Some(response) = find_live_stream_response(child) {
-                    return Some(response);
-                }
-            }
-
-            None
+    if let Some(stream) = response.live_stream.as_ref() {
+        score += 10;
+        if stream.play_urls.is_some() {
+            score += 1_000;
         }
-        Value::Array(values) => {
-            for value in values {
-                if let Some(response) = find_live_stream_response(value) {
-                    return Some(response);
-                }
-            }
-            None
+        if stream
+            .caption
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|v| !v.is_empty())
+        {
+            score += 50;
         }
-        _ => None,
+        if stream
+            .cover_url
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|v| !v.is_empty())
+        {
+            score += 20;
+        }
     }
+
+    if response
+        .author
+        .as_ref()
+        .is_some_and(|a| !a.id.trim().is_empty() || !a.name.trim().is_empty())
+    {
+        score += 25;
+    }
+
+    if response
+        .config
+        .as_ref()
+        .and_then(|cfg| cfg.caption.as_deref())
+        .map(str::trim)
+        .is_some_and(|v| !v.is_empty())
+    {
+        score += 10;
+    }
+
+    if response.error_type.is_some() {
+        score -= 500;
+    }
+
+    score
+}
+
+fn find_live_stream_response(value: &Value) -> Option<LiveStreamResponse> {
+    fn visit(value: &Value, best: &mut Option<(i64, LiveStreamResponse)>) {
+        match value {
+            Value::Object(map) => {
+                if map.contains_key("liveStream") || map.contains_key("live_stream") {
+                    let mut cloned = map.clone();
+                    if !cloned.contains_key("liveStream") {
+                        if let Some(v) = cloned.remove("live_stream") {
+                            cloned.insert("liveStream".to_string(), v);
+                        }
+                    }
+                    if let Ok(response) =
+                        serde_json::from_value::<LiveStreamResponse>(Value::Object(cloned))
+                    {
+                        if response.live_stream.is_some()
+                            || response.author.is_some()
+                            || response.error_type.is_some()
+                        {
+                            let score = score_live_stream_response(&response);
+                            if best.as_ref().map(|(s, _)| score > *s).unwrap_or(true) {
+                                *best = Some((score, response));
+                            }
+                        }
+                    }
+                }
+
+                for child in map.values() {
+                    visit(child, best);
+                }
+            }
+            Value::Array(values) => {
+                for child in values {
+                    visit(child, best);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut best: Option<(i64, LiveStreamResponse)> = None;
+    visit(value, &mut best);
+    best.map(|(_, response)| response)
 }
 
 fn parse_live_stream_response(json_str: &str) -> Result<LiveStreamResponse, RecorderError> {
@@ -935,6 +990,58 @@ struct FollowLiveInfo {
 struct FollowInfoCacheEntry {
     ts: i64,
     info: Option<FollowLiveInfo>,
+}
+
+#[derive(Clone, Debug)]
+struct KwwProbeCacheEntry {
+    ts: i64,
+    kww: Option<String>,
+}
+
+fn kww_probe_cache_ttl_secs() -> i64 {
+    read_env_u64(
+        "BSR_KUAISHOU_KWW_PROBE_CACHE_TTL_SECS",
+        KWW_PROBE_CACHE_TTL_SECS as u64,
+    ) as i64
+}
+
+fn kww_probe_miss_ttl_secs() -> i64 {
+    read_env_u64(
+        "BSR_KUAISHOU_KWW_PROBE_MISS_TTL_SECS",
+        KWW_PROBE_MISS_TTL_SECS as u64,
+    ) as i64
+}
+
+async fn get_cached_kww_probe(room_id: &str) -> Option<Option<String>> {
+    let cache = KWW_PROBE_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut guard = cache.lock().await;
+    let now = Utc::now().timestamp();
+    let Some(entry) = guard.get(room_id).cloned() else {
+        return None;
+    };
+
+    let ttl = if entry.kww.is_some() {
+        kww_probe_cache_ttl_secs()
+    } else {
+        kww_probe_miss_ttl_secs()
+    };
+    if now.saturating_sub(entry.ts) > ttl {
+        guard.remove(room_id);
+        return None;
+    }
+    Some(entry.kww)
+}
+
+async fn set_cached_kww_probe(room_id: String, kww: Option<String>) {
+    let cache = KWW_PROBE_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut guard = cache.lock().await;
+    guard.insert(
+        room_id,
+        KwwProbeCacheEntry {
+            ts: Utc::now().timestamp(),
+            kww,
+        },
+    );
 }
 
 fn normalize_id(value: &str) -> String {
@@ -1584,15 +1691,18 @@ async fn fetch_livedetail_value(
     }
     let mut resolved_kww = resolve_kuaishou_kww(&cookie_header);
     if resolved_kww.is_none() && use_room_page_kww_probe() {
-        let probe_url = format!(
-            "https://live.kuaishou.com/u/{}",
-            resolve_principal_id(principal_id)
-        );
-        if let Ok((html, _)) = fetch_web_html(client, account, &probe_url).await {
-            resolved_kww = extract_kuaishou_kww_from_html(&html);
-            if resolved_kww.is_some() {
-                log::info!("[Kuaishou] Extracted kww from room page HTML");
+        let probe_room = resolve_principal_id(principal_id);
+        if let Some(cached) = get_cached_kww_probe(&probe_room).await {
+            resolved_kww = cached;
+        } else {
+            let probe_url = format!("https://live.kuaishou.com/u/{probe_room}");
+            if let Ok((html, _)) = fetch_web_html(client, account, &probe_url).await {
+                resolved_kww = extract_kuaishou_kww_from_html(&html);
+                if resolved_kww.is_some() {
+                    log::info!("[Kuaishou] Extracted kww from room page HTML");
+                }
             }
+            set_cached_kww_probe(probe_room, resolved_kww.clone()).await;
         }
     }
     if let Some(kww) = resolved_kww.as_deref() {
@@ -2132,6 +2242,7 @@ fn collect_stream_infos_from_livedetail_value(
             if map.contains_key("hlsPlayUrl")
                 || map.contains_key("playUrls")
                 || map.contains_key("multiResolutionPlayUrls")
+                || map.contains_key("multiResolutionHlsPlayUrls")
             {
                 if let Ok(item) = serde_json::from_value::<UserFollowLive>(Value::Object(map.clone()))
                 {
@@ -2149,6 +2260,48 @@ fn collect_stream_infos_from_livedetail_value(
                         None,
                         cookie,
                     );
+                }
+            }
+
+            if let Some(levels) = map
+                .get("multiResolutionHlsPlayUrls")
+                .and_then(|v| v.as_array())
+            {
+                for level in levels {
+                    let quality = level
+                        .get("name")
+                        .or_else(|| level.get("shortName"))
+                        .or_else(|| level.get("level"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("Blue")
+                        .trim()
+                        .to_string();
+                    if let Some(entries) = level.get("urls").and_then(|v| v.as_array()) {
+                        for entry in entries {
+                            if let Some(raw_url) = entry.as_str() {
+                                push_stream_info_unique(
+                                    urls,
+                                    seen,
+                                    raw_url,
+                                    quality.clone(),
+                                    None,
+                                    cookie,
+                                );
+                            } else if let Some(raw_url) =
+                                entry.get("url").and_then(|v| v.as_str())
+                            {
+                                let bitrate = entry.get("bitrate").and_then(|v| v.as_i64());
+                                push_stream_info_unique(
+                                    urls,
+                                    seen,
+                                    raw_url,
+                                    quality.clone(),
+                                    bitrate,
+                                    cookie,
+                                );
+                            }
+                        }
+                    }
                 }
             }
             for child in map.values() {
