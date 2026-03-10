@@ -1,4 +1,4 @@
-<script>
+﻿<script>
   import {
     FileVideo,
     LayoutDashboard,
@@ -14,11 +14,9 @@
 
   const dispatch = createEventDispatcher();
 
-  export let activeUrl = "总览";
+  export let activeUrl = "overview";
 
-  /**
-   * @param {{ detail: String; }} route
-   */
+  /** @param {{ detail: string }} route */
   function navigate(route) {
     dispatch("activeChange", route.detail);
   }
@@ -28,42 +26,42 @@
   class="w-48 bg-[#f0f0f3]/50 dark:bg-black backdrop-blur-xl border-r border-gray-200 dark:border-gray-700"
 >
   <nav class="p-3 space-y-1">
-    <SidebarItem label="总览" {activeUrl} on:activeChange={navigate}>
+    <SidebarItem label="总览" value="overview" {activeUrl} on:activeChange={navigate}>
       <div slot="icon">
         <LayoutDashboard class="w-5 h-5" />
       </div>
     </SidebarItem>
-    <SidebarItem label="直播间" {activeUrl} on:activeChange={navigate}>
+    <SidebarItem label="直播间" value="room" {activeUrl} on:activeChange={navigate}>
       <div slot="icon">
         <Video class="w-5 h-5" />
       </div>
     </SidebarItem>
-    <SidebarItem label="录播" {activeUrl} on:activeChange={navigate}>
+    <SidebarItem label="录播" value="archive" {activeUrl} on:activeChange={navigate}>
       <div slot="icon">
         <History class="w-5 h-5" />
       </div>
     </SidebarItem>
-    <SidebarItem label="切片" {activeUrl} on:activeChange={navigate}>
+    <SidebarItem label="切片" value="clip" {activeUrl} on:activeChange={navigate}>
       <div slot="icon">
         <FileVideo class="w-5 h-5" />
       </div>
     </SidebarItem>
-    <SidebarItem label="任务" {activeUrl} on:activeChange={navigate}>
+    <SidebarItem label="任务" value="task" {activeUrl} on:activeChange={navigate}>
       <div slot="icon">
         <List class="w-5 h-5" />
       </div>
     </SidebarItem>
-    <SidebarItem label="助手" {activeUrl} on:activeChange={navigate}>
+    <SidebarItem label="助手" value="ai" {activeUrl} on:activeChange={navigate}>
       <div slot="icon">
         <Brain class="w-5 h-5" />
       </div>
     </SidebarItem>
-    <SidebarItem label="账号" {activeUrl} on:activeChange={navigate}>
+    <SidebarItem label="账号" value="account" {activeUrl} on:activeChange={navigate}>
       <div slot="icon">
         <Users class="w-5 h-5" />
       </div>
     </SidebarItem>
-    <SidebarItem label="设置" {activeUrl} on:activeChange={navigate}>
+    <SidebarItem label="设置" value="setting" {activeUrl} on:activeChange={navigate}>
       <div slot="icon">
         <Settings class="w-5 h-5" />
       </div>

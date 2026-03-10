@@ -25,6 +25,7 @@ const KWW_PROBE_CACHE_TTL_SECS: i64 = 3600;
 const KWW_PROBE_MISS_TTL_SECS: i64 = 300;
 
 static WEB_COOLDOWN_UNTIL: AtomicI64 = AtomicI64::new(0);
+static WEB_ROOM_COOLDOWN_UNTIL: OnceLock<Mutex<HashMap<String, i64>>> = OnceLock::new();
 static WEB_LAST_REQUEST_TS_MS: AtomicI64 = AtomicI64::new(0);
 static WEB_REQUEST_GATE: OnceLock<Mutex<()>> = OnceLock::new();
 static FOLLOW_INFO_CACHE: OnceLock<Mutex<HashMap<String, FollowInfoCacheEntry>>> = OnceLock::new();
@@ -51,8 +52,8 @@ fn read_env_bool(key: &str) -> Option<bool> {
         .and_then(|raw| parse_env_bool(&raw))
 }
 
-fn use_public_page_fallback() -> bool {
-    read_env_bool("BSR_KUAISHOU_ENABLE_PUBLIC_PAGE_FALLBACK").unwrap_or(false)
+fn use_public_page_fallback(account: &Account) -> bool {
+    read_env_bool("BSR_KUAISHOU_ENABLE_PUBLIC_PAGE_FALLBACK").unwrap_or(!account.is_guest())
 }
 
 fn use_room_page_kww_probe() -> bool {
@@ -114,25 +115,73 @@ fn is_room_disabled_message(message: &str) -> bool {
     !trimmed.is_empty() && trimmed.contains("\u{672a}\u{542f}\u{7528}")
 }
 
-fn set_web_cooldown(reason: &str) {
-    let cooldown_secs = web_cooldown_secs();
-    let until = Utc::now().timestamp() + cooldown_secs;
-    WEB_COOLDOWN_UNTIL.store(until, Ordering::Relaxed);
-    log::info!(
-        "[Kuaishou] Web cooldown set ({}s): {}",
-        cooldown_secs,
-        reason
-    );
+fn room_cooldown_key(room_key: &str) -> Option<String> {
+    let key = resolve_principal_id(room_key);
+    let trimmed = key.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_ascii_lowercase())
+    }
 }
 
-fn web_api_allowed() -> bool {
+async fn set_web_cooldown(account: &Account, room_key: &str, reason: &str) {
+    let cooldown_secs = web_cooldown_secs();
+    let until = Utc::now().timestamp() + cooldown_secs;
     let now = Utc::now().timestamp();
-    now >= WEB_COOLDOWN_UNTIL.load(Ordering::Relaxed)
+
+    if account.is_guest() {
+        if let Some(key) = room_cooldown_key(room_key) {
+            let map = WEB_ROOM_COOLDOWN_UNTIL.get_or_init(|| Mutex::new(HashMap::new()));
+            let mut guard = map.lock().await;
+            guard.retain(|_, value| *value > now);
+            guard.insert(key.clone(), until);
+            log::info!(
+                "[Kuaishou] Web room cooldown set room={} ({}s): {}",
+                key,
+                cooldown_secs,
+                reason
+            );
+        }
+        return;
+    }
+
+    if should_use_global_web_cooldown(account) {
+        WEB_COOLDOWN_UNTIL.store(until, Ordering::Relaxed);
+        log::info!(
+            "[Kuaishou] Web global cooldown set ({}s): {}",
+            cooldown_secs,
+            reason
+        );
+    }
+}
+
+async fn web_api_allowed(account: &Account, room_key: &str) -> bool {
+    let now = Utc::now().timestamp();
+    if account.is_guest() {
+        let Some(key) = room_cooldown_key(room_key) else {
+            return true;
+        };
+        let map = WEB_ROOM_COOLDOWN_UNTIL.get_or_init(|| Mutex::new(HashMap::new()));
+        let mut guard = map.lock().await;
+        match guard.get(&key).copied() {
+            Some(until) if now < until => false,
+            Some(_) => {
+                guard.remove(&key);
+                true
+            }
+            None => true,
+        }
+    } else if should_use_global_web_cooldown(account) {
+        now >= WEB_COOLDOWN_UNTIL.load(Ordering::Relaxed)
+    } else {
+        true
+    }
 }
 
 fn should_use_global_web_cooldown(account: &Account) -> bool {
     if account.is_guest() {
-        return true;
+        return false;
     }
     read_env_bool("BSR_KUAISHOU_LOGIN_GLOBAL_COOLDOWN").unwrap_or(false)
 }
@@ -226,6 +275,70 @@ fn extract_rate_limit_message_from_body(body: &str) -> Option<String> {
     }
 
     None
+}
+
+fn restore_stream_url_escapes(raw: &str) -> String {
+    raw.replace("\\u002F", "/")
+        .replace("\\u0026", "&")
+        .replace("\\u003D", "=")
+        .replace("\\/", "/")
+        .replace("&amp;", "&")
+}
+
+fn is_kuaishou_live_stream_url(url: &str) -> bool {
+    let lower = url.to_ascii_lowercase();
+    lower.contains("pull.yximgs.com")
+        || lower.contains("/gifshow/")
+        || lower.contains("hwsecret=")
+        || lower.contains("srcstrm=")
+}
+
+fn extract_direct_stream_urls_from_html(html_str: &str, cookie: &str) -> Vec<StreamInfo> {
+    static DIRECT_HTTP_RE: OnceLock<Regex> = OnceLock::new();
+    static DIRECT_RTMP_RE: OnceLock<Regex> = OnceLock::new();
+
+    let normalized = restore_stream_url_escapes(html_str);
+    let http_re = DIRECT_HTTP_RE.get_or_init(|| {
+        Regex::new(r#"https?://[^\s"'<>\\]+(?:\.m3u8|\.flv)(?:\?[^\s"'<>\\]*)?"#).unwrap()
+    });
+    let rtmp_re =
+        DIRECT_RTMP_RE.get_or_init(|| Regex::new(r#"rtmps?://[^\s"'<>\\]+"#).unwrap());
+
+    let mut urls: Vec<StreamInfo> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    for mat in http_re.find_iter(&normalized) {
+        let candidate = mat.as_str();
+        if !is_kuaishou_live_stream_url(candidate) {
+            continue;
+        }
+        push_stream_info_unique(
+            &mut urls,
+            &mut seen,
+            candidate,
+            "Direct".to_string(),
+            None,
+            cookie,
+        );
+    }
+
+    for mat in rtmp_re.find_iter(&normalized) {
+        let candidate = mat.as_str();
+        if !is_kuaishou_live_stream_url(candidate) {
+            continue;
+        }
+        push_stream_info_unique(
+            &mut urls,
+            &mut seen,
+            candidate,
+            "Direct".to_string(),
+            None,
+            cookie,
+        );
+    }
+
+    urls.sort_by(|a, b| a.url.cmp(&b.url));
+    urls
 }
 
 fn extract_hls_play_url(html_str: &str) -> Option<String> {
@@ -787,7 +900,7 @@ async fn fetch_web_html(
     }
 
     for attempt in 0..2 {
-        if should_use_global_web_cooldown(account) && !web_api_allowed() {
+        if !web_api_allowed(account, url).await {
             let retry_secs = web_retry_secs();
             log::info!(
                 "[Kuaishou] Web rate limited, retrying after {}s (attempt {})",
@@ -830,9 +943,7 @@ async fn fetch_web_html(
                         log::warn!("[Kuaishou] Homepage prewarm status: {}", status);
                     }
                     if let Some(msg) = extract_rate_limit_message_from_body(&body) {
-                        if should_use_global_web_cooldown(account) {
-                            set_web_cooldown(&msg);
-                        }
+                        set_web_cooldown(account, url, &msg).await;
                     }
                     if !prewarm_map.is_empty() {
                         let mut merged: HashMap<String, String> = HashMap::new();
@@ -891,9 +1002,7 @@ async fn fetch_web_html(
                     final_url
                 );
                 if let Some(msg) = extract_rate_limit_message_from_body(&html_str) {
-                    if should_use_global_web_cooldown(account) {
-                        set_web_cooldown(&msg);
-                    }
+                    set_web_cooldown(account, url, &msg).await;
                     last_error = Some(RecorderError::ApiError { error: msg });
                     continue;
                 }
@@ -917,9 +1026,7 @@ async fn fetch_web_html(
                     final_url
                 );
                 if let Some(msg) = extract_rate_limit_message_from_body(&html_str) {
-                    if should_use_global_web_cooldown(account) {
-                        set_web_cooldown(&msg);
-                    }
+                    set_web_cooldown(account, url, &msg).await;
                     last_error = Some(RecorderError::ApiError { error: msg });
                     continue;
                 }
@@ -1273,7 +1380,7 @@ async fn fetch_follow_live_info(
     author_id: &str,
     author_name: &str,
 ) -> Option<FollowLiveInfo> {
-    if should_use_global_web_cooldown(account) && !web_api_allowed() {
+    if !web_api_allowed(account, room_id).await {
         return None;
     }
     let referer_principal = resolve_principal_id(room_id);
@@ -1326,9 +1433,7 @@ async fn fetch_follow_live_info(
 
     let body = response.text().await.ok()?;
     if let Some(msg) = extract_rate_limit_message_from_body(&body) {
-        if should_use_global_web_cooldown(account) {
-            set_web_cooldown(&msg);
-        }
+        set_web_cooldown(account, room_id, &msg).await;
         return None;
     }
     let data: UserFollowCountResponse = serde_json::from_str(&body).ok()?;
@@ -1394,7 +1499,7 @@ async fn get_room_info_via_public_page(
     if principal_id.trim().is_empty() {
         return Ok(None);
     }
-    if should_use_global_web_cooldown(account) && !web_api_allowed() {
+    if !web_api_allowed(account, principal_id).await {
         return Ok(None);
     }
 
@@ -1425,18 +1530,27 @@ async fn get_room_info_via_public_page(
     }
     let html_str = response.text().await?;
 
-    if let Some(msg) = extract_rate_limit_message_from_body(&html_str) {
-        if should_use_global_web_cooldown(account) {
-            set_web_cooldown(&msg);
-        }
-        return Err(RecorderError::ApiError { error: msg });
-    }
+    let rate_limit_msg = extract_rate_limit_message_from_body(&html_str);
+    let stream_cookie = normalize_record_cookie(&account.cookies);
+    let page_streams = extract_direct_stream_urls_from_html(&html_str, &stream_cookie);
 
     if let Some(json_str) = extract_initial_state(&html_str) {
-        let stream_cookie = normalize_record_cookie(&account.cookies);
         if let Some(room) =
             parse_room_info_from_initial_state(&json_str, &principal, &stream_cookie)?
         {
+            let mut room = room;
+            if !page_streams.is_empty() {
+                let mut seen: HashSet<String> =
+                    room.streams.iter().map(|s| s.url.clone()).collect();
+                for stream in page_streams.iter().cloned() {
+                    if seen.insert(stream.url.clone()) {
+                        room.streams.push(stream);
+                    }
+                }
+                if !room.streams.is_empty() {
+                    sort_stream_infos(&mut room.streams);
+                }
+            }
             if !room.streams.is_empty() {
                 log::debug!(
                     "[Kuaishou] public page fallback resolved streams: principalId={}, streams={}",
@@ -1446,6 +1560,31 @@ async fn get_room_info_via_public_page(
             }
             return Ok(Some(room));
         }
+    }
+
+    if !page_streams.is_empty() {
+        let (title, cover, avatar) = extract_metadata_from_html(&html_str);
+        let user_name = title
+            .as_ref()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+            .unwrap_or_else(|| "Kuaishou Live".to_string());
+        let user_avatar = avatar.unwrap_or_default();
+        let room_cover_url = cover.unwrap_or_else(|| user_avatar.clone());
+        log::debug!(
+            "[Kuaishou] public page fallback resolved direct streams: principalId={}, streams={}",
+            principal,
+            page_streams.len()
+        );
+        return Ok(Some(RoomInfo {
+            live_status: true,
+            room_title: user_name.clone(),
+            room_cover_url,
+            user_id: principal.clone(),
+            user_name,
+            user_avatar,
+            streams: page_streams,
+        }));
     }
 
     if let Some(hls_url) = extract_hls_play_url(&html_str) {
@@ -1472,9 +1611,14 @@ async fn get_room_info_via_public_page(
                 url: hls_url,
                 quality: "Blue".to_string(),
                 bitrate: None,
-                cookie: Some(normalize_record_cookie(&account.cookies)),
+                cookie: Some(stream_cookie),
             }],
         }));
+    }
+
+    if let Some(msg) = rate_limit_msg {
+        set_web_cooldown(account, principal_id, &msg).await;
+        return Err(RecorderError::ApiError { error: msg });
     }
 
     Ok(None)
@@ -1656,7 +1800,7 @@ async fn fetch_livedetail_value(
     if principal_id.trim().is_empty() {
         return Ok(None);
     }
-    if should_use_global_web_cooldown(account) && !web_api_allowed() {
+    if !web_api_allowed(account, principal_id).await {
         return Ok(None);
     }
 
@@ -1755,9 +1899,7 @@ async fn fetch_livedetail_value(
                 let body = response.text().await?;
 
                 if let Some(msg) = extract_rate_limit_message_from_body(&body) {
-                    if should_use_global_web_cooldown(account) {
-                        set_web_cooldown(&msg);
-                    }
+                    set_web_cooldown(account, principal_id, &msg).await;
                     return Err(RecorderError::ApiError { error: msg });
                 }
 
@@ -2718,7 +2860,7 @@ pub async fn get_room_info(
         }
     }
 
-    if use_public_page_fallback() {
+    if use_public_page_fallback(account) {
         // Public page fallback: anonymous page can expose stream URLs even when
         // livedetail returns masked payloads (e.g. result=2 + undefined URL).
         for principal_id in &candidates {
@@ -2833,7 +2975,7 @@ pub async fn get_stream_urls(
         }
     }
 
-    if use_public_page_fallback() {
+    if use_public_page_fallback(account) {
         for principal_id in &candidates {
             match get_room_info_via_public_page(client, account, principal_id).await {
                 Ok(Some(room)) if !room.streams.is_empty() => return Ok(room.streams),

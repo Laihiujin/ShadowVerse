@@ -368,6 +368,14 @@ impl KuaishouRecorder {
         KuaishouProtocol::Hls
     }
 
+    fn protocol_preference_overridden() -> bool {
+        std::env::var("BSR_KUAISHOU_PREFER_PROTOCOL")
+            .ok()
+            .and_then(|value| KuaishouProtocol::from_str(&value))
+            .is_some()
+            || Self::prefer_flv_env().is_some()
+    }
+
     fn startup_stagger_max_secs() -> u64 {
         std::env::var("BSR_KUAISHOU_STARTUP_STAGGER_SECS")
             .ok()
@@ -449,7 +457,37 @@ impl KuaishouRecorder {
             .store(0, atomic::Ordering::Relaxed);
     }
 
-    fn select_stream_url(streams: &[api::StreamInfo], prefer: KuaishouProtocol) -> Option<String> {
+    fn select_stream_url(
+        streams: &[api::StreamInfo],
+        prefer: KuaishouProtocol,
+        prefer_login_direct: bool,
+    ) -> Option<String> {
+        let is_direct = |url: &str| url.contains("pull.yximgs.com");
+
+        if prefer_login_direct {
+            if let Some(selected) = streams
+                .iter()
+                .find(|stream| is_direct(&stream.url) && prefer.matches_url(&stream.url))
+                .map(|stream| stream.url.clone())
+            {
+                return Some(selected);
+            }
+            if let Some(selected) = streams
+                .iter()
+                .find(|stream| is_direct(&stream.url) && KuaishouProtocol::Flv.matches_url(&stream.url))
+                .map(|stream| stream.url.clone())
+            {
+                return Some(selected);
+            }
+            if let Some(selected) = streams
+                .iter()
+                .find(|stream| is_direct(&stream.url))
+                .map(|stream| stream.url.clone())
+            {
+                return Some(selected);
+            }
+        }
+
         let mut selected = streams
             .iter()
             .find(|stream| prefer.matches_url(&stream.url))
@@ -597,7 +635,9 @@ impl KuaishouRecorder {
                 }
 
                 let prefer = Self::prefer_protocol();
-                let selected_url = Self::select_stream_url(&streams, prefer);
+                let prefer_login_direct =
+                    !self.account.is_guest() && !Self::protocol_preference_overridden();
+                let selected_url = Self::select_stream_url(&streams, prefer, prefer_login_direct);
 
                 if let Some(url) = selected_url {
                     *self.extra.stream_list.write().await = streams.clone();

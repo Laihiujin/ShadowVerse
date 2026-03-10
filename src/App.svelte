@@ -1,4 +1,4 @@
-<script lang="ts">
+﻿<script lang="ts">
   import Room from "./page/Room.svelte";
   import BSidebar from "./lib/components/BSidebar.svelte";
   import Summary from "./page/Summary.svelte";
@@ -11,12 +11,29 @@
   import Archive from "./page/Archive.svelte";
   import { onMount } from "svelte";
 
-  let active = "总览";
+  const ROUTE = {
+    OVERVIEW: "overview",
+    ROOM: "room",
+    ARCHIVE: "archive",
+    CLIP: "clip",
+    TASK: "task",
+    AI: "ai",
+    ACCOUNT: "account",
+    SETTING: "setting",
+  } as const;
+
+  type RouteKey = (typeof ROUTE)[keyof typeof ROUTE];
+
+  let active: RouteKey = ROUTE.OVERVIEW;
   let darkMode = false;
 
   function applyTheme(isDark: boolean) {
     darkMode = isDark;
     document.documentElement.classList.toggle("dark", isDark);
+  }
+
+  function handleActiveChange(e: CustomEvent<string>) {
+    active = (e.detail as RouteKey) || ROUTE.OVERVIEW;
   }
 
   onMount(async () => {
@@ -35,93 +52,85 @@
 
     await onOpenUrl((urls: string[]) => {
       console.log("Received Deep Link:", urls);
-      if (urls.length > 0) {
-        const url = urls[0];
-        // extract platform and room_id from url
-        // url example:
-        // bsr://live.bilibili.com/167537?live_from=85001&spm_id_from=333.1365.live_users.item.click
-        // bsr://live.douyin.com/200525029536
+      if (urls.length === 0) {
+        return;
+      }
 
-        let platform = "";
-        let room_id = "";
+      const url = urls[0];
+      let platform = "";
+      let room_id = "";
 
-        const bilibiliPrefixes = [
-          "bsr://live.bilibili.com/",
-          "https://live.bilibili.com/",
-          "http://live.bilibili.com/",
-        ];
-        for (const prefix of bilibiliPrefixes) {
-          if (url.startsWith(prefix)) {
-            room_id = url.replace(prefix, "").split("?")[0];
-            platform = "bilibili";
-            break;
-          }
+      const bilibiliPrefixes = [
+        "bsr://live.bilibili.com/",
+        "https://live.bilibili.com/",
+        "http://live.bilibili.com/",
+      ];
+      for (const prefix of bilibiliPrefixes) {
+        if (url.startsWith(prefix)) {
+          room_id = url.replace(prefix, "").split("?")[0];
+          platform = "bilibili";
+          break;
         }
+      }
 
-        const douyinPrefixes = [
-          "bsr://live.douyin.com/",
-          "https://live.douyin.com/",
-          "http://live.douyin.com/",
-        ];
-        for (const prefix of douyinPrefixes) {
-          if (url.startsWith(prefix)) {
-            room_id = url.replace(prefix, "").split("?")[0];
-            platform = "douyin";
-            break;
-          }
+      const douyinPrefixes = [
+        "bsr://live.douyin.com/",
+        "https://live.douyin.com/",
+        "http://live.douyin.com/",
+      ];
+      for (const prefix of douyinPrefixes) {
+        if (url.startsWith(prefix)) {
+          room_id = url.replace(prefix, "").split("?")[0];
+          platform = "douyin";
+          break;
         }
+      }
 
-        if (url.startsWith("bsr://live.kuaishou.com/")) {
-          room_id = url.replace("bsr://live.kuaishou.com/", "").split("?")[0];
-          room_id = room_id.replace(/^u\//, "");
-          platform = "kuaishou";
-        }
+      if (url.startsWith("bsr://live.kuaishou.com/")) {
+        room_id = url.replace("bsr://live.kuaishou.com/", "").split("?")[0];
+        room_id = room_id.replace(/^u\//, "");
+        platform = "kuaishou";
+      }
 
-        if (url.startsWith("bsr://live.tiktok.com/")) {
-          room_id = url.replace("bsr://live.tiktok.com/", "").split("?")[0];
+      if (url.startsWith("bsr://live.tiktok.com/")) {
+        room_id = url.replace("bsr://live.tiktok.com/", "").split("?")[0];
+        platform = "tiktok";
+      }
+
+      const webcastMatch = url.match(
+        /webcast\.tiktok\.com\/webcast\/[^?]+.*[?&]room_id=(\d+)/i
+      );
+      if (webcastMatch) {
+        room_id = webcastMatch[1];
+        platform = "tiktok";
+      }
+
+      if (
+        url.startsWith("https://www.tiktok.com/") ||
+        url.startsWith("http://www.tiktok.com/") ||
+        url.startsWith("https://tiktok.com/") ||
+        url.startsWith("http://tiktok.com/")
+      ) {
+        const match = url.match(/tiktok\.com\/@?([^\/\?]+)(?:\/live)?/i);
+        if (match) {
+          room_id = match[1];
           platform = "tiktok";
         }
+      }
 
-        const webcastMatch = url.match(
-          /webcast\.tiktok\.com\/webcast\/[^?]+.*[?&]room_id=(\d+)/i
+      if (!room_id) {
+        const huyaMatch = url.match(
+          /(?:https?|bsr):\/\/(?:www\.)?huya\.com\/([^?#\s,;，。]+?)(?=https?:\/\/|bsr:\/\/|[,;，。\s]|$)/i
         );
-        if (webcastMatch) {
-          room_id = webcastMatch[1];
-          platform = "tiktok";
+        if (huyaMatch) {
+          room_id = huyaMatch[1];
+          platform = "huya";
+          log.info("Parsed Huya room_id:", room_id);
         }
+      }
 
-        if (
-          url.startsWith("https://www.tiktok.com/") ||
-          url.startsWith("http://www.tiktok.com/") ||
-          url.startsWith("https://tiktok.com/") ||
-          url.startsWith("http://tiktok.com/")
-        ) {
-          const match = url.match(/tiktok\.com\/@?([^\/\?]+)(?:\/live)?/i);
-          if (match) {
-            room_id = match[1];
-            platform = "tiktok";
-          }
-        }
-
-        // Huya Parsing
-        // Supports separators: , ; . ， 。 and mashed urls (e.g. ...com/abchttp...)
-        if (!room_id) {
-          // Identify Huya URL pattern and extract the room ID (alphanumeric, stops at separator or next http)
-          const huyaMatch = url.match(/(?:https?|bsr):\/\/(?:www\.)?huya\.com\/([^?#\s,;，。]+?)(?=https?:\/\/|bsr:\/\/|[,;，。\s]|$)/);
-          if (huyaMatch) {
-            room_id = huyaMatch[1];
-            platform = "huya";
-            log.info("Parsed Huya room_id:", room_id);
-          }
-        }
-
-        if (platform && room_id) {
-          // switch to room page
-          active = "直播间";
-          // TODO: Actually trigger the room load. Currently it just switches tab.
-          // Assuming there might be a store or we need to dispatch an event, 
-          // but based on existing code, we just restore the file structure first.
-        }
+      if (platform && room_id) {
+        active = ROUTE.ROOM;
       }
     });
   });
@@ -132,34 +141,32 @@
     <div class="sidebar">
       <BSidebar
         bind:activeUrl={active}
-        on:activeChange={(e) => {
-          active = e.detail;
-        }}
+        on:activeChange={handleActiveChange}
       />
     </div>
     <div class="content bg-white dark:bg-black">
-      <div class="page" class:visible={active == "总览"}>
+      <div class="page" class:visible={active == ROUTE.OVERVIEW}>
         <Summary />
       </div>
-      <div class="page" class:visible={active == "直播间"}>
+      <div class="page" class:visible={active == ROUTE.ROOM}>
         <Room />
       </div>
-      <div class="page" class:visible={active == "录播"}>
+      <div class="page" class:visible={active == ROUTE.ARCHIVE}>
         <Archive />
       </div>
-      <div class="page" class:visible={active == "切片"}>
+      <div class="page" class:visible={active == ROUTE.CLIP}>
         <Clip />
       </div>
-      <div class="page" class:visible={active == "任务"}>
+      <div class="page" class:visible={active == ROUTE.TASK}>
         <Task />
       </div>
-      <div class="page" class:visible={active == "助手"}>
+      <div class="page" class:visible={active == ROUTE.AI}>
         <AI />
       </div>
-      <div class="page" class:visible={active == "账号"}>
+      <div class="page" class:visible={active == ROUTE.ACCOUNT}>
         <Account />
       </div>
-      <div class="page" class:visible={active == "设置"}>
+      <div class="page" class:visible={active == ROUTE.SETTING}>
         <Setting />
       </div>
     </div>

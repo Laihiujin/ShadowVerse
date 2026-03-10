@@ -1,25 +1,27 @@
-<script>
-  import { Info, LayoutDashboard, Settings, Users, Video } from "lucide-svelte";
+﻿<script>
   import { createEventDispatcher } from "svelte";
 
   const dispatch = createEventDispatcher();
 
-  // acitveUrl is shared between project
-  export let activeUrl = "总览";
+  // activeUrl is shared between pages.
+  export let activeUrl = "overview";
   export let label = "";
+  export let value = "";
   export let dot = false;
+
+  $: routeValue = value || label;
 </script>
 
 <button
-  on:click={() => dispatch("activeChange", label)}
+  on:click={() => dispatch("activeChange", routeValue)}
   class="flex w-full items-center space-x-2 px-3 py-2 rounded-lg {activeUrl ===
-  label
+  routeValue
     ? 'bg-blue-500/10 text-[#0A84FF] dark:bg-transparent dark:text-white'
     : 'text-gray-700 dark:text-white'} hover:bg-[#e5e5e5] dark:hover:bg-transparent"
 >
   <slot
     name="icon"
-    class={activeUrl === label
+    class={activeUrl === routeValue
       ? "text-[#0A84FF] dark:text-white"
       : "text-gray-700 dark:text-white"}
   ></slot>

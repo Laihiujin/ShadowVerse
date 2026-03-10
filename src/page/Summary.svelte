@@ -1,4 +1,4 @@
-<script lang="ts">
+﻿<script lang="ts">
   import { get, get_static_url, invoke } from "../lib/invoker";
   import type { RecorderList, DiskInfo } from "../lib/interface";
   import type { RecordItem } from "../lib/db";
@@ -15,6 +15,7 @@
     Users,
     Video,
   } from "lucide-svelte";
+  import { onDestroy, onMount } from "svelte";
 
   let summary: RecorderList = {
     count: 0,
@@ -39,6 +40,8 @@
   let offset = 0;
   let hasMore = true;
   let hasNewRecords = false;
+  let summaryUpdating = false;
+  let summaryTimer: ReturnType<typeof setInterval> | null = null;
   const RECORDS_PER_PAGE = 5;
 
   const room_cover_cache: Map<string, string> = new Map();
@@ -117,41 +120,49 @@
   }
 
   async function update_summary() {
-    summary = (await invoke("get_recorder_list")) as RecorderList;
-    total = summary.count;
-    online = summary.recorders.filter((r) => r.room_info.status).length;
-    await refresh_room_cover_fallback();
+    if (summaryUpdating) {
+      return;
+    }
+    summaryUpdating = true;
+    try {
+      summary = (await invoke("get_recorder_list")) as RecorderList;
+      total = summary.count;
+      online = summary.recorders.filter((r) => r.room_info.status).length;
+      await refresh_room_cover_fallback();
 
-    disk_usage = await get_archive_disk_usage();
+      disk_usage = await get_archive_disk_usage();
 
-    // get disk info
-    disk_info = await invoke("get_disk_info");
-    account_count = await get_account_count();
+      // get disk info
+      disk_info = await invoke("get_disk_info");
+      account_count = await get_account_count();
 
-    // get total length
-    total_length = await get_total_length();
+      // get total length
+      total_length = await get_total_length();
 
-    // get today record count
-    today_record_count = await get_today_record_count();
+      // get today record count
+      today_record_count = await get_today_record_count();
 
-    // check for new records
-    if (recent_records.length > 0) {
-      const latestRecords = (await invoke("get_recent_record", {
-        roomId: "",
-        offset: 0,
-        limit: 1,
-      })) as RecordItem[];
+      // check for new records
+      if (recent_records.length > 0) {
+        const latestRecords = (await invoke("get_recent_record", {
+          roomId: "",
+          offset: 0,
+          limit: 1,
+        })) as RecordItem[];
 
-      if (
-        latestRecords.length > 0 &&
-        (!recent_records[0] ||
-          latestRecords[0].live_id !== recent_records[0].live_id)
-      ) {
-        hasNewRecords = true;
+        if (
+          latestRecords.length > 0 &&
+          (!recent_records[0] ||
+            latestRecords[0].live_id !== recent_records[0].live_id)
+        ) {
+          hasNewRecords = true;
+        }
+      } else {
+        // Initial load
+        await loadMoreRecords();
       }
-    } else {
-      // Initial load
-      await loadMoreRecords();
+    } finally {
+      summaryUpdating = false;
     }
   }
 
@@ -214,8 +225,17 @@
     }
   }
 
-  update_summary();
-  setInterval(update_summary, INTERVAL);
+  onMount(() => {
+    update_summary();
+    summaryTimer = setInterval(update_summary, INTERVAL);
+  });
+
+  onDestroy(() => {
+    if (summaryTimer) {
+      clearInterval(summaryTimer);
+      summaryTimer = null;
+    }
+  });
 
   async function get_archive_disk_usage() {
     const total_size = (await invoke("get_archive_disk_usage")) as number;
@@ -324,7 +344,7 @@
   <div class="space-y-6">
     <!-- Header -->
     <div class="flex justify-between items-center">
-      <h1 class="text-2xl font-semibold text-gray-900 dark:text-white">总览</h1>
+      <h1 class="text-2xl font-semibold text-gray-900 dark:text-white">鎬昏</h1>
     </div>
 
     <!-- Stats Grid -->
@@ -338,7 +358,7 @@
             <HardDrive class="w-6 h-6 icon-white" />
           </div>
           <div>
-            <p class="text-sm text-gray-600 dark:text-gray-400">缓存占用</p>
+            <p class="text-sm text-gray-600 dark:text-gray-400">缂撳瓨鍗犵敤</p>
             <p class="text-2xl font-semibold text-gray-900 dark:text-white">
               {format_size(disk_usage)}
             </p>
@@ -355,9 +375,9 @@
           </div>
           <div class="min-w-0 flex-1">
             <div class="flex items-baseline justify-between">
-              <p class="text-sm text-gray-600 dark:text-gray-400">磁盘使用</p>
+              <p class="text-sm text-gray-600 dark:text-gray-400">纾佺洏浣跨敤</p>
               <p class="text-xs text-gray-500 dark:text-gray-400">
-                {format_size(disk_info.free)}剩余
+                {format_size(disk_info.free)}鍓╀綑
               </p>
             </div>
             <p class="text-2xl font-semibold text-gray-900 dark:text-white">
@@ -403,7 +423,7 @@
             <Users class="w-6 h-6 icon-white" />
           </div>
           <div>
-            <p class="text-sm text-gray-600 dark:text-gray-400">账号</p>
+            <p class="text-sm text-gray-600 dark:text-gray-400">璐﹀彿</p>
             <p class="text-2xl font-semibold text-gray-900 dark:text-white">
               {account_count}
             </p>
@@ -437,9 +457,7 @@
             <CalendarCheck class="w-6 h-6 icon-white" />
           </div>
           <div>
-            <p class="text-sm text-gray-600 dark:text-gray-400">
-              今日缓存直播数
-            </p>
+            <p class="text-sm text-gray-600 dark:text-gray-400">今日缓存直播数</p>
             <p class="text-2xl font-semibold text-gray-900 dark:text-white">
               {today_record_count}
             </p>
@@ -453,7 +471,7 @@
       <div class="flex justify-between items-center">
         <div class="flex items-center space-x-3">
           <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
-            最近的直播记录
+            鏈€杩戠殑鐩存挱璁板綍
           </h2>
           <button
             class="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700/50 transition-colors text-gray-500 dark:text-gray-400"
@@ -467,13 +485,13 @@
             class="px-3 py-1 text-sm text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-500/10 rounded-full hover:bg-blue-100 dark:hover:bg-blue-500/20 transition-colors"
             on:click={loadMoreRecords}
           >
-            记录有更新 • 点击刷新
+            璁板綍鏈夋洿鏂?鈥?鐐瑰嚮鍒锋柊
           </button>
         {/if}
       </div>
       <div class="space-y-3">
         <!-- Recording Items -->
-        {#each recent_records as record}
+        {#each recent_records as record (`${record.platform}:${record.room_id}:${record.live_id}:${record.created_at}`)}
           <div
             class="p-4 rounded-lg bg-white dark:bg-[#3c3c3e] border border-gray-200 dark:border-gray-700 flex items-center justify-between hover:border-blue-500 dark:hover:border-blue-400 transition-colors"
           >
@@ -501,9 +519,9 @@
                   {record.title}
                 </h3>
                 <p class="text-sm text-gray-600 dark:text-gray-400">
-                  {record.platform} • {record.room_id} • {format_date(
+                  {record.platform} 鈥?{record.room_id} 鈥?{format_date(
                     record.created_at
-                  )} • {format_size(record.size)}
+                  )} 鈥?{format_size(record.size)}
                 </p>
               </div>
             </div>
@@ -541,10 +559,10 @@
                       <h3
                         class="text-sm font-medium text-gray-900 dark:text-white"
                       >
-                        确认删除
+                        纭鍒犻櫎
                       </h3>
                       <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                        此操作无法撤销
+                        姝ゆ搷浣滄棤娉曟挙閿€
                       </p>
                     </div>
                     <div class="p-2 flex space-x-2">
@@ -554,7 +572,7 @@
                           activeDropdown = null;
                         }}
                       >
-                        取消
+                        鍙栨秷
                       </button>
                       <button
                         class="flex-1 px-3 py-1.5 text-sm text-white bg-red-600 hover:bg-red-700 rounded-md transition-colors"
@@ -563,7 +581,7 @@
                           activeDropdown = null;
                         }}
                       >
-                        删除
+                        鍒犻櫎
                       </button>
                     </div>
                   </div>
@@ -583,10 +601,10 @@
 
         {#if !hasMore && recent_records.length > 0}
           <div class="text-center py-4 text-gray-500 dark:text-gray-400">
-            没有更多记录了
-          </div>
+            娌℃湁鏇村璁板綍浜?          </div>
         {/if}
       </div>
     </div>
   </div>
 </div>
+
