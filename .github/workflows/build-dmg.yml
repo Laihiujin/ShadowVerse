@@ -23,7 +23,8 @@ on:
 
 jobs:
   build-dmg:
-    runs-on: macos-latest
+    # Build on Apple Silicon runner to ensure native arm64 DMG output is stable.
+    runs-on: macos-14
     permissions:
       contents: write
     env:
@@ -43,8 +44,13 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: lts/*
+          node-version: 20
           cache: 'yarn'
+
+      - name: Install macOS dependencies (cmake/llvm for native crates)
+        run: |
+          brew install cmake llvm
+          echo "/opt/homebrew/opt/llvm/bin" >> $GITHUB_PATH
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
@@ -52,12 +58,12 @@ jobs:
           targets: aarch64-apple-darwin,x86_64-apple-darwin
 
       - name: Install frontend dependencies
-        run: yarn install
+        run: yarn install --frozen-lockfile
 
       - name: Build for Apple Silicon
         if: github.event_name == 'push' || github.event.inputs.target == 'aarch64-apple-darwin' || github.event.inputs.target == 'universal'
         env:
-          CMAKE_OSX_DEPLOYMENT_TARGET: '13.3'
+          CMAKE_OSX_DEPLOYMENT_TARGET: '11.0'
           GGML_METAL_EMBED_LIBRARY: '1'
         run: |
           yarn tauri build --target aarch64-apple-darwin

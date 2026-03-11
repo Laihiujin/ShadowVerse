@@ -24,12 +24,8 @@ jobs:
             tauri_config: ""
             include_updater_json: true
           - platform: "windows-latest"
-            args: "--features cuda"
-            features: "cuda"
-            tauri_config: "--config src-tauri/tauri.windows.cuda.conf.json"
-            include_updater_json: false
-          - platform: "windows-latest"
-            args: ""
+            # Keep this workflow CPU-only and release-only for Windows artifacts.
+            args: "--features gui"
             features: "cpu"
             tauri_config: "--config src-tauri/tauri.windows.cpu.conf.json"
             include_updater_json: true
@@ -37,16 +33,6 @@ jobs:
     runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v4
-
-      - name: Set build type
-        id: build_type
-        run: |
-          if [[ "${{ github.ref }}" == *"rc"* ]]; then
-            echo "debug=true" >> $GITHUB_OUTPUT
-          else
-            echo "debug=false" >> $GITHUB_OUTPUT
-          fi
-        shell: bash
 
       - name: install dependencies (ubuntu only)
         if: matrix.platform == 'ubuntu-22.04' # This must match the platform value defined above.
@@ -126,4 +112,4 @@ jobs:
           releaseDraft: true
           prerelease: false
           includeUpdaterJson: ${{ matrix.include_updater_json }}
-          args: ${{ matrix.args }} ${{ matrix.tauri_config }}
+          args: --release ${{ matrix.args }} ${{ matrix.tauri_config }}
