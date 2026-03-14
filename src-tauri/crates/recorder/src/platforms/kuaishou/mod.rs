@@ -73,6 +73,10 @@ pub struct KuaishouExtra {
 pub type KuaishouRecorder = Recorder<KuaishouExtra>;
 
 impl KuaishouRecorder {
+    fn is_placeholder_text(value: &str) -> bool {
+        matches!(value.trim(), "" | "Kuaishou" | "Kuaishou Live")
+    }
+
     pub async fn new(
         room_id: &str,
         account: &Account,
@@ -549,7 +553,9 @@ impl KuaishouRecorder {
                 self.clear_rate_limit_backoff();
                 let prev_room = self.room_info.read().await.clone();
                 let prev_user = self.user_info.read().await.clone();
-                let final_title = if room_info.room_title.is_empty() {
+                let final_title = if room_info.room_title.is_empty()
+                    || Self::is_placeholder_text(&room_info.room_title)
+                {
                     prev_room.room_title.clone()
                 } else {
                     room_info.room_title.clone()
@@ -559,7 +565,9 @@ impl KuaishouRecorder {
                 } else {
                     room_info.room_cover_url.clone()
                 };
-                let final_user_name = if room_info.user_name.is_empty() {
+                let final_user_name = if room_info.user_name.is_empty()
+                    || Self::is_placeholder_text(&room_info.user_name)
+                {
                     prev_user.user_name.clone()
                 } else {
                     room_info.user_name.clone()
@@ -579,7 +587,13 @@ impl KuaishouRecorder {
                 };
 
                 // Update user info
-                if self.user_info.read().await.user_id != room_info.user_id {
+                let should_update_user = {
+                    let current = self.user_info.read().await;
+                    current.user_id != room_info.user_id
+                        || current.user_name != final_user_name
+                        || current.user_avatar != final_avatar
+                };
+                if should_update_user {
                     *self.user_info.write().await = UserInfo {
                         user_id: room_info.user_id.to_string(),
                         user_name: final_user_name,

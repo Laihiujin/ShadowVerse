@@ -22,19 +22,19 @@ jobs:
         include:
           # macOS arm64 (Apple Silicon)
           - platform: macos-14
-            args: "--target aarch64-apple-darwin"
+            args: "--target aarch64-apple-darwin --bundles app"
             rust-target: aarch64-apple-darwin
             label: macos-arm64
             tauri-config: ""
-            include-updater-json: true
+            include-updater-json: false
 
           # macOS x86_64 (Intel)
           - platform: macos-13
-            args: "--target x86_64-apple-darwin"
+            args: "--target x86_64-apple-darwin --bundles app"
             rust-target: x86_64-apple-darwin
             label: macos-x64
             tauri-config: ""
-            include-updater-json: true
+            include-updater-json: false
 
           # Ubuntu
           - platform: ubuntu-22.04
@@ -124,6 +124,7 @@ jobs:
         if: startsWith(matrix.platform, 'macos-')
         run: |
           brew install cmake llvm
+          echo "/opt/homebrew/opt/llvm/bin" >> "$GITHUB_PATH"
 
       # ---------- Windows 依赖 ----------
       - name: Install Windows dependencies (cmake/llvm for whisper-rs)
@@ -145,6 +146,7 @@ jobs:
 
       # ---------- 构建 & 发布 ----------
       - name: Build and publish Tauri app
+        if: ${{ !startsWith(matrix.label, 'macos-') }}
         uses: tauri-apps/tauri-action@v0
         env:
           # If RELEASE_TOKEN exists (PAT with repo scope), prefer it.
@@ -169,6 +171,29 @@ jobs:
           prerelease: false
           includeUpdaterJson: ${{ matrix.include-updater-json }}
           args: ${{ matrix.args }} ${{ matrix.tauri-config }}
+
+      - name: Build macOS app bundle
+        if: startsWith(matrix.label, 'macos-')
+        env:
+          CMAKE_OSX_DEPLOYMENT_TARGET: "13.3"
+          GGML_METAL_EMBED_LIBRARY: ${{ matrix.rust-target == 'aarch64-apple-darwin' && '1' || '' }}
+        run: yarn tauri build ${{ matrix.args }} ${{ matrix.tauri-config }}
+
+      - name: Package macOS DMG
+        if: startsWith(matrix.label, 'macos-')
+        run: bash ./scripts/package-macos-dmg.sh ${{ matrix.rust-target }}
+
+      - name: Upload macOS DMG to release
+        if: startsWith(matrix.label, 'macos-')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ShadowVerse ${{ github.ref_name }}
+          draft: true
+          prerelease: false
+          files: src-tauri/target/${{ matrix.rust-target }}/release/bundle/dmg/*.dmg
+        env:
+          GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN != '' && secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
 
       - name: Upload macOS DMG artifact
         if: startsWith(matrix.label, 'macos-')

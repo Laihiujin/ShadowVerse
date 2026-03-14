@@ -39,6 +39,7 @@ docs/.vitepress/dist
 *.debug.map
 
 .cargo
+.tmp_*
 testtikok.md
 package-lock.json
 temp-coooke.json

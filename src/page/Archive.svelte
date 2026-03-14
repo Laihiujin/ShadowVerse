@@ -571,35 +571,45 @@
         </p>
       </div>
 
-      <div class="flex items-center space-x-3">
-        <div class="flex items-center space-x-2">
+      <div class="flex items-center gap-3 flex-wrap">
+        <span class="text-sm font-medium text-gray-700 dark:text-gray-200 whitespace-nowrap shrink-0">
+          删除小于
+        </span>
+        <div class="relative shrink-0">
           <input
             type="number"
             min="0"
             step="0.1"
             bind:value={deleteSizeThresholdMb}
-            class="w-24 px-3 py-2 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-red-500"
+            class="w-28 pl-3 pr-10 py-2 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-red-500"
           />
-          <span class="text-sm text-gray-600 dark:text-gray-300">MB</span>
+          <span
+            class="pointer-events-none absolute inset-y-0 right-3 flex items-center text-sm text-gray-600 dark:text-gray-300"
+          >
+            MB
+          </span>
         </div>
+        <span class="text-sm font-medium text-gray-700 dark:text-gray-200 whitespace-nowrap shrink-0">
+          录播
+        </span>
         <button
-          class="px-4 py-2 bg-red-500 text-white rounded-lg hover:bg-red-600 transition-colors flex items-center space-x-2"
+          class="px-4 py-2 bg-red-500 text-white rounded-lg hover:bg-red-600 transition-colors inline-flex items-center gap-2 whitespace-nowrap shrink-0"
           on:click={() => {
             showDeleteZeroConfirm = true;
           }}
         >
           <Trash2 class="w-4 h-4" />
-          <span>删除小于</span>
+          <span class="whitespace-nowrap">删除</span>
         </button>
         <button
-          class="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors flex items-center space-x-2 disabled:opacity-50 disabled:cursor-not-allowed"
+          class="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors inline-flex items-center gap-2 whitespace-nowrap shrink-0 disabled:opacity-50 disabled:cursor-not-allowed"
           on:click={loadArchives}
           disabled={loading}
         >
           <RefreshCw
             class="w-4 h-4 text-white {loading ? 'animate-spin' : ''}"
           />
-          <span>刷新</span>
+          <span class="whitespace-nowrap">刷新</span>
         </button>
       </div>
     </div>

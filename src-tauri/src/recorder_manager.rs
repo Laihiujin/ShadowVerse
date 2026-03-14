@@ -1,5 +1,6 @@
 use crate::config::Config;
 use crate::danmu2ass;
+use crate::database::account::AccountRow;
 use crate::database::record::RecordRow;
 use crate::database::recorder::RecorderRow;
 use crate::database::video::VideoRow;
@@ -146,6 +147,61 @@ impl RecorderType {
     }
 }
 
+fn is_placeholder_name(value: &str) -> bool {
+    matches!(value.trim(), "" | "Kuaishou" | "Kuaishou Live")
+}
+
+fn is_login_account_uid(uid: &str) -> bool {
+    let trimmed = uid.trim();
+    trimmed.starts_with("login:") || trimmed.starts_with("manual:")
+}
+
+fn is_guest_account_uid(uid: &str) -> bool {
+    let trimmed = uid.trim();
+    trimmed.starts_with("guest:")
+        || trimmed.starts_with("cookie_")
+        || trimmed.starts_with("guest_")
+}
+
+fn cookie_pair_count(cookies: &str) -> usize {
+    cookies
+        .split(';')
+        .map(str::trim)
+        .filter(|part| !part.is_empty() && part.contains('='))
+        .count()
+}
+
+fn account_quality_score(account: &AccountRow) -> usize {
+    let mut score = 0usize;
+    if !account.uid.trim().is_empty() {
+        score += 1;
+    }
+    if !account.name.trim().is_empty() {
+        score += 1;
+    }
+    if !account.avatar.trim().is_empty() {
+        score += 1;
+    }
+    if !account.csrf.trim().is_empty() {
+        score += 1;
+    }
+    if !account.cookies.trim().is_empty() {
+        score += 1;
+    }
+
+    score * 100 + cookie_pair_count(&account.cookies)
+}
+
+fn account_priority(account: &AccountRow) -> usize {
+    if is_login_account_uid(&account.uid) {
+        3
+    } else if is_guest_account_uid(&account.uid) {
+        1
+    } else {
+        2
+    }
+}
+
 #[derive(Clone)]
 pub struct RecorderManager {
     #[cfg(not(feature = "headless"))]
@@ -156,6 +212,7 @@ pub struct RecorderManager {
     task_manager: Arc<TaskManager>,
     recorders: Arc<RwLock<HashMap<String, RecorderType>>>,
     to_remove: Arc<RwLock<HashSet<String>>>,
+    reload_cooldowns: Arc<RwLock<HashMap<String, Instant>>>,
     missing_account_retry: Arc<RwLock<HashMap<String, Instant>>>,
     event_tx: broadcast::Sender<RecorderEvent>,
     is_migrating: Arc<AtomicBool>,
@@ -221,6 +278,7 @@ impl RecorderManager {
             task_manager,
             recorders: Arc::new(RwLock::new(HashMap::new())),
             to_remove: Arc::new(RwLock::new(HashSet::new())),
+            reload_cooldowns: Arc::new(RwLock::new(HashMap::new())),
             missing_account_retry: Arc::new(RwLock::new(HashMap::new())),
             event_tx,
             is_migrating: Arc::new(AtomicBool::new(false)),
@@ -245,6 +303,36 @@ impl RecorderManager {
         self.event_tx.clone()
     }
 
+    fn reload_cooldown_for(platform: PlatformType) -> Duration {
+        if matches!(platform, PlatformType::Kuaishou) {
+            Duration::from_secs(15)
+        } else {
+            Duration::from_secs(3)
+        }
+    }
+
+    pub async fn check_reload_cooldown(
+        &self,
+        platform: PlatformType,
+        room_id: &str,
+    ) -> Option<Duration> {
+        let recorder_id = format!("{}:{}", platform.as_str(), room_id);
+        let cooldown = Self::reload_cooldown_for(platform);
+        let now = Instant::now();
+        let mut reloads = self.reload_cooldowns.write().await;
+        reloads.retain(|_, ts| now.saturating_duration_since(*ts) < cooldown);
+
+        if let Some(last_reload) = reloads.get(&recorder_id) {
+            let elapsed = now.saturating_duration_since(*last_reload);
+            if elapsed < cooldown {
+                return Some(cooldown - elapsed);
+            }
+        }
+
+        reloads.insert(recorder_id, now);
+        None
+    }
+
     async fn stop_recorder_in_manager(&self, platform: PlatformType, room_id: &str) {
         let mut recorder_id = format!("{}:{}", platform.as_str(), room_id);
         let existing_id = {
@@ -267,58 +355,69 @@ impl RecorderManager {
         }
     }
 
-    async fn select_account_for_platform(
+    pub async fn select_account_for_platform(
         &self,
         platform: PlatformType,
     ) -> Result<Option<Account>, DatabaseError> {
         let config = self.config.read().await.clone();
         let platform_str = platform.as_str();
+        let accounts = self.db.get_accounts().await?;
+        let platform_accounts: Vec<AccountRow> = accounts
+            .into_iter()
+            .filter(|account| account.platform == platform_str && !account.cookies.trim().is_empty())
+            .collect();
 
-        // 1. 优先尝试使用手动录入的默认账号 (Login Account)
+        let choose_best = |items: Vec<AccountRow>| {
+            items.into_iter().max_by(|a, b| {
+                account_priority(a)
+                    .cmp(&account_priority(b))
+                    .then_with(|| account_quality_score(a).cmp(&account_quality_score(b)))
+                    .then_with(|| a.created_at.cmp(&b.created_at))
+            })
+        };
+
         if config.use_login_accounts {
-            if let Some(entry) = config
-                .login_accounts
+            let login_accounts: Vec<AccountRow> = platform_accounts
                 .iter()
-                .find(|e| e.platform == platform_str && !e.cookies.trim().is_empty())
-            {
-                let accounts = self.db.get_accounts().await?;
-                if let Some(matched) = accounts
-                    .iter()
-                    .find(|a| a.platform == platform_str && a.cookies == entry.cookies)
-                {
-                    log::info!(
-                        "[Account] Using manual login account for platform: {}",
-                        platform_str
-                    );
-                    return Ok(Some(matched.to_account()));
-                }
+                .filter(|account| is_login_account_uid(&account.uid))
+                .cloned()
+                .collect();
+            if let Some(account) = choose_best(login_accounts) {
+                log::info!(
+                    "[Account] Auto-selected login account for platform {}: {}",
+                    platform_str,
+                    account.uid
+                );
+                return Ok(Some(account.to_account()));
             }
         }
 
-        // 2. 如果没有手动账号或未找到匹配，且开启了访客模式，则尝试使用访客账号 (Guest Account)
         if config.use_guest_accounts {
-            if let Some(entry) = config
-                .guest_accounts
+            let guest_accounts: Vec<AccountRow> = platform_accounts
                 .iter()
-                .find(|e| e.platform == platform_str && !e.cookies.trim().is_empty())
-            {
-                let accounts = self.db.get_accounts().await?;
-                if let Some(matched) = accounts
-                    .iter()
-                    .find(|a| a.platform == platform_str && a.cookies == entry.cookies)
-                {
-                    log::info!("[Account] No login account found, falling back to guest account for platform: {}", platform_str);
-                    return Ok(Some(matched.to_account()));
-                }
+                .filter(|account| is_guest_account_uid(&account.uid))
+                .cloned()
+                .collect();
+            if let Some(account) = choose_best(guest_accounts) {
+                log::info!(
+                    "[Account] Auto-selected guest account for platform {}: {}",
+                    platform_str,
+                    account.uid
+                );
+                return Ok(Some(account.to_account()));
             }
         }
 
-        // 3. 最后退而求其次（兜底逻辑）
-        match self.db.get_account_by_platform(platform_str).await {
-            Ok(account) => Ok(Some(account.to_account())),
-            Err(DatabaseError::NotFound) => Ok(None),
-            Err(e) => Err(e),
+        if let Some(account) = choose_best(platform_accounts) {
+            log::info!(
+                "[Account] Auto-selected fallback account for platform {}: {}",
+                platform_str,
+                account.uid
+            );
+            return Ok(Some(account.to_account()));
         }
+
+        Ok(None)
     }
 
     async fn handle_events(&self) {
@@ -1497,9 +1596,14 @@ impl RecorderManager {
                 recorder.room_info.platform, recorder.room_info.room_id
             );
             if let Some(db_row) = db_map.get(&key) {
-                if recorder.room_info.room_title.is_empty() {
+                if (recorder.room_info.platform == "kuaishou"
+                    && is_placeholder_name(&recorder.room_info.room_title))
+                    || recorder.room_info.room_title.is_empty()
+                {
                     if let Some(title) = &db_row.room_title {
-                        recorder.room_info.room_title = title.clone();
+                        if !title.trim().is_empty() {
+                            recorder.room_info.room_title = title.clone();
+                        }
                     }
                 }
                 if recorder.room_info.room_cover.is_empty() {
@@ -1507,9 +1611,14 @@ impl RecorderManager {
                         recorder.room_info.room_cover = cover.clone();
                     }
                 }
-                if recorder.user_info.user_name.is_empty() {
+                if (recorder.room_info.platform == "kuaishou"
+                    && is_placeholder_name(&recorder.user_info.user_name))
+                    || recorder.user_info.user_name.is_empty()
+                {
                     if let Some(name) = &db_row.user_name {
-                        recorder.user_info.user_name = name.clone();
+                        if !name.trim().is_empty() {
+                            recorder.user_info.user_name = name.clone();
+                        }
                     }
                 }
                 if recorder.user_info.user_avatar.is_empty() {

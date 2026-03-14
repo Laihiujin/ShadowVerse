@@ -5,7 +5,6 @@
   import type { RecorderList, RecorderInfo } from "../lib/interface";
   import type { RecordItem } from "../lib/db";
   import {
-    Ellipsis,
     Play,
     Plus,
     FileVideo,
@@ -48,8 +47,6 @@
   let selectedRoomKeys: string[] = [];
   $: selectedRoomKeySet = new Set(selectedRoomKeys);
   $: selectedRoomCount = selectedRoomKeys.length;
-  let activeRoomMenuKey: string | null = null;
-  let roomMenuPosition = { x: 0, y: 0 };
   const cardElements: Map<string, HTMLElement> = new Map();
   let gridRef: HTMLDivElement;
   let dragSelecting = false;
@@ -58,55 +55,14 @@
     null;
   let dragMoveRaf = 0;
   let summaryTimer: ReturnType<typeof setInterval> | null = null;
+  let reloadPendingKeys = new Set<string>();
 
   function roomKey(room: RecorderInfo) {
     return `${room.room_info.platform}:${room.room_info.room_id}`;
   }
 
-  function menuButtonId(room: RecorderInfo) {
-    return `menu-${encodeURIComponent(roomKey(room)).replace(/%/g, "_")}`;
-  }
-
   function isRoomSelected(room: RecorderInfo) {
     return selectedRoomKeySet.has(roomKey(room));
-  }
-
-  function isRoomMenuOpen(room: RecorderInfo) {
-    return activeRoomMenuKey === roomKey(room);
-  }
-
-  function toggleRoomMenu(room: RecorderInfo, event?: Event) {
-    const key = roomKey(room);
-    const willOpen = activeRoomMenuKey !== key;
-    activeRoomMenuKey = willOpen ? key : null;
-    if (!willOpen || !event) return;
-    const target = event.currentTarget as HTMLElement | null;
-    if (!target) return;
-    const rect = target.getBoundingClientRect();
-    const menuWidth = 176;
-    const menuHeight = 220;
-    const margin = 8;
-    const left = Math.min(
-      Math.max(margin, rect.right - menuWidth),
-      window.innerWidth - menuWidth - margin
-    );
-    const top = Math.min(
-      Math.max(margin, rect.bottom + 6),
-      window.innerHeight - menuHeight - margin
-    );
-    roomMenuPosition = { x: left, y: top };
-  }
-
-  function closeRoomMenu() {
-    activeRoomMenuKey = null;
-  }
-
-  function handleRoomMenuPointerDownOutside(event: PointerEvent) {
-    if (activeRoomMenuKey === null) return;
-    const target = event.target as Element | null;
-    if (!target) return;
-    if (target.closest(".room-menu-container")) return;
-    closeRoomMenu();
   }
 
   function toggleRoomSelection(room: RecorderInfo) {
@@ -307,7 +263,7 @@
 
   async function update_summary(force = false) {
     if (isUpdating) return;
-    if (!force && (dragSelecting || activeRoomMenuKey !== null)) return;
+    if (!force && (dragSelecting || multiSelect)) return;
     isUpdating = true;
     try {
       let new_summary = (await invoke("get_recorder_list")) as RecorderList;
@@ -631,13 +587,23 @@
     }
   }
 
-  // Function to toggle auto-record state
-  function toggleEnabled(room: RecorderInfo) {
-    invoke("set_enable", {
-      roomId: room.room_info.room_id,
-      platform: room.room_info.platform,
-      enabled: !room.enabled,
-    });
+  async function toggleEnabled(room: RecorderInfo) {
+    const nextEnabled = !room.enabled;
+    room.enabled = nextEnabled;
+    summary = { ...summary, recorders: [...summary.recorders] };
+    try {
+      await invoke("set_enable", {
+        roomId: room.room_info.room_id,
+        platform: room.room_info.platform,
+        enabled: nextEnabled,
+      });
+      await update_summary(true);
+    } catch (error) {
+      room.enabled = !nextEnabled;
+      summary = { ...summary, recorders: [...summary.recorders] };
+      console.error("Failed to toggle room enable state:", error);
+      await message("切换直播间开关失败", { title: "操作失败", kind: "error" });
+    }
   }
 
   function openUserUrl(room: RecorderInfo) {
@@ -690,6 +656,12 @@
   }
 
   async function reloadRoom(room: RecorderInfo) {
+    const key = roomKey(room);
+    if (reloadPendingKeys.has(key)) {
+      return;
+    }
+    reloadPendingKeys.add(key);
+    reloadPendingKeys = new Set(reloadPendingKeys);
     try {
       await invoke("reload_recorder", {
         roomId: room.room_info.room_id,
@@ -698,6 +670,13 @@
       await update_summary();
     } catch (e) {
       console.error("Failed to reload recorder:", e);
+      await message(String(e), {
+        title: "重载失败",
+        kind: "warning",
+      });
+    } finally {
+      reloadPendingKeys.delete(key);
+      reloadPendingKeys = new Set(reloadPendingKeys);
     }
   }
 
@@ -1167,7 +1146,7 @@
           role="button"
           tabindex="0"
           class={"p-4 rounded-xl bg-white dark:bg-[#3c3c3e] border border-gray-200 dark:border-gray-700 hover:border-blue-500 dark:hover:border-blue-400 transition-colors " +
-            (isRoomMenuOpen(room) ? "relative z-20 overflow-visible " : "relative overflow-visible ") +
+            "relative overflow-visible " +
             (multiSelect && isRoomSelected(room)
               ? "ring-2 ring-blue-500 border-blue-500"
               : "")}
@@ -1218,109 +1197,26 @@
                 <span>直播进行中</span>
               </div>
             {/if}
-            <div
-              class="absolute top-2 right-2 z-30 room-menu-container"
+            <button
+              type="button"
+              class="absolute top-2 right-2 z-30 px-2 py-1.5 rounded-lg bg-gray-900/50 hover:bg-gray-900/70 transition-colors"
+              title={room.enabled ? "关闭直播间" : "启用直播间"}
               data-ignore-selection
+              on:click|stopPropagation
             >
-              <button
-                id={menuButtonId(room)}
-                type="button"
-                class={`p-1.5 rounded-lg transition-colors ${
-                  isRoomMenuOpen(room)
-                    ? "bg-blue-600/80"
-                    : "bg-gray-900/50 hover:bg-gray-900/70"
-                }`}
-                data-ignore-selection
-                on:pointerdown|stopPropagation={(event) => {
-                  if (event.button === 2) return;
-                  event.preventDefault();
-                  toggleRoomMenu(room, event);
-                }}
-                on:mousedown|stopPropagation={() => {
-                  // Keep menu toggle isolated from grid drag-select handlers.
-                }}
-                on:click|stopPropagation={() => {
-                  // Menu toggle is handled in pointerdown for better compatibility.
-                }}
-                on:keydown|stopPropagation={(event) => {
-                  if (event.key === "Enter" || event.key === " ") {
-                    event.preventDefault();
-                    toggleRoomMenu(room, event);
-                  } else if (event.key === "Escape") {
-                    event.preventDefault();
-                    closeRoomMenu();
-                  }
-                }}
-              >
-                <Ellipsis class="w-5 h-5 icon-white" />
-              </button>
-              {#if isRoomMenuOpen(room)}
-                <div
-                  class="fixed w-44 rounded-lg shadow-lg bg-white dark:bg-[#323234] border border-gray-200 dark:border-gray-700 overflow-hidden z-40 room-menu-container"
-                  style={`left:${roomMenuPosition.x}px;top:${roomMenuPosition.y}px;`}
-                  data-ignore-selection
-                  on:pointerdown|stopPropagation={() => {
-                    // Prevent outside handler from closing while interacting with menu items.
+              <span class="toggle-switch">
+                <input
+                  type="checkbox"
+                  checked={room.enabled}
+                  aria-label={room.enabled ? "关闭直播间" : "启用直播间"}
+                  on:click|stopPropagation
+                  on:change={async () => {
+                    await toggleEnabled(room);
                   }}
-                  on:mousedown|stopPropagation={() => {
-                    // Prevent outside handler from closing while clicking menu items.
-                  }}
-                >
-                  <button
-                    type="button"
-                    class="w-full px-4 py-2 flex items-center justify-between hover:bg-gray-100 dark:hover:bg-gray-700 cursor-pointer text-sm text-gray-700 dark:text-gray-200 font-medium"
-                    on:click={() => {
-                      toggleEnabled(room);
-                      closeRoomMenu();
-                    }}
-                  >
-                    <span>启用直播间</span>
-                    <span
-                      class={`text-xs px-2 py-0.5 rounded ${
-                        room.enabled
-                          ? "bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300"
-                          : "bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300"
-                      }`}
-                    >
-                      {room.enabled ? "已开启" : "已关闭"}
-                    </span>
-                  </button>
-                  <button
-                    type="button"
-                    class="w-full px-4 py-2 text-left text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 cursor-pointer"
-                    on:click={() => {
-                      openLiveUrl(room);
-                      closeRoomMenu();
-                    }}
-                  >
-                    打开网页直播间
-                  </button>
-                  <button
-                    type="button"
-                    class="w-full px-4 py-2 text-left text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 cursor-pointer"
-                    on:click={async () => {
-                      await reloadRoom(room);
-                      closeRoomMenu();
-                    }}
-                  >
-                    重载直播间
-                  </button>
-                  <button
-                    type="button"
-                    class="w-full px-4 py-2 text-left text-sm text-red-500 hover:bg-gray-100 dark:hover:bg-gray-700 cursor-pointer"
-                    on:click={() => {
-                      deleteMode = "single";
-                      deleteRoom = room;
-                      deleteRooms = [room];
-                      deleteModal = true;
-                      closeRoomMenu();
-                    }}
-                  >
-                    移除直播间
-                  </button>
-                </div>
-              {/if}
-            </div>
+                />
+                <span class="toggle-slider"></span>
+              </span>
+            </button>
           </div>
           <div class="mt-3 space-y-2">
             <div class="flex items-start justify-between">
@@ -1383,13 +1279,17 @@
                   <Play class="w-5 h-5 dark:icon-white" />
                 </button>
                 <button
-                  class="px-2 py-1 text-xs rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-200"
+                  class={"px-2.5 py-1 text-xs rounded-lg border text-gray-700 dark:text-gray-200 " +
+                    (reloadPendingKeys.has(roomKey(room))
+                      ? "border-gray-200 dark:border-gray-700 bg-gray-100 dark:bg-gray-700 cursor-not-allowed opacity-70"
+                      : "border-gray-300 dark:border-gray-600 hover:bg-gray-100 dark:hover:bg-gray-700")}
                   title="重载直播间"
+                  disabled={reloadPendingKeys.has(roomKey(room))}
                   on:click={async () => {
                     await reloadRoom(room);
                   }}
                 >
-                  重载
+                  {reloadPendingKeys.has(roomKey(room)) ? "重载中" : "重载"}
                 </button>
                 <button
                   class="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700"
@@ -1916,7 +1816,6 @@
 />
 
 <svelte:window
-  on:pointerdown={handleRoomMenuPointerDownOutside}
   on:mousedown={handleModalClickOutside}
   on:mousemove={handleDragMove}
   on:mouseup={handleDragEnd}
@@ -1941,5 +1840,54 @@
 
   .animate-spin-slow {
     animation: spin-slow 3s linear infinite;
+  }
+
+  .toggle-switch {
+    position: relative;
+    display: inline-block;
+    width: 36px;
+    height: 20px;
+    flex-shrink: 0;
+  }
+
+  .toggle-switch input {
+    position: absolute;
+    inset: 0;
+    opacity: 0;
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    cursor: pointer;
+    z-index: 2;
+  }
+
+  .toggle-slider {
+    position: absolute;
+    inset: 0;
+    background-color: rgba(120, 120, 128, 0.32);
+    transition: 0.2s ease;
+    border-radius: 999px;
+    pointer-events: none;
+  }
+
+  .toggle-slider:before {
+    position: absolute;
+    content: "";
+    height: 16px;
+    width: 16px;
+    left: 2px;
+    bottom: 2px;
+    background-color: #fff;
+    transition: 0.2s ease;
+    border-radius: 50%;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.18);
+  }
+
+  .toggle-switch input:checked + .toggle-slider {
+    background-color: #34c759;
+  }
+
+  .toggle-switch input:checked + .toggle-slider:before {
+    transform: translateX(16px);
   }
 </style>

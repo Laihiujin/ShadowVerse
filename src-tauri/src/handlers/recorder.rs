@@ -266,8 +266,9 @@ pub async fn add_recorder(
     log::info!("Add recorder: {} {}", platform.as_str(), room_id);
     let account = match platform {
         PlatformType::BiliBili => {
-            if let Ok(account) = state.db.get_account_by_platform("bilibili").await {
-                Ok(account.to_account())
+            if let Ok(Some(account)) = state.recorder_manager.select_account_for_platform(platform).await
+            {
+                Ok(account)
             } else {
                 log::error!("No available bilibili account found");
                 Err("没有可用账号，请先添加账号".to_string())
@@ -280,30 +281,34 @@ pub async fn add_recorder(
                 .map_err(|e| e.to_string())?;
             extra = sec_uid;
 
-            if let Ok(account) = state.db.get_account_by_platform("douyin").await {
-                Ok(account.to_account())
+            if let Ok(Some(account)) = state.recorder_manager.select_account_for_platform(platform).await
+            {
+                Ok(account)
             } else {
                 log::error!("No available douyin account found");
                 Err("没有可用账号，请先添加账号".to_string())
             }
         }
         PlatformType::Huya => {
-            if let Ok(account) = state.db.get_account_by_platform("huya").await {
-                Ok(account.to_account())
+            if let Ok(Some(account)) = state.recorder_manager.select_account_for_platform(platform).await
+            {
+                Ok(account)
             } else {
                 Ok(Account::default())
             }
         }
         PlatformType::Kuaishou => {
-            if let Ok(account) = state.db.get_account_by_platform("kuaishou").await {
-                Ok(account.to_account())
+            if let Ok(Some(account)) = state.recorder_manager.select_account_for_platform(platform).await
+            {
+                Ok(account)
             } else {
                 Ok(Account::default())
             }
         }
         PlatformType::TikTok => {
-            if let Ok(account) = state.db.get_account_by_platform("tiktok").await {
-                Ok(account.to_account())
+            if let Ok(Some(account)) = state.recorder_manager.select_account_for_platform(platform).await
+            {
+                Ok(account)
             } else {
                 Ok(Account::default())
             }
@@ -321,6 +326,28 @@ pub async fn add_recorder(
         {
             Ok(()) => {
                 let room = state.db.add_recorder(platform, &room_id, &extra).await?;
+                if let Some(info) = state.recorder_manager.get_recorder_info(platform, &room_id).await
+                {
+                    if let Err(err) = state
+                        .db
+                        .update_recorder_cached_info(
+                            platform,
+                            &room_id,
+                            &info.room_info.room_title,
+                            &info.room_info.room_cover,
+                            &info.user_info.user_name,
+                            &info.user_info.user_avatar,
+                        )
+                        .await
+                    {
+                        log::warn!(
+                            "Failed to persist recorder cached info after add ({} {}): {}",
+                            platform.as_str(),
+                            room_id,
+                            err
+                        );
+                    }
+                }
                 state
                     .db
                     .new_message("添加直播间", &format!("添加了新直播间 {room_id}"))
@@ -391,6 +418,21 @@ pub async fn reload_recorder(
 ) -> Result<(), String> {
     log::info!("Reload recorder: {platform} {room_id}");
     let platform = PlatformType::from_str(&platform).map_err(|_| "Invalid platform".to_string())?;
+    if let Some(remaining) = state
+        .recorder_manager
+        .check_reload_cooldown(platform, &room_id)
+        .await
+    {
+        let secs = remaining.as_secs().max(1);
+        let platform_name = platform.as_str();
+        log::warn!(
+            "Skip reload during cooldown: {} {} ({}s remaining)",
+            platform_name,
+            room_id,
+            secs
+        );
+        return Err(format!("重载过于频繁，请 {secs} 秒后再试"));
+    }
     let removed = state
         .recorder_manager
         .remove_recorder(platform, &room_id)
@@ -401,36 +443,41 @@ pub async fn reload_recorder(
 
     let account = match platform {
         PlatformType::BiliBili => {
-            if let Ok(account) = state.db.get_account_by_platform("bilibili").await {
-                Ok(account.to_account())
+            if let Ok(Some(account)) = state.recorder_manager.select_account_for_platform(platform).await
+            {
+                Ok(account)
             } else {
                 Err("没有可用账号，请先添加账号".to_string())
             }
         }
         PlatformType::Douyin => {
-            if let Ok(account) = state.db.get_account_by_platform("douyin").await {
-                Ok(account.to_account())
+            if let Ok(Some(account)) = state.recorder_manager.select_account_for_platform(platform).await
+            {
+                Ok(account)
             } else {
                 Err("没有可用账号，请先添加账号".to_string())
             }
         }
         PlatformType::Huya => {
-            if let Ok(account) = state.db.get_account_by_platform("huya").await {
-                Ok(account.to_account())
+            if let Ok(Some(account)) = state.recorder_manager.select_account_for_platform(platform).await
+            {
+                Ok(account)
             } else {
                 Ok(Account::default())
             }
         }
         PlatformType::Kuaishou => {
-            if let Ok(account) = state.db.get_account_by_platform("kuaishou").await {
-                Ok(account.to_account())
+            if let Ok(Some(account)) = state.recorder_manager.select_account_for_platform(platform).await
+            {
+                Ok(account)
             } else {
                 Ok(Account::default())
             }
         }
         PlatformType::TikTok => {
-            if let Ok(account) = state.db.get_account_by_platform("tiktok").await {
-                Ok(account.to_account())
+            if let Ok(Some(account)) = state.recorder_manager.select_account_for_platform(platform).await
+            {
+                Ok(account)
             } else {
                 Ok(Account::default())
             }

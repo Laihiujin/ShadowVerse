@@ -6,6 +6,9 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "build:mac:arm64": "bash ./scripts/build-macos-dmg.sh aarch64-apple-darwin",
+    "build:mac:x64": "bash ./scripts/build-macos-dmg.sh x86_64-apple-darwin",
+    "clean": "rm -rf dist src-tauri/target",
     "preview": "vite preview",
     "check": "svelte-check --tsconfig ./tsconfig.json",
     "tauri": "tauri",

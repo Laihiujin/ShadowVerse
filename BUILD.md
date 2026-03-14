@@ -10,8 +10,14 @@ yarn install
 # 开发模式
 yarn tauri dev
 
-# 构建生产版本
-yarn tauri build
+# 清理旧产物
+yarn clean
+
+# 构建 Apple Silicon DMG（自动完成 .app + .dmg）
+yarn build:mac:arm64
+
+# 构建 Intel DMG（自动完成 .app + .dmg）
+yarn build:mac:x64
 ```
 
 ### GitHub Actions 自动构建
@@ -63,9 +69,15 @@ rm -f ~/Library/Application\ Support/cn.ShadowVerse/data_v2.db
 ### 构建失败
 1. 确保 Rust 工具链已安装
 2. 确保 Node.js 版本为 LTS
-3. 清理并重新构建：
+3. macOS 上建议显式设置 SDK 环境变量：
+```bash
+export SDKROOT="$(xcrun --sdk macosx --show-sdk-path)"
+export CMAKE_OSX_DEPLOYMENT_TARGET=13.3
+```
+4. 清理并重新构建：
 ```bash
 yarn clean
 yarn install
-yarn tauri build
+yarn build:mac:arm64
 ```
+5. 本仓库已改为自动使用 `hdiutil` 封装 DMG，不再依赖 Tauri 自带的 `bundle_dmg.sh`。

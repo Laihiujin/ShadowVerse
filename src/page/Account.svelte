@@ -570,12 +570,6 @@ function platform_avatar(platform: string) {
           <span>共 {account_info.accounts.length} 个</span>
         </div>
       </div>
-      <div class="text-[11px] text-center text-gray-500 dark:text-gray-400 leading-tight">
-        <p>访客与登录模式可同时开启，录制时优先使用已登录账号；</p>
-        <p>未命中登录账号时自动回退访客账号；</p>
-        <p>登录账号可解锁 4K或蓝光原画质直播，但容易风控；</p>
-        <p>「B站/快手」支持直接扫码登录，其余平台请点击手动 Cookie 后使用内置浏览器登录；</p>
-      </div>
       <div class="flex items-center space-x-3">
         {#if use_guest_accounts}
           <button
