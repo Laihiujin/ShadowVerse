@@ -1,5 +1,8 @@
 use super::response::{LiveStream, LiveStreamResponse, UserFollowCountResponse, UserFollowLive};
 use crate::account::Account;
+use crate::core::stream_info::{
+    CdnNode, Codec, Format, PlatformStreamInfo, PlatformType, Quality, StreamVariant,
+};
 use crate::errors::RecorderError;
 use chrono::Utc;
 use rand::Rng;
@@ -2264,6 +2267,51 @@ pub struct StreamInfo {
     pub quality: String,
     pub bitrate: Option<i64>,
     pub cookie: Option<String>,
+}
+
+impl PlatformStreamInfo for StreamInfo {
+    fn primary_variant(&self) -> Result<StreamVariant, RecorderError> {
+        let quality = match self.quality.to_ascii_lowercase().as_str() {
+            "4k" | "blueray4k" => Quality::BluRay4K,
+            "blueray" | "bluray" | "origin" | "original" => Quality::Origin,
+            "uhd" => Quality::UltraHD,
+            "hd" => Quality::HD,
+            "sd" => Quality::SD,
+            "smooth" | "ld" => Quality::Smooth,
+            _ => Quality::Origin,
+        };
+        let format = if self.url.starts_with("rtmp://") || self.url.starts_with("rtmps://") {
+            Format::RTMP
+        } else if self.url.contains(".flv") {
+            Format::FLV
+        } else {
+            Format::HLS
+        };
+
+        Ok(StreamVariant {
+            url: self.url.clone(),
+            format,
+            codec: Codec::AVC,
+            quality,
+            bitrate: self.bitrate.map(|b| b as u64),
+        })
+    }
+
+    fn all_variants(&self) -> Vec<StreamVariant> {
+        self.primary_variant().into_iter().collect()
+    }
+
+    fn expires_at(&self) -> Option<i64> {
+        None
+    }
+
+    fn cdn_nodes(&self) -> Vec<CdnNode> {
+        Vec::new()
+    }
+
+    fn platform(&self) -> PlatformType {
+        PlatformType::Kuaishou
+    }
 }
 
 fn normalize_stream_url(url: &str) -> Option<String> {

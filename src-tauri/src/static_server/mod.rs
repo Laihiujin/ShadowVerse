@@ -18,6 +18,16 @@ pub struct StaticServer {
     pub port: u16,
 }
 
+impl StaticServer {
+    #[cfg(feature = "headless")]
+    pub fn headless(port: u16) -> Self {
+        Self {
+            handle: tokio::spawn(async {}),
+            port,
+        }
+    }
+}
+
 async fn handler_hls(
     State(recorder_manager): State<Arc<RecorderManager>>,
     Path(uri): Path<String>,

@@ -504,7 +504,7 @@ impl MigrationSource<'static> for MigrationList {
 async fn setup_server_state(args: Args) -> Result<State, Box<dyn std::error::Error>> {
     use std::path::PathBuf;
 
-    use crate::{static_server::start_static_server, task::TaskManager};
+    use crate::{constants::API_PORT, static_server::StaticServer, task::TaskManager};
     use progress::progress_manager::ProgressManager;
     use progress::progress_reporter::EventEmitter;
 
@@ -595,6 +595,10 @@ async fn setup_server_state(args: Args) -> Result<State, Box<dyn std::error::Err
         webhook_poster.clone(),
     ));
 
+    #[cfg(feature = "headless")]
+    let static_server = Arc::new(StaticServer::headless(API_PORT));
+
+    #[cfg(not(feature = "headless"))]
     let static_server =
         Arc::new(start_static_server(config.clone(), recorder_manager.clone()).await?);
 

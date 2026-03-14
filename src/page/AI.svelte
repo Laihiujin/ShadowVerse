@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Send, Sparkles, Settings } from "lucide-svelte";
+  import { Send, Sparkles, Settings, Trash2, Bot } from "lucide-svelte";
   import { onMount } from "svelte";
   import createAgent from "../lib/agent/agent";
   import { tools } from "../lib/agent/tools";
@@ -17,6 +17,7 @@
   let inputMessage = "";
   let isProcessing = false;
   let messageContainer: HTMLElement;
+  let inputAreaHeight = 0;
   let agent = null;
   let firstMessage = true;
 
@@ -443,11 +444,12 @@
   });
 </script>
 
-<div class="flex-1 flex flex-col bg-gray-50 dark:bg-black h-full">
+<div class="flex-1 flex flex-col bg-gray-50 dark:bg-black h-full relative">
   <!-- Messages Container -->
   <div
     class="flex-1 overflow-y-auto p-6 space-y-4 custom-scrollbar-light min-h-0"
     bind:this={messageContainer}
+    style="padding-bottom: {inputAreaHeight + 28}px;"
   >
     {#if !agent}
       <div class="flex items-center justify-center min-h-[400px] px-6">
@@ -524,46 +526,61 @@
     {/if}
 </div>
 
-  <!-- Input Area -->
-  <div class="border-t border-gray-200 dark:border-gray-700 p-6">
-    <div class="flex items-stretch space-x-3">
-      <div class="flex-1 flex items-center">
-        <textarea
-          bind:value={inputMessage}
-          on:keypress={handleKeyPress}
-          placeholder={!agent ? "请先配置 AI 模型..." : "输入您的消息..."}
-          class="w-full px-4 py-3 border border-gray-300 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-500 dark:placeholder-gray-400 focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none min-h-[44px] max-h-[120px] text-sm"
-          rows="1"
-          disabled={isProcessing || !agent}
-        ></textarea>
+  <!-- Floating Input Area -->
+  <div
+    bind:offsetHeight={inputAreaHeight}
+    class="absolute bottom-0 left-0 right-0 px-6 pb-4 pt-8 bg-gradient-to-t from-gray-50 via-gray-50 to-transparent dark:from-black dark:via-black"
+  >
+    <div class="max-w-4xl mx-auto">
+      <div class="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 shadow-lg overflow-hidden">
+        <div class="relative">
+          <textarea
+            bind:value={inputMessage}
+            on:keypress={handleKeyPress}
+            placeholder={!agent ? "请先配置 AI 模型..." : "输入您的消息..."}
+            class="w-full px-4 pt-3 pb-3 border-0 bg-transparent text-gray-900 dark:text-gray-100 placeholder-gray-500 dark:placeholder-gray-400 focus:outline-none focus:ring-0 resize-none min-h-[52px] max-h-[200px] text-[15px] leading-relaxed disabled:opacity-50 disabled:cursor-not-allowed"
+            rows="1"
+            disabled={isProcessing || !agent}
+          ></textarea>
+        </div>
+
+        <div class="flex items-center justify-between px-4 py-2 border-t border-gray-100 dark:border-gray-800/50">
+          <div class="flex items-center space-x-3">
+            <button
+              class="flex items-center space-x-1.5 px-2 py-1 text-xs text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg transition-colors"
+              on:click={openSettings}
+              title="模型设置"
+            >
+              <Bot class="w-3.5 h-3.5" />
+              <span>{agent ? `OpenAI · ${settings.model || "未设置模型"}` : "未配置模型"}</span>
+            </button>
+
+            <button
+              class="flex items-center space-x-1 px-2 py-1 text-xs text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              on:click={clearConversation}
+              disabled={!agent}
+              title="清空对话"
+            >
+              <Trash2 class="w-3.5 h-3.5" />
+              <span>清空</span>
+            </button>
+          </div>
+
+          <div class="flex items-center space-x-2">
+            {#if inputMessage.trim()}
+              <span class="text-xs text-gray-400 dark:text-gray-500">{inputMessage.length}</span>
+            {/if}
+            <button
+              class="px-3 py-1.5 bg-blue-500 hover:bg-blue-600 text-white rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center space-x-2 text-sm font-medium"
+              disabled={!inputMessage.trim() || isProcessing || !agent}
+              on:click={sendMessage}
+            >
+              <Send class="w-3.5 h-3.5" />
+              <span>发送</span>
+            </button>
+          </div>
+        </div>
       </div>
-
-      <button
-        class="px-4 py-3 bg-blue-500 hover:bg-blue-600 text-white rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center space-x-2 text-sm font-medium"
-        disabled={!inputMessage.trim() || isProcessing || !agent}
-        on:click={sendMessage}
-      >
-        <Send class="w-4 h-4" />
-        <span>发送</span>
-      </button>
-    </div>
-
-    <div class="flex items-center justify-between mt-4">
-      <button
-        class="px-3 py-1.5 text-sm text-gray-600 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg border border-gray-300 dark:border-gray-600 transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
-        on:click={clearConversation}
-        disabled={!agent}
-      >
-        清空对话
-      </button>
-      
-      <button
-        class="p-2 text-gray-600 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-all duration-200"
-        on:click={openSettings}
-        title="设置"
-      >
-        <Settings class="w-4 h-4" />
-      </button>
     </div>
   </div>
 

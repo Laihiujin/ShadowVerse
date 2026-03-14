@@ -838,7 +838,7 @@ pub async fn check_ffmpeg() -> Result<String, String> {
     }
 }
 
-fn ffmpeg_path() -> PathBuf {
+pub fn ffmpeg_path() -> PathBuf {
     let mut path = Path::new("ffmpeg").to_path_buf();
     if cfg!(windows) {
         path.set_extension("exe");
@@ -1479,5 +1479,84 @@ mod tests {
 
         assert!(chunk_dir.to_string_lossy().contains("_chunks"));
         assert!(chunk_dir.to_string_lossy().contains("test"));
+    }
+
+    #[test]
+    fn test_range_is_in_inside() {
+        let range = Range {
+            start: 1.0,
+            end: 5.0,
+        };
+        assert!(range.is_in(3.0));
+    }
+
+    #[test]
+    fn test_range_is_in_at_boundaries() {
+        let range = Range {
+            start: 1.0,
+            end: 5.0,
+        };
+        assert!(range.is_in(1.0));
+        assert!(range.is_in(5.0));
+    }
+
+    #[test]
+    fn test_range_is_in_outside() {
+        let range = Range {
+            start: 1.0,
+            end: 5.0,
+        };
+        assert!(!range.is_in(0.9));
+        assert!(!range.is_in(5.1));
+    }
+
+    #[test]
+    fn test_video_metadata_equality() {
+        let metadata = VideoMetadata {
+            duration: 10.0,
+            width: 1920,
+            height: 1080,
+            video_codec: "h264".to_string(),
+            audio_codec: "aac".to_string(),
+        };
+        assert_eq!(metadata, metadata.clone());
+    }
+
+    #[test]
+    fn test_video_metadata_different_resolution() {
+        let left = VideoMetadata {
+            duration: 10.0,
+            width: 1920,
+            height: 1080,
+            video_codec: "h264".to_string(),
+            audio_codec: "aac".to_string(),
+        };
+        let right = VideoMetadata {
+            duration: 10.0,
+            width: 1280,
+            height: 720,
+            video_codec: "h264".to_string(),
+            audio_codec: "aac".to_string(),
+        };
+        assert_ne!(left, right);
+    }
+
+    #[test]
+    fn test_video_metadata_different_codec() {
+        let left = VideoMetadata {
+            duration: 10.0,
+            width: 1920,
+            height: 1080,
+            video_codec: "h264".to_string(),
+            audio_codec: "aac".to_string(),
+        };
+        let right = VideoMetadata {
+            duration: 10.0,
+            width: 1920,
+            height: 1080,
+            video_codec: "hevc".to_string(),
+            audio_codec: "aac".to_string(),
+        };
+        assert_ne!(left, right);
     }
 }

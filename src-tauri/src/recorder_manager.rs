@@ -67,6 +67,8 @@ pub struct ClipRangeParams {
     pub local_offset: i64,
     /// Fix encoding after clip
     pub fix_encoding: bool,
+    /// Transition effect between multiple clipped ranges
+    pub transition: Option<String>,
 }
 
 pub struct RelatedPlaylist {
@@ -1386,6 +1388,7 @@ impl RecorderManager {
                 &playlist_path,
                 &clip_file,
                 &params.ranges,
+                params.transition.as_deref(),
             )
             .await
             .map_err(|e| RecorderManagerError::ClipError { err: e.to_string() })?;
@@ -1961,7 +1964,7 @@ impl RecorderManager {
         let params = uri.split('?').nth(1).unwrap_or("");
         let path_segs: Vec<&str> = path.split('/').collect();
 
-        if path_segs.len() != 4 {
+        if path_segs.len() < 4 {
             log::warn!("Invalid request path: {path}");
             return Err(RecorderManagerError::HLSError {
                 err: "Invalid hls path".into(),
@@ -2021,7 +2024,9 @@ impl RecorderManager {
             None
         };
 
-        if path_segs[3] == "playlist.m3u8" {
+        let remaining_path = path_segs[3..].join("/");
+
+        if remaining_path == "playlist.m3u8" || remaining_path.ends_with("/playlist.m3u8") {
             let playlist = match self.load_playlist(platform, room_id, live_id).await {
                 Ok(playlist) => playlist,
                 Err(RecorderManagerError::IoError(err))

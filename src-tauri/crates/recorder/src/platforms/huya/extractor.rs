@@ -3,6 +3,11 @@ use regex::Regex;
 use reqwest::Url;
 use serde_json::Value;
 
+use crate::core::stream_info::{
+    CdnNode, Codec, Format, PlatformStreamInfo, PlatformType as StreamPlatformType, Quality,
+    StreamVariant,
+};
+use crate::errors::RecorderError;
 use crate::platforms::huya::url_builder::PlayerInfo;
 use crate::platforms::huya::url_builder::UrlBuilder;
 use crate::platforms::PlatformType;
@@ -28,6 +33,34 @@ impl StreamInfo {
             .strip_suffix(".m3u8")
             .unwrap_or(filename)
             .to_string()
+    }
+}
+
+impl PlatformStreamInfo for StreamInfo {
+    fn primary_variant(&self) -> Result<StreamVariant, RecorderError> {
+        Ok(StreamVariant {
+            url: self.hls_url.clone(),
+            format: Format::HLS,
+            codec: Codec::AVC,
+            quality: Quality::Origin,
+            bitrate: None,
+        })
+    }
+
+    fn all_variants(&self) -> Vec<StreamVariant> {
+        self.primary_variant().into_iter().collect()
+    }
+
+    fn expires_at(&self) -> Option<i64> {
+        None
+    }
+
+    fn cdn_nodes(&self) -> Vec<CdnNode> {
+        Vec::new()
+    }
+
+    fn platform(&self) -> StreamPlatformType {
+        StreamPlatformType::Huya
     }
 }
 

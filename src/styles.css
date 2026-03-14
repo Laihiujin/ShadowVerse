@@ -17,6 +17,17 @@ html.dark,
   color: #fff;
 }
 
+video::-webkit-media-controls-wireless-playback-picker-button {
+  display: none !important;
+  -webkit-appearance: none !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+
+video::-webkit-media-controls-start-playback-button {
+  display: none !important;
+}
+
 .icon-white {
   color: white;
 }
