@@ -464,6 +464,48 @@ pub async fn update_use_guest_accounts(
 
 #[cfg_attr(feature = "gui", tauri::command)]
 #[cfg_attr(feature = "headless", allow(dead_code))]
+pub async fn update_kuaishou_follow_list_fallback(
+    state: state_type!(),
+    enabled: bool,
+) -> Result<(), ()> {
+    let mut config = state.config.write().await;
+    config.kuaishou_enable_follow_list_fallback = enabled;
+    config.save();
+    config.apply_kuaishou_fallback_env();
+    drop(config);
+    if let Err(err) = state
+        .recorder_manager
+        .restart_recorders_for_platforms(&[PlatformType::Kuaishou])
+        .await
+    {
+        log::warn!("Failed to restart kuaishou recorders after fallback change: {err}");
+    }
+    Ok(())
+}
+
+#[cfg_attr(feature = "gui", tauri::command)]
+#[cfg_attr(feature = "headless", allow(dead_code))]
+pub async fn update_kuaishou_public_page_fallback(
+    state: state_type!(),
+    enabled: bool,
+) -> Result<(), ()> {
+    let mut config = state.config.write().await;
+    config.kuaishou_enable_public_page_fallback = enabled;
+    config.save();
+    config.apply_kuaishou_fallback_env();
+    drop(config);
+    if let Err(err) = state
+        .recorder_manager
+        .restart_recorders_for_platforms(&[PlatformType::Kuaishou])
+        .await
+    {
+        log::warn!("Failed to restart kuaishou recorders after fallback change: {err}");
+    }
+    Ok(())
+}
+
+#[cfg_attr(feature = "gui", tauri::command)]
+#[cfg_attr(feature = "headless", allow(dead_code))]
 pub async fn get_login_account_platforms(state: state_type!()) -> Result<Vec<String>, ()> {
     let config = state.config.read().await;
     let mut platforms = Vec::new();

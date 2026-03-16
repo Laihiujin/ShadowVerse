@@ -51,6 +51,8 @@
     },
     use_guest_accounts: true,
     use_login_accounts: false,
+    kuaishou_enable_follow_list_fallback: false,
+    kuaishou_enable_public_page_fallback: false,
     http_proxy: "127.0.0.1:7890",
     https_proxy: "",
   };
@@ -236,6 +238,18 @@
       // 关闭访客模式时直接重启应用
       // await relaunch();
     }
+  }
+
+  async function update_kuaishou_follow_list_fallback() {
+    await invoke("update_kuaishou_follow_list_fallback", {
+      enabled: setting_model.kuaishou_enable_follow_list_fallback,
+    });
+  }
+
+  async function update_kuaishou_public_page_fallback() {
+    await invoke("update_kuaishou_public_page_fallback", {
+      enabled: setting_model.kuaishou_enable_public_page_fallback,
+    });
   }
 
   async function update_bilibili_post_enabled() {
@@ -444,6 +458,52 @@
                     class="peer opacity-0 w-0 h-0"
                     bind:checked={setting_model.use_login_accounts}
                     on:change={update_use_login_accounts}
+                  />
+                  <span
+                    class="switch-slider absolute cursor-pointer top-0 left-0 right-0 bottom-0 bg-gray-300 dark:bg-gray-600 rounded-full transition-all duration-300 before:absolute before:h-4 before:w-4 before:left-1 before:bottom-1 before:bg-white before:rounded-full before:transition-all before:duration-300 peer-checked:bg-blue-500 peer-checked:before:translate-x-5"
+                  ></span>
+                </label>
+              </div>
+            </div>
+            <div class="p-4">
+              <div class="flex items-center justify-between">
+                <div>
+                  <h3 class="text-sm font-medium text-gray-900 dark:text-white">
+                    快手使用关注列表回退
+                  </h3>
+                  <p class="text-sm text-gray-500 dark:text-gray-400">
+                    仅对当前登录账号已关注的主播有效，关闭后不再使用 userFollowCount 回退链路
+                  </p>
+                </div>
+                <label class="relative inline-block w-11 h-6">
+                  <input
+                    type="checkbox"
+                    class="peer opacity-0 w-0 h-0"
+                    bind:checked={setting_model.kuaishou_enable_follow_list_fallback}
+                    on:change={update_kuaishou_follow_list_fallback}
+                  />
+                  <span
+                    class="switch-slider absolute cursor-pointer top-0 left-0 right-0 bottom-0 bg-gray-300 dark:bg-gray-600 rounded-full transition-all duration-300 before:absolute before:h-4 before:w-4 before:left-1 before:bottom-1 before:bg-white before:rounded-full before:transition-all before:duration-300 peer-checked:bg-blue-500 peer-checked:before:translate-x-5"
+                  ></span>
+                </label>
+              </div>
+            </div>
+            <div class="p-4">
+              <div class="flex items-center justify-between">
+                <div>
+                  <h3 class="text-sm font-medium text-gray-900 dark:text-white">
+                    快手允许网页抓取回退
+                  </h3>
+                  <p class="text-sm text-gray-500 dark:text-gray-400">
+                    仅在逆向 API 不可用时启用网页回退，更容易触发风控，默认关闭
+                  </p>
+                </div>
+                <label class="relative inline-block w-11 h-6">
+                  <input
+                    type="checkbox"
+                    class="peer opacity-0 w-0 h-0"
+                    bind:checked={setting_model.kuaishou_enable_public_page_fallback}
+                    on:change={update_kuaishou_public_page_fallback}
                   />
                   <span
                     class="switch-slider absolute cursor-pointer top-0 left-0 right-0 bottom-0 bg-gray-300 dark:bg-gray-600 rounded-full transition-all duration-300 before:absolute before:h-4 before:w-4 before:left-1 before:bottom-1 before:bg-white before:rounded-full before:transition-all before:duration-300 peer-checked:bg-blue-500 peer-checked:before:translate-x-5"

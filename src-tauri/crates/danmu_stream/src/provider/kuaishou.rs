@@ -110,7 +110,6 @@ impl DanmuProvider for KuaishouDanmu {
         }
 
         let client = reqwest::Client::builder()
-            .no_proxy()
             .default_headers(headers)
             .cookie_provider(cookie_jar.clone())
             .build()?;
@@ -840,6 +839,21 @@ impl KuaishouDanmu {
                     &ws_info[..snippet_len]
                 );
             }
+            if let Ok(root) = serde_json::from_str::<Value>(&ws_info) {
+                if let Some(result) = root
+                    .get("data")
+                    .and_then(|v| v.get("result"))
+                    .and_then(|v| v.as_i64())
+                {
+                    if result == 1 {
+                        let preview_len = ws_info.len().min(1200);
+                        info!(
+                            "Kuaishou danmu websocketinfo(no-sign,result=1) body: {}",
+                            &ws_info[..preview_len]
+                        );
+                    }
+                }
+            }
             // Fallback: try signed websocketinfo request.
             if let Ok((signed_token, signed_urls)) = self
                 .fetch_websocketinfo_with_sign(
@@ -931,6 +945,23 @@ impl KuaishouDanmu {
                 urls.len(),
                 sign_input
             );
+            if token.is_empty() || urls.is_empty() {
+                if let Ok(root) = serde_json::from_str::<Value>(&text) {
+                    if let Some(result) = root
+                        .get("data")
+                        .and_then(|v| v.get("result"))
+                        .and_then(|v| v.as_i64())
+                    {
+                        if result == 1 {
+                            let preview_len = text.len().min(1200);
+                            info!(
+                                "Kuaishou danmu websocketinfo(sign,result=1) body: {}",
+                                &text[..preview_len]
+                            );
+                        }
+                    }
+                }
+            }
 
             if !token.is_empty() && !urls.is_empty() {
                 return Ok((token, urls));
@@ -1250,6 +1281,17 @@ fn value_to_string(value: &Value) -> Option<String> {
     }
 }
 
+fn parse_embedded_json(value: &str) -> Option<Value> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if !(trimmed.starts_with('{') || trimmed.starts_with('[')) {
+        return None;
+    }
+    serde_json::from_str::<Value>(trimmed).ok()
+}
+
 fn extract_string_field(value: &Value, keys: &[&str]) -> Option<String> {
     for key in keys {
         if let Some(v) = value.get(*key) {
@@ -1401,6 +1443,7 @@ fn find_string_by_keys(value: &Value, keys: &[&str]) -> Option<String> {
             }
             None
         }
+        Value::String(text) => parse_embedded_json(text).and_then(|embedded| find_string_by_keys(&embedded, keys)),
         _ => None,
     }
 }
@@ -1434,6 +1477,8 @@ fn collect_ws_urls_recursive(value: &Value, urls: &mut Vec<String>) {
         Value::String(s) => {
             if s.starts_with("ws://") || s.starts_with("wss://") {
                 push_ws_url(urls, s);
+            } else if let Some(embedded) = parse_embedded_json(s) {
+                collect_ws_urls_recursive(&embedded, urls);
             }
         }
         _ => {}

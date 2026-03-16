@@ -156,6 +156,8 @@ export interface Config {
   powerlive_key: string;
   use_guest_accounts: boolean;
   use_login_accounts: boolean;
+  kuaishou_enable_follow_list_fallback: boolean;
+  kuaishou_enable_public_page_fallback: boolean;
   http_proxy?: string;
   https_proxy?: string;
 }

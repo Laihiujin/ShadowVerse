@@ -4,17 +4,21 @@ use crate::core::stream_info::{
     CdnNode, Codec, Format, PlatformStreamInfo, PlatformType, Quality, StreamVariant,
 };
 use crate::errors::RecorderError;
+use aes::Aes128;
+use base64::{Engine as _, engine::general_purpose};
+use cbc::cipher::{BlockEncryptMut, KeyIvInit, block_padding::Pkcs7};
 use chrono::Utc;
 use rand::Rng;
 use regex::Regex;
 use reqwest::Client;
 use serde::Deserialize;
-use serde_json::{Map, Value};
+use serde_json::{json, Map, Value};
 use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Duration;
 use tokio::sync::Mutex;
+use uuid::Uuid;
 
 const USER_AGENT: &str =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
@@ -26,6 +30,30 @@ const FOLLOW_INFO_CACHE_TTL_SECS: i64 = 18;
 const FOLLOW_INFO_MISS_TTL_SECS: i64 = 6;
 const KWW_PROBE_CACHE_TTL_SECS: i64 = 3600;
 const KWW_PROBE_MISS_TTL_SECS: i64 = 300;
+const GDFP_PREFLIGHT_TTL_SECS: i64 = 300;
+const KUAISHOU_DEFAULT_KPN: &str = "GAME_ZONE";
+const KUAISHOU_DEFAULT_KPF: &str = "PC_WEB";
+const KUAISHOU_DEFAULT_SHARE_METHOD: &str = "card";
+const KUAISHOU_DEFAULT_CLIENT_TYPE: &str = "WEB_OUTSIDE_SHARE_H5";
+const KUAISHOU_DEFAULT_SUB_BIZ: &str = "LIVE_SHARE_H5";
+const KUAISHOU_DEFAULT_PRODUCT_NAME: &str = "PCLive";
+const KUAISHOU_WEBWEAPON_FP_KEY: &str = "K8wm5PvY9nX7qJc2";
+const KUAISHOU_WEBWEAPON_SIGN_KEY: &str = "H4tL6rNd3vB9xM5k";
+const KUAISHOU_GDFP_APPKEY: &str = "10001001";
+const KUAISHOU_GDFP_SECKEY: &str = "f2fff381c551a8dcdb765e316f3d44ac";
+const KUAISHOU_GDFP_BUSS_TYPE_GAME_LIVE: &str = "gameLive";
+const KUAISHOU_GDFP_SDK_VERSION: &str = "1.4.0";
+const KUAISHOU_GDFP_PLATFORM: i64 = 3;
+const KUAISHOU_GDFP_SCREEN_WIDTH: i64 = 1440;
+const KUAISHOU_GDFP_SCREEN_HEIGHT: i64 = 900;
+const KUAISHOU_GDFP_DEVICE_MEMORY_GB: i64 = 8;
+const KUAISHOU_GDFP_CHROME_BUILD: &str = "20030107";
+const KUAISHOU_GDFP_BROWSER_VENDOR: &str = "Google Inc.";
+const KUAISHOU_GDFP_PRODUCT_SUBTYPE: &str = "ks";
+const KUAISHOU_GDFP_PLUGIN_LIST: &str = "[{\"name\":\"PDF Viewer\",\"filename\":\"internal-pdf-viewer\",\"description\":\"Portable Document Format\"},{\"name\":\"Chrome PDF Viewer\",\"filename\":\"internal-pdf-viewer\",\"description\":\"Portable Document Format\"},{\"name\":\"Chromium PDF Viewer\",\"filename\":\"internal-pdf-viewer\",\"description\":\"Portable Document Format\"},{\"name\":\"Microsoft Edge PDF Viewer\",\"filename\":\"internal-pdf-viewer\",\"description\":\"Portable Document Format\"},{\"name\":\"WebKit built-in PDF\",\"filename\":\"internal-pdf-viewer\",\"description\":\"Portable Document Format\"}]";
+const KUAISHOU_GDFP_MIME_LIST: &str = "[{\"type\":\"application/pdf\",\"description\":\"Portable Document Format\"},{\"type\":\"text/pdf\",\"description\":\"Portable Document Format\"}]";
+
+type Aes128CbcEncryptor = cbc::Encryptor<Aes128>;
 
 static WEB_COOLDOWN_UNTIL: AtomicI64 = AtomicI64::new(0);
 static WEB_ROOM_COOLDOWN_UNTIL: OnceLock<Mutex<HashMap<String, i64>>> = OnceLock::new();
@@ -33,6 +61,132 @@ static WEB_LAST_REQUEST_TS_MS: AtomicI64 = AtomicI64::new(0);
 static WEB_REQUEST_GATE: OnceLock<Mutex<()>> = OnceLock::new();
 static FOLLOW_INFO_CACHE: OnceLock<Mutex<HashMap<String, FollowInfoCacheEntry>>> = OnceLock::new();
 static KWW_PROBE_CACHE: OnceLock<Mutex<HashMap<String, KwwProbeCacheEntry>>> = OnceLock::new();
+static GDFP_PREFLIGHT_CACHE: OnceLock<Mutex<HashMap<String, i64>>> = OnceLock::new();
+static GDFP_FAILURE_CACHE: OnceLock<Mutex<HashMap<String, (i64, String)>>> = OnceLock::new();
+
+#[derive(Debug, Clone)]
+struct KuaishouRequestContext {
+    principal_id: String,
+    cookie_header: String,
+    did: String,
+    didv: String,
+    kpn: String,
+    kpf: String,
+    user_id: Option<String>,
+    raw_kww: Option<String>,
+    kww: Option<String>,
+}
+
+impl KuaishouRequestContext {
+    fn from_account(account: &Account, principal_id: &str) -> Self {
+        let cookie_header = build_kuaishou_runtime_cookie(&account.cookies, principal_id);
+        let did = get_cookie_value_ci(&cookie_header, "did")
+            .or_else(|| get_cookie_value_ci(&cookie_header, "_did"))
+            .unwrap_or_else(gen_web_did);
+        let didv = get_cookie_value_ci(&cookie_header, "didv")
+            .unwrap_or_else(|| Utc::now().timestamp_millis().to_string());
+        let kpn = get_cookie_value_ci(&cookie_header, "kpn")
+            .unwrap_or_else(|| KUAISHOU_DEFAULT_KPN.to_string());
+        let kpf = get_cookie_value_ci(&cookie_header, "kpf")
+            .unwrap_or_else(|| KUAISHOU_DEFAULT_KPF.to_string());
+        let user_id = get_cookie_value_ci(&cookie_header, "userId")
+            .or_else(|| get_cookie_value_ci(&cookie_header, "userIdStr"))
+            .or_else(|| get_cookie_value_ci(&cookie_header, "user_id"));
+        let raw_kww = resolve_kuaishou_raw_kww(&cookie_header);
+        let kww = raw_kww
+            .as_deref()
+            .and_then(normalize_kuaishou_kww_header_value);
+
+        Self {
+            principal_id: principal_id.to_string(),
+            cookie_header,
+            did,
+            didv,
+            kpn,
+            kpf,
+            user_id,
+            raw_kww,
+            kww,
+        }
+    }
+
+    fn web_referer(&self) -> String {
+        format!("https://live.kuaishou.com/u/{}", self.principal_id)
+    }
+
+    fn mobile_referer(&self) -> String {
+        let mut params = vec![
+            format!("shareMethod={}", KUAISHOU_DEFAULT_SHARE_METHOD),
+            format!("clientType={}", KUAISHOU_DEFAULT_CLIENT_TYPE),
+            format!("kpn={}", self.kpn),
+            format!("kpf={}", self.kpf),
+            format!("subBiz={}", KUAISHOU_DEFAULT_SUB_BIZ),
+            format!("principalId={}", self.principal_id),
+            format!("did={}", self.did),
+            format!("didv={}", self.didv),
+        ];
+        if let Some(user_id) = self.user_id.as_deref() {
+            if !user_id.trim().is_empty() {
+                params.push(format!("userId={user_id}"));
+            }
+        }
+        format!("https://www.kuaishou.com/u/{}?{}", self.principal_id, params.join("&"))
+    }
+
+    fn by_user_url(&self) -> String {
+        format!(
+            "https://livev.m.chenzhongtech.com/rest/k/live/byUser?kpn={}&captchaToken=",
+            self.kpn
+        )
+    }
+
+    fn by_user_payload(&self) -> Value {
+        let mut payload = json!({
+            "source": 5,
+            "eid": self.principal_id,
+            "principalId": self.principal_id,
+            "shareMethod": KUAISHOU_DEFAULT_SHARE_METHOD,
+            "clientType": KUAISHOU_DEFAULT_CLIENT_TYPE,
+            "kpn": self.kpn,
+            "kpf": self.kpf,
+            "subBiz": KUAISHOU_DEFAULT_SUB_BIZ,
+            "did": self.did,
+            "didv": self.didv,
+            "clientid": "3",
+            "webid": self.did,
+        });
+        if let Some(map) = payload.as_object_mut() {
+            if let Some(user_id) = self.user_id.as_deref() {
+                if !user_id.trim().is_empty() {
+                    map.insert("userId".to_string(), Value::String(user_id.to_string()));
+                }
+            }
+            for key in ["kwscode", "kwfv1", "kwssectoken"] {
+                if let Some(value) = get_cookie_value_ci(&self.cookie_header, key) {
+                    map.insert(key.to_string(), Value::String(value));
+                }
+            }
+            if let Some(raw_kww) = self.raw_kww.as_deref().filter(|value| !value.trim().is_empty()) {
+                map.insert("kww".to_string(), Value::String(raw_kww.to_string()));
+            }
+        }
+        payload
+    }
+
+    fn apply_cookie(&self, headers: &mut reqwest::header::HeaderMap) {
+        if !self.cookie_header.is_empty() {
+            headers.insert("Cookie", self.cookie_header.parse().unwrap());
+        }
+    }
+
+    fn apply_kww(&self, headers: &mut reqwest::header::HeaderMap) {
+        if let Some(kww) = self.kww.as_deref() {
+            if let Ok(value) = kww.parse() {
+                headers.insert("kww", value);
+            }
+        }
+    }
+}
 
 fn read_env_u64(key: &str, default: u64) -> u64 {
     std::env::var(key)
@@ -56,11 +210,21 @@ fn read_env_bool(key: &str) -> Option<bool> {
 }
 
 fn use_public_page_fallback(account: &Account) -> bool {
-    read_env_bool("BSR_KUAISHOU_ENABLE_PUBLIC_PAGE_FALLBACK").unwrap_or(!account.is_guest())
+    let _ = account;
+    read_env_bool("BSR_KUAISHOU_ENABLE_PUBLIC_PAGE_FALLBACK").unwrap_or(false)
+}
+
+fn use_follow_list_fallback(account: &Account) -> bool {
+    let _ = account;
+    read_env_bool("BSR_KUAISHOU_ENABLE_FOLLOW_LIST_FALLBACK").unwrap_or(false)
 }
 
 fn use_room_page_kww_probe() -> bool {
     read_env_bool("BSR_KUAISHOU_ENABLE_KWW_PROBE").unwrap_or(false)
+}
+
+fn use_gdfp_prefetch() -> bool {
+    read_env_bool("BSR_KUAISHOU_ENABLE_GDFP_PREFLIGHT").unwrap_or(true)
 }
 
 fn web_cooldown_secs() -> i64 {
@@ -89,6 +253,9 @@ fn is_rate_limit_message(message: &str) -> bool {
     let trimmed = message.trim();
     !trimmed.is_empty()
         && (trimmed.contains("\u{64cd}\u{4f5c}\u{592a}\u{5feb}")
+            || trimmed.contains("\u{8bf7}\u{7a0d}\u{5fae}\u{4f11}\u{606f}\u{4e00}\u{4e0b}")
+            || trimmed.contains("\u{4f11}\u{606f}\u{4e00}\u{4e0b}")
+            || trimmed.to_ascii_lowercase().contains("too fast")
             || trimmed.contains("\u{8bf7}\u{6c42}\u{8fc7}\u{5feb}")
             || trimmed.contains("\u{8bbf}\u{95ee}\u{8fc7}\u{4e8e}\u{9891}\u{7e41}")
             || trimmed.contains("\u{8bbf}\u{95ee}\u{9891}\u{7e41}")
@@ -133,19 +300,20 @@ async fn set_web_cooldown(account: &Account, room_key: &str, reason: &str) {
     let until = Utc::now().timestamp() + cooldown_secs;
     let now = Utc::now().timestamp();
 
+    if let Some(key) = room_cooldown_key(room_key) {
+        let map = WEB_ROOM_COOLDOWN_UNTIL.get_or_init(|| Mutex::new(HashMap::new()));
+        let mut guard = map.lock().await;
+        guard.retain(|_, value| *value > now);
+        guard.insert(key.clone(), until);
+        log::info!(
+            "[Kuaishou] Web room cooldown set room={} ({}s): {}",
+            key,
+            cooldown_secs,
+            reason
+        );
+    }
+
     if account.is_guest() {
-        if let Some(key) = room_cooldown_key(room_key) {
-            let map = WEB_ROOM_COOLDOWN_UNTIL.get_or_init(|| Mutex::new(HashMap::new()));
-            let mut guard = map.lock().await;
-            guard.retain(|_, value| *value > now);
-            guard.insert(key.clone(), until);
-            log::info!(
-                "[Kuaishou] Web room cooldown set room={} ({}s): {}",
-                key,
-                cooldown_secs,
-                reason
-            );
-        }
         return;
     }
 
@@ -161,10 +329,7 @@ async fn set_web_cooldown(account: &Account, room_key: &str, reason: &str) {
 
 async fn web_api_allowed(account: &Account, room_key: &str) -> bool {
     let now = Utc::now().timestamp();
-    if account.is_guest() {
-        let Some(key) = room_cooldown_key(room_key) else {
-            return true;
-        };
+    if let Some(key) = room_cooldown_key(room_key) {
         let map = WEB_ROOM_COOLDOWN_UNTIL.get_or_init(|| Mutex::new(HashMap::new()));
         let mut guard = map.lock().await;
         match guard.get(&key).copied() {
@@ -175,6 +340,8 @@ async fn web_api_allowed(account: &Account, room_key: &str) -> bool {
             }
             None => true,
         }
+    } else if account.is_guest() {
+        true
     } else if should_use_global_web_cooldown(account) {
         now >= WEB_COOLDOWN_UNTIL.load(Ordering::Relaxed)
     } else {
@@ -187,6 +354,15 @@ fn should_use_global_web_cooldown(account: &Account) -> bool {
         return false;
     }
     read_env_bool("BSR_KUAISHOU_LOGIN_GLOBAL_COOLDOWN").unwrap_or(false)
+}
+
+fn web_cooldown_error() -> RecorderError {
+    RecorderError::ApiError {
+        error: format!(
+            "快手接口冷却中，请约 {} 秒后重试",
+            web_retry_secs()
+        ),
+    }
 }
 
 async fn wait_for_web_request_slot(scene: &str) {
@@ -222,6 +398,486 @@ async fn wait_for_web_request_slot(scene: &str) {
     }
 
     WEB_LAST_REQUEST_TS_MS.store(Utc::now().timestamp_millis(), Ordering::Relaxed);
+}
+
+fn gdfp_prefetch_cache_key(ctx: &KuaishouRequestContext, buss_type: &str) -> String {
+    format!(
+        "{}:{}:{}",
+        ctx.principal_id.trim().to_ascii_lowercase(),
+        ctx.did.trim().to_ascii_lowercase(),
+        buss_type.trim().to_ascii_lowercase()
+    )
+}
+
+async fn gdfp_prefetch_allowed(cache_key: &str) -> bool {
+    let now = Utc::now().timestamp();
+    let cache = GDFP_PREFLIGHT_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut guard = cache.lock().await;
+    match guard.get(cache_key).copied() {
+        Some(until) if now < until => false,
+        Some(_) => {
+            guard.remove(cache_key);
+            true
+        }
+        None => true,
+    }
+}
+
+async fn mark_gdfp_prefetch(cache_key: String) {
+    let until = Utc::now().timestamp() + GDFP_PREFLIGHT_TTL_SECS;
+    let cache = GDFP_PREFLIGHT_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut guard = cache.lock().await;
+    guard.insert(cache_key, until);
+}
+
+fn gdfp_failure_key(principal_id: &str) -> Option<String> {
+    room_cooldown_key(principal_id)
+}
+
+async fn set_gdfp_failure(principal_id: &str, reason: impl Into<String>) {
+    let Some(key) = gdfp_failure_key(principal_id) else {
+        return;
+    };
+    let cache = GDFP_FAILURE_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut guard = cache.lock().await;
+    guard.insert(key, (Utc::now().timestamp(), reason.into()));
+}
+
+async fn clear_gdfp_failure(principal_id: &str) {
+    let Some(key) = gdfp_failure_key(principal_id) else {
+        return;
+    };
+    let cache = GDFP_FAILURE_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut guard = cache.lock().await;
+    guard.remove(&key);
+}
+
+async fn recent_gdfp_failure(principal_id: &str) -> Option<String> {
+    let Some(key) = gdfp_failure_key(principal_id) else {
+        return None;
+    };
+    let cache = GDFP_FAILURE_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut guard = cache.lock().await;
+    let now = Utc::now().timestamp();
+    match guard.get(&key).cloned() {
+        Some((ts, reason)) if now.saturating_sub(ts) <= GDFP_PREFLIGHT_TTL_SECS => Some(reason),
+        Some(_) => {
+            guard.remove(&key);
+            None
+        }
+        None => None,
+    }
+}
+
+async fn captcha_error_with_context(principal_id: &str) -> RecorderError {
+    if let Some(reason) = recent_gdfp_failure(principal_id).await {
+        RecorderError::ApiError {
+            error: format!(
+                "Please complete captcha verification (gdfp preflight unreachable: {reason})"
+            ),
+        }
+    } else {
+        RecorderError::ApiError {
+            error: "Please complete captcha verification".to_string(),
+        }
+    }
+}
+
+fn build_gdfp_sign(timestamp_secs: i64) -> String {
+    let raw = format!(
+        "{}{}{}",
+        KUAISHOU_GDFP_APPKEY, KUAISHOU_GDFP_SECKEY, timestamp_secs
+    );
+    format!("{:x}", md5::compute(raw.as_bytes()))
+}
+
+fn encode_gdfp_payload(value: &Value) -> Result<String, RecorderError> {
+    serde_json::to_vec(value)
+        .map(|bytes| general_purpose::STANDARD.encode(bytes))
+        .map_err(|e| RecorderError::ApiError {
+            error: format!("Failed to encode gdfp payload: {e}"),
+        })
+}
+
+fn build_gdfp_sdk_init_payload(ctx: &KuaishouRequestContext) -> Result<Value, RecorderError> {
+    let payload = json!({
+        "device_id": ctx.did,
+        "sdkver": KUAISHOU_GDFP_SDK_VERSION,
+        "pver": "0.0.0",
+        "hp": KUAISHOU_GDFP_BUSS_TYPE_GAME_LIVE,
+        "platform": KUAISHOU_GDFP_PLATFORM,
+    });
+    Ok(json!({
+        "data": encode_gdfp_payload(&payload)?,
+        "flag": 2,
+    }))
+}
+
+fn gdfp_profile_from_user_agent() -> (&'static str, &'static str, &'static str, &'static str) {
+    let ua = USER_AGENT.to_ascii_lowercase();
+    if ua.contains("windows") {
+        (
+            "10.0",
+            "Windows",
+            "Win32",
+            "ANGLE (Intel, Intel(R) UHD Graphics Direct3D11 vs_5_0 ps_5_0, D3D11)",
+        )
+    } else if ua.contains("macintosh") || ua.contains("mac os") {
+        (
+            "10.15.7",
+            "Mac OS",
+            "MacIntel",
+            "ANGLE (Apple, ANGLE Metal Renderer: Apple M2, Unspecified Version)",
+        )
+    } else {
+        (
+            "6.6.0",
+            "Linux",
+            "Linux x86_64",
+            "ANGLE (Google, Vulkan 1.3.0 SwiftShader Device (Subzero), SwiftShader driver)",
+        )
+    }
+}
+
+fn build_gdfp_cookie_snapshot(ctx: &KuaishouRequestContext) -> Value {
+    let mut cookie_map = parse_cookie_map(&ctx.cookie_header);
+    cookie_map
+        .entry("did".to_string())
+        .or_insert_with(|| ctx.did.clone());
+    cookie_map
+        .entry("didv".to_string())
+        .or_insert_with(|| ctx.didv.clone());
+    cookie_map
+        .entry("kpn".to_string())
+        .or_insert_with(|| ctx.kpn.clone());
+    cookie_map
+        .entry("kpf".to_string())
+        .or_insert_with(|| ctx.kpf.clone());
+    if let Some(user_id) = ctx.user_id.as_deref().filter(|value| !value.trim().is_empty()) {
+        cookie_map
+            .entry("userId".to_string())
+            .or_insert_with(|| user_id.to_string());
+    }
+    if let Some(raw_kww) = ctx.raw_kww.as_deref().filter(|value| !value.trim().is_empty()) {
+        cookie_map
+            .entry("kww".to_string())
+            .or_insert_with(|| raw_kww.to_string());
+    }
+    let mut json_map = Map::new();
+    for (key, value) in cookie_map {
+        if !value.trim().is_empty() {
+            json_map.insert(key, Value::String(value));
+        }
+    }
+    Value::Object(json_map)
+}
+
+fn build_gdfp_module_browser_payload(
+    ctx: &KuaishouRequestContext,
+    room_url: &str,
+    root_url: &str,
+    now_ms: i64,
+) -> Value {
+    let (os_version, os_name, navigator_platform, renderer) = gdfp_profile_from_user_agent();
+    let init_time = now_ms.saturating_sub(1200);
+    let create_start = init_time.saturating_sub(800);
+    let module_uuid = Uuid::new_v4().to_string();
+    let script_urls = vec![
+        "https://static.yximgs.com/udata/pkg/ks-track-platform-new/weblogger/3.9.49/async/gzipper.min.js",
+        "https://p2-game.kskwai.com/udata/pkg/KS-GAME-WEB/pc-live-next/js/vendors.f39e14126038dfed8050.js",
+        "https://p2-game.kskwai.com/udata/pkg/KS-GAME-WEB/pc-live-next/js/purecommon.f39e14126038dfed8050.js",
+        "https://p2-game.kskwai.com/udata/pkg/KS-GAME-WEB/pc-live-next/js/common.f39e14126038dfed8050.js",
+        "https://p2-game.kskwai.com/udata/pkg/KS-GAME-WEB/pc-live-next/js/app.f39e14126038dfed8050.js",
+    ];
+    let ua = USER_AGENT;
+    let vendor_renderer = format!("{} ({os_name})", KUAISHOU_GDFP_BROWSER_VENDOR);
+    let webgl_vendor = "WebKit";
+    let webgl_version = "WebGL 1.0 (OpenGL ES 2.0 Chromium)";
+    let webgl_glsl = "WebGL GLSL ES 1.0 (OpenGL ES GLSL ES 1.0 Chromium)";
+    let cookie_snapshot = build_gdfp_cookie_snapshot(ctx);
+    let plugin_hash = format!("{:x}", md5::compute(KUAISHOU_GDFP_PLUGIN_LIST.as_bytes()));
+    let mime_hash = format!("{:x}", md5::compute(KUAISHOU_GDFP_MIME_LIST.as_bytes()));
+    let ua_hash = format!("{:x}", md5::compute(ua.as_bytes()));
+    let room_hash = format!("{:x}", md5::compute(room_url.as_bytes()));
+    let renderer_hash = format!("{:x}", md5::compute(renderer.as_bytes()));
+    let mut module = Map::new();
+    module.insert("1".to_string(), Value::String(String::new()));
+    module.insert("2".to_string(), Value::String(room_url.to_string()));
+    module.insert("4".to_string(), Value::String(root_url.to_string()));
+    module.insert("5".to_string(), Value::String(module_uuid));
+    module.insert("6".to_string(), Value::String("快手直播".to_string()));
+    module.insert("7".to_string(), cookie_snapshot);
+    module.insert(
+        "8".to_string(),
+        Value::String(format!(
+            "{}x{}",
+            KUAISHOU_GDFP_SCREEN_WIDTH, KUAISHOU_GDFP_SCREEN_HEIGHT
+        )),
+    );
+    module.insert("9".to_string(), Value::from(KUAISHOU_GDFP_SCREEN_HEIGHT));
+    module.insert("10".to_string(), Value::from(KUAISHOU_GDFP_SCREEN_WIDTH));
+    module.insert("11".to_string(), Value::String(ua.to_string()));
+    module.insert("12".to_string(), Value::String(os_version.to_string()));
+    module.insert("13".to_string(), Value::String("zh-CN".to_string()));
+    module.insert("14".to_string(), Value::String(os_name.to_string()));
+    module.insert(
+        "16".to_string(),
+        Value::String(ctx.user_id.clone().unwrap_or_default()),
+    );
+    module.insert("17".to_string(), Value::String(ctx.did.clone()));
+    module.insert(
+        "21".to_string(),
+        json!({
+            "type": "PAGE_ENTER",
+            "timestamp": init_time,
+            "initTime": create_start,
+        }),
+    );
+    module.insert("24".to_string(), Value::String("99".to_string()));
+    module.insert("25".to_string(), Value::String("99".to_string()));
+    module.insert("26".to_string(), Value::String("0".to_string()));
+    module.insert("28".to_string(), Value::String(room_hash));
+    module.insert("29".to_string(), Value::String("/p/z/s".to_string()));
+    module.insert(
+        "30".to_string(),
+        Value::String(KUAISHOU_GDFP_PRODUCT_SUBTYPE.to_string()),
+    );
+    module.insert("31".to_string(), Value::from(1));
+    module.insert("32".to_string(), Value::String("0.00".to_string()));
+    module.insert("33".to_string(), Value::String("Mozilla".to_string()));
+    module.insert("34".to_string(), Value::String("Netscape".to_string()));
+    module.insert("35".to_string(), Value::String(ua.to_string()));
+    module.insert(
+        "36".to_string(),
+        Value::String(navigator_platform.to_string()),
+    );
+    module.insert("37".to_string(), Value::String("[\"zh-CN\"]".to_string()));
+    module.insert(
+        "41".to_string(),
+        Value::String(KUAISHOU_GDFP_CHROME_BUILD.to_string()),
+    );
+    module.insert(
+        "42".to_string(),
+        Value::String(KUAISHOU_GDFP_BROWSER_VENDOR.to_string()),
+    );
+    module.insert("43".to_string(), Value::String(String::new()));
+    module.insert("44".to_string(), Value::from(KUAISHOU_GDFP_DEVICE_MEMORY_GB));
+    module.insert("50".to_string(), Value::from(0));
+    module.insert("51".to_string(), Value::String(String::new()));
+    module.insert("52".to_string(), Value::from(1));
+    module.insert("53".to_string(), Value::String("Gecko".to_string()));
+    module.insert("54".to_string(), Value::Bool(true));
+    module.insert("55".to_string(), Value::from(1));
+    module.insert("56".to_string(), Value::String(ua.to_string()));
+    module.insert("57".to_string(), Value::String("zh-CN".to_string()));
+    module.insert(
+        "58".to_string(),
+        Value::String(KUAISHOU_GDFP_PLUGIN_LIST.to_string()),
+    );
+    module.insert(
+        "59".to_string(),
+        Value::String(KUAISHOU_GDFP_MIME_LIST.to_string()),
+    );
+    module.insert("61".to_string(), Value::String(vendor_renderer));
+    module.insert("62".to_string(), Value::String(renderer.to_string()));
+    module.insert("63".to_string(), Value::String("1".to_string()));
+    module.insert("64".to_string(), Value::String(webgl_vendor.to_string()));
+    module.insert("65".to_string(), Value::String(webgl_version.to_string()));
+    module.insert("66".to_string(), Value::String(webgl_glsl.to_string()));
+    module.insert("67".to_string(), Value::from(0));
+    module.insert("68".to_string(), Value::String(plugin_hash.clone()));
+    module.insert("69".to_string(), Value::String(mime_hash.clone()));
+    module.insert("70".to_string(), Value::String(ua_hash));
+    module.insert("75".to_string(), Value::String("0".to_string()));
+    module.insert("76".to_string(), Value::String("true".to_string()));
+    module.insert("77".to_string(), json!(script_urls));
+    module.insert("80".to_string(), Value::String("0".to_string()));
+    module.insert("81".to_string(), Value::String("0".to_string()));
+    module.insert(
+        "82".to_string(),
+        json!({
+            "pc": KUAISHOU_GDFP_PLUGIN_LIST.len(),
+            "ph": plugin_hash,
+            "mf": KUAISHOU_GDFP_MIME_LIST.len(),
+            "mh": mime_hash,
+            "gr": renderer.len(),
+            "gh": renderer_hash,
+        }),
+    );
+    module.insert(
+        "87".to_string(),
+        json!({
+            "w": KUAISHOU_GDFP_SCREEN_WIDTH,
+            "h": KUAISHOU_GDFP_SCREEN_HEIGHT,
+            "c": 24,
+            "p": 24,
+        }),
+    );
+    module.insert(
+        "88".to_string(),
+        Value::String(format!(
+            "{:x}",
+            md5::compute(ctx.principal_id.as_bytes())
+        )),
+    );
+    module.insert(
+        "89".to_string(),
+        json!({
+            "cs": create_start,
+            "ce": create_start.saturating_add(120),
+            "as": init_time.saturating_sub(80),
+            "ae": init_time.saturating_sub(40),
+            "cae": init_time.saturating_sub(20),
+            "gs": init_time,
+            "ge": init_time.saturating_add(320),
+            "ls": now_ms,
+        }),
+    );
+    module.insert("90".to_string(), Value::String(String::new()));
+    Value::Object(module)
+}
+
+fn build_gdfp_pzs_payload(ctx: &KuaishouRequestContext) -> Result<Value, RecorderError> {
+    let now_ms = Utc::now().timestamp_millis();
+    let room_url = ctx.web_referer();
+    let root_url = "https://live.kuaishou.com";
+    let payload = json!({
+        "1": ctx.did,
+        "3": KUAISHOU_GDFP_APPKEY,
+        "6": KUAISHOU_GDFP_BUSS_TYPE_GAME_LIVE,
+        "7": 10,
+        "9": now_ms,
+        "10": "",
+        "12": KUAISHOU_GDFP_APPKEY,
+        "13": "",
+        "14": KUAISHOU_GDFP_SDK_VERSION,
+        "module_section": [build_gdfp_module_browser_payload(ctx, &room_url, root_url, now_ms)]
+    });
+    Ok(json!({
+        "flag": 2,
+        "data": encode_gdfp_payload(&payload)?,
+    }))
+}
+
+async fn send_gdfp_request(
+    client: &Client,
+    path: &str,
+    extra_query: Option<&str>,
+    ctx: &KuaishouRequestContext,
+    payload: &Value,
+) -> Result<(), RecorderError> {
+    let timestamp_secs = Utc::now().timestamp();
+    let sign = build_gdfp_sign(timestamp_secs);
+    let mut url = format!(
+        "https://gdfp.gifshow.com{path}?appkey={}&seckey={}&bussType={}&timestamp={}&sign={}",
+        KUAISHOU_GDFP_APPKEY,
+        KUAISHOU_GDFP_SECKEY,
+        KUAISHOU_GDFP_BUSS_TYPE_GAME_LIVE,
+        timestamp_secs,
+        sign
+    );
+    if let Some(extra) = extra_query.map(str::trim).filter(|value| !value.is_empty()) {
+        url.push('&');
+        url.push_str(extra);
+    }
+    let mut headers = reqwest::header::HeaderMap::new();
+    headers.insert("User-Agent", USER_AGENT.parse().unwrap());
+    headers.insert("Accept", "*/*".parse().unwrap());
+    headers.insert("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8".parse().unwrap());
+    headers.insert(
+        "Content-Type",
+        "text/plain;charset=UTF-8".parse().unwrap(),
+    );
+    headers.insert("Referer", ctx.web_referer().parse().unwrap());
+    headers.insert("Origin", "https://live.kuaishou.com".parse().unwrap());
+    headers.insert("Sec-Fetch-Dest", "empty".parse().unwrap());
+    headers.insert("Sec-Fetch-Mode", "cors".parse().unwrap());
+    headers.insert("Sec-Fetch-Site", "cross-site".parse().unwrap());
+
+    wait_for_web_request_slot("gdfp").await;
+    let response = client
+        .post(url)
+        .headers(headers)
+        .body(serde_json::to_string(payload).map_err(|e| RecorderError::ApiError {
+            error: format!("Failed to serialize gdfp payload: {e}"),
+        })?)
+        .send()
+        .await?;
+
+    let status = response.status();
+    let set_cookie = response
+        .headers()
+        .get_all("set-cookie")
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .collect::<Vec<_>>()
+        .join(" | ");
+    let body_preview = response
+        .text()
+        .await
+        .unwrap_or_default()
+        .chars()
+        .take(240)
+        .collect::<String>();
+
+    log::debug!(
+        "[Kuaishou] gdfp {} status={} room={} set_cookie={} body_preview={}",
+        path,
+        status,
+        ctx.principal_id,
+        set_cookie,
+        body_preview
+    );
+    Ok(())
+}
+
+async fn warm_kuaishou_gdfp(client: &Client, ctx: &KuaishouRequestContext) {
+    if !use_gdfp_prefetch() {
+        return;
+    }
+    let cache_key = gdfp_prefetch_cache_key(ctx, KUAISHOU_GDFP_BUSS_TYPE_GAME_LIVE);
+    if !gdfp_prefetch_allowed(&cache_key).await {
+        return;
+    }
+
+    let sdk_payload = match build_gdfp_sdk_init_payload(ctx) {
+        Ok(payload) => payload,
+        Err(error) => {
+            log::debug!("[Kuaishou] Skip gdfp sdk_init build: {error}");
+            return;
+        }
+    };
+    let pzs_payload = match build_gdfp_pzs_payload(ctx) {
+        Ok(payload) => payload,
+        Err(error) => {
+            log::debug!("[Kuaishou] Skip gdfp p/z/s build: {error}");
+            return;
+        }
+    };
+
+    if let Err(error) =
+        send_gdfp_request(client, "/s/u/v", Some("type=SDK_INIT"), ctx, &sdk_payload).await
+    {
+        set_gdfp_failure(
+            &ctx.principal_id,
+            format!("sdk_init failed: {}", error.to_string().replace('\n', " ")),
+        )
+        .await;
+        log::debug!("[Kuaishou] gdfp sdk_init failed: {error}");
+        return;
+    }
+    if let Err(error) = send_gdfp_request(client, "/p/z/s", None, ctx, &pzs_payload).await {
+        set_gdfp_failure(
+            &ctx.principal_id,
+            format!("pzs failed: {}", error.to_string().replace('\n', " ")),
+        )
+        .await;
+        log::debug!("[Kuaishou] gdfp p/z/s failed: {error}");
+        return;
+    }
+
+    mark_gdfp_prefetch(cache_key).await;
+    clear_gdfp_failure(&ctx.principal_id).await;
 }
 
 pub fn is_rate_limited_error(error: &RecorderError) -> bool {
@@ -542,6 +1198,11 @@ fn find_live_stream_response(value: &Value) -> Option<LiveStreamResponse> {
                             cloned.insert("liveStream".to_string(), v);
                         }
                     }
+                    if let Some(Value::String(text)) = cloned.get("liveStream") {
+                        if let Ok(parsed) = serde_json::from_str::<Value>(text) {
+                            cloned.insert("liveStream".to_string(), parsed);
+                        }
+                    }
                     if let Ok(response) =
                         serde_json::from_value::<LiveStreamResponse>(Value::Object(cloned))
                     {
@@ -557,6 +1218,48 @@ fn find_live_stream_response(value: &Value) -> Option<LiveStreamResponse> {
                     }
                 }
 
+                if map.contains_key("playUrls")
+                    || map.contains_key("hlsPlayUrl")
+                    || map.contains_key("multiResolutionPlayUrls")
+                    || map.contains_key("multiResolutionHlsPlayUrls")
+                {
+                    let mut direct_stream = map.clone();
+                    if let Some(Value::String(text)) = direct_stream.get("playUrls") {
+                        if let Ok(parsed) = serde_json::from_str::<Value>(text) {
+                            direct_stream.insert("playUrls".to_string(), parsed);
+                        }
+                    }
+                    if let Some(Value::String(text)) = direct_stream.get("author") {
+                        if let Ok(parsed) = serde_json::from_str::<Value>(text) {
+                            direct_stream.insert("author".to_string(), parsed);
+                        }
+                    }
+                    if let Ok(live_stream) =
+                        serde_json::from_value::<LiveStream>(Value::Object(direct_stream.clone()))
+                    {
+                        let response = LiveStreamResponse {
+                            live_stream: Some(live_stream),
+                            author: direct_stream
+                                .get("author")
+                                .cloned()
+                                .and_then(|v| serde_json::from_value(v).ok()),
+                            config: direct_stream
+                                .get("config")
+                                .cloned()
+                                .and_then(|v| serde_json::from_value(v).ok()),
+                            error_type: direct_stream
+                                .get("errorType")
+                                .or_else(|| direct_stream.get("error_type"))
+                                .cloned()
+                                .and_then(|v| serde_json::from_value(v).ok()),
+                        };
+                        let score = score_live_stream_response(&response);
+                        if best.as_ref().map(|(s, _)| score > *s).unwrap_or(true) {
+                            *best = Some((score, response));
+                        }
+                    }
+                }
+
                 for child in map.values() {
                     visit(child, best);
                 }
@@ -564,6 +1267,11 @@ fn find_live_stream_response(value: &Value) -> Option<LiveStreamResponse> {
             Value::Array(values) => {
                 for child in values {
                     visit(child, best);
+                }
+            }
+            Value::String(text) => {
+                if let Ok(parsed) = serde_json::from_str::<Value>(text) {
+                    visit(&parsed, best);
                 }
             }
             _ => {}
@@ -1352,7 +2060,7 @@ fn get_kuaishou_kww_override() -> Option<String> {
 }
 
 fn resolve_kuaishou_kww(cookies: &str) -> Option<String> {
-    extract_kuaishou_kww(cookies).or_else(get_kuaishou_kww_override)
+    resolve_kuaishou_raw_kww(cookies).and_then(|value| normalize_kuaishou_kww_header_value(&value))
 }
 
 fn extract_kuaishou_kww_from_html(html: &str) -> Option<String> {
@@ -1374,6 +2082,147 @@ fn extract_kuaishou_kww_from_html(html: &str) -> Option<String> {
         }
     }
     None
+}
+
+fn normalize_kuaishou_kww_header_value(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        None
+    } else if trimmed.contains("###ssr") {
+        Some(trimmed.to_string())
+    } else {
+        Some(format!("{trimmed}###ssrc"))
+    }
+}
+
+fn resolve_kuaishou_raw_kww(cookies: &str) -> Option<String> {
+    extract_kuaishou_kww(cookies).or_else(get_kuaishou_kww_override)
+}
+
+fn encode_uri_component_like_js(input: &str) -> String {
+    const UNESCAPED: &[u8] =
+        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.!~*'();,/?:@&=+$,#";
+    let mut out = String::with_capacity(input.len());
+    for byte in input.as_bytes() {
+        if UNESCAPED.contains(byte) {
+            out.push(*byte as char);
+        } else {
+            out.push('%');
+            out.push_str(&format!("{:02X}", byte));
+        }
+    }
+    out
+}
+
+fn random_base62(len: usize) -> String {
+    const CHARSET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+    let mut rng = rand::rng();
+    let mut out = String::with_capacity(len);
+    for _ in 0..len {
+        let idx = rng.random_range(0..CHARSET.len());
+        out.push(CHARSET[idx] as char);
+    }
+    out
+}
+
+fn aes_128_cbc_encrypt_base64(plain: &str, secret: &str) -> Option<String> {
+    let key = secret.as_bytes();
+    if key.len() != 16 {
+        return None;
+    }
+    let mut buffer = plain.as_bytes().to_vec();
+    let message_len = buffer.len();
+    let block_size = 16;
+    let pad_len = block_size - (message_len % block_size);
+    buffer.resize(message_len + pad_len, 0);
+    let cipher = Aes128CbcEncryptor::new_from_slices(key, key).ok()?;
+    let encrypted = cipher
+        .encrypt_padded_mut::<Pkcs7>(&mut buffer, message_len)
+        .ok()?;
+    Some(general_purpose::STANDARD.encode(encrypted))
+}
+
+fn build_kuaishou_webweapon_fingerprint(encrypted: &str, suffix: char) -> Option<String> {
+    if encrypted.len() < 6 {
+        return None;
+    }
+    Some(format!(
+        "K{}W{}{}{}",
+        &encrypted[..4],
+        &encrypted[4..encrypted.len() - 2],
+        suffix,
+        &encrypted[encrypted.len() - 2..]
+    ))
+}
+
+fn generate_kuaishou_webweapon_values(
+    room_url: &str,
+    did: &str,
+    product_name: &str,
+) -> Option<(String, String, String)> {
+    let now_ms = Utc::now().timestamp_millis();
+    let room_ref = encode_uri_component_like_js(room_url);
+    let fingerprint_seed = random_base62(8);
+    let fingerprint_plain =
+        format!("{room_ref}|{did}|{product_name}|{now_ms}|{fingerprint_seed}");
+    let encrypted_fp = aes_128_cbc_encrypt_base64(&fingerprint_plain, KUAISHOU_WEBWEAPON_FP_KEY)?;
+    let kwfv1 = build_kuaishou_webweapon_fingerprint(&encrypted_fp, 'F')?;
+
+    let sec_token = random_base62(64);
+    let kwscode_plain = format!(
+        "{room_ref}|{did}|{product_name}|{now_ms}|{}",
+        &sec_token[..8]
+    );
+    let encrypted_sign =
+        aes_128_cbc_encrypt_base64(&kwscode_plain, KUAISHOU_WEBWEAPON_SIGN_KEY)?;
+    let kwscode = build_kuaishou_webweapon_fingerprint(&encrypted_sign, 'S')?;
+
+    Some((kwfv1, sec_token, kwscode))
+}
+
+pub(crate) fn build_kuaishou_runtime_cookie(cookies: &str, principal_id: &str) -> String {
+    let normalized = normalize_record_cookie(cookies);
+    let mut map = parse_cookie_map(&normalized);
+
+    let did = map
+        .get("did")
+        .cloned()
+        .or_else(|| map.get("_did").cloned())
+        .unwrap_or_else(gen_web_did);
+    map.entry("did".to_string()).or_insert_with(|| did.clone());
+    map.entry("didv".to_string())
+        .or_insert_with(|| Utc::now().timestamp_millis().to_string());
+    map.entry("clientid".to_string())
+        .or_insert_with(|| "3".to_string());
+    map.entry("webid".to_string())
+        .or_insert_with(|| did.clone());
+    map.entry("kpn".to_string())
+        .or_insert_with(|| KUAISHOU_DEFAULT_KPN.to_string());
+    map.entry("kpf".to_string())
+        .or_insert_with(|| KUAISHOU_DEFAULT_KPF.to_string());
+    map.entry("kwpsecproductname".to_string())
+        .or_insert_with(|| KUAISHOU_DEFAULT_PRODUCT_NAME.to_string());
+
+    let has_kwfv1 = map.contains_key("kwfv1");
+    let has_kwscode = map.contains_key("kwscode");
+    let has_kwssectoken = map.contains_key("kwssectoken");
+    if !has_kwfv1 || !has_kwscode || !has_kwssectoken {
+        let room_url = format!("https://live.kuaishou.com/u/{principal_id}");
+        let product_name = map
+            .get("kwpsecproductname")
+            .cloned()
+            .unwrap_or_else(|| KUAISHOU_DEFAULT_PRODUCT_NAME.to_string());
+        if let Some((kwfv1, kwssectoken, kwscode)) =
+            generate_kuaishou_webweapon_values(&room_url, &did, &product_name)
+        {
+            map.entry("kwfv1".to_string()).or_insert(kwfv1);
+            map.entry("kwssectoken".to_string())
+                .or_insert(kwssectoken);
+            map.entry("kwscode".to_string()).or_insert(kwscode);
+        }
+    }
+
+    format_cookie_map(&map)
 }
 
 async fn fetch_follow_live_info(
@@ -1538,30 +2387,39 @@ async fn get_room_info_via_public_page(
     let page_streams = extract_direct_stream_urls_from_html(&html_str, &stream_cookie);
 
     if let Some(json_str) = extract_initial_state(&html_str) {
-        if let Some(room) =
-            parse_room_info_from_initial_state(&json_str, &principal, &stream_cookie)?
-        {
-            let mut room = room;
-            if !page_streams.is_empty() {
-                let mut seen: HashSet<String> =
-                    room.streams.iter().map(|s| s.url.clone()).collect();
-                for stream in page_streams.iter().cloned() {
-                    if seen.insert(stream.url.clone()) {
-                        room.streams.push(stream);
+        match parse_room_info_from_initial_state(&json_str, &principal, &stream_cookie) {
+            Ok(Some(room)) => {
+                let mut room = room;
+                if !page_streams.is_empty() {
+                    let mut seen: HashSet<String> =
+                        room.streams.iter().map(|s| s.url.clone()).collect();
+                    for stream in page_streams.iter().cloned() {
+                        if seen.insert(stream.url.clone()) {
+                            room.streams.push(stream);
+                        }
+                    }
+                    if !room.streams.is_empty() {
+                        sort_stream_infos(&mut room.streams);
                     }
                 }
                 if !room.streams.is_empty() {
-                    sort_stream_infos(&mut room.streams);
+                    log::debug!(
+                        "[Kuaishou] public page fallback resolved streams: principalId={}, streams={}",
+                        principal,
+                        room.streams.len()
+                    );
                 }
+                return Ok(Some(room));
             }
-            if !room.streams.is_empty() {
-                log::debug!(
-                    "[Kuaishou] public page fallback resolved streams: principalId={}, streams={}",
-                    principal,
-                    room.streams.len()
-                );
+            Ok(None) => {}
+            Err(err) => {
+                if let RecorderError::ApiError { error } = &err {
+                    if is_rate_limit_message(error) || is_captcha_message(error) {
+                        set_web_cooldown(account, principal_id, error).await;
+                    }
+                }
+                return Err(err);
             }
-            return Ok(Some(room));
         }
     }
 
@@ -1707,6 +2565,36 @@ fn room_info_score(room: &RoomInfo) -> i64 {
     score
 }
 
+fn log_room_info_source(source: &str, principal_id: &str, room: &RoomInfo) {
+    log::info!(
+        "[Kuaishou] stream source={} principalId={} live_status={} streams={} user_id={} title={}",
+        source,
+        principal_id,
+        room.live_status,
+        room.streams.len(),
+        room.user_id,
+        room.room_title
+    );
+}
+
+fn log_stream_urls_source(source: &str, principal_id: &str, streams: &[StreamInfo]) {
+    let first_url = streams
+        .first()
+        .map(|stream| stream.url.as_str())
+        .unwrap_or_default();
+    log::info!(
+        "[Kuaishou] stream source={} principalId={} stream_count={} first_url={}",
+        source,
+        principal_id,
+        streams.len(),
+        first_url
+    );
+}
+
+fn push_attempt_trace(traces: &mut Vec<String>, principal_id: &str, stage: &str, detail: String) {
+    traces.push(format!("{principal_id}:{stage}={detail}"));
+}
+
 fn find_bool_value(value: &Value, keys: &[&str]) -> Option<bool> {
     match value {
         Value::Object(map) => {
@@ -1770,7 +2658,7 @@ fn build_livedetail_query_params(
         ("kpf".to_string(), kpf),
     ];
 
-    for key in ["clientid", "webid", "kwscode", "kwfv1", "kww"] {
+    for key in ["clientid", "webid", "kwscode", "kwfv1", "kwssectoken", "kww"] {
         if let Some(v) = get_cookie_value_ci(cookie, key) {
             params.push((key.to_string(), v));
         }
@@ -1807,8 +2695,9 @@ async fn fetch_livedetail_value(
         return Ok(None);
     }
 
-    // Keep original cookies as much as possible in reverse-API mode.
-    let cookie_header = normalize_record_cookie(&account.cookies);
+    let ctx = KuaishouRequestContext::from_account(account, principal_id);
+    warm_kuaishou_gdfp(client, &ctx).await;
+    let cookie_header = ctx.cookie_header.clone();
 
     let mut headers = reqwest::header::HeaderMap::new();
     headers.insert("User-Agent", USER_AGENT.parse().unwrap());
@@ -1825,18 +2714,11 @@ async fn fetch_livedetail_value(
     headers.insert("Sec-Fetch-Dest", "empty".parse().unwrap());
     headers.insert("Sec-Fetch-Mode", "cors".parse().unwrap());
     headers.insert("Sec-Fetch-Site", "same-origin".parse().unwrap());
-    headers.insert(
-        "Referer",
-        format!("https://live.kuaishou.com/u/{principal_id}")
-            .parse()
-            .unwrap(),
-    );
+    headers.insert("Referer", ctx.web_referer().parse().unwrap());
     headers.insert("Origin", "https://live.kuaishou.com".parse().unwrap());
 
-    if !cookie_header.is_empty() {
-        headers.insert("Cookie", cookie_header.parse().unwrap());
-    }
-    let mut resolved_kww = resolve_kuaishou_kww(&cookie_header);
+    ctx.apply_cookie(&mut headers);
+    let mut resolved_kww = ctx.kww.clone();
     if resolved_kww.is_none() && use_room_page_kww_probe() {
         let probe_room = resolve_principal_id(principal_id);
         if let Some(cached) = get_cached_kww_probe(&probe_room).await {
@@ -1918,9 +2800,7 @@ async fn fetch_livedetail_value(
                 }
 
                 if is_captcha_message(&body) || body.to_ascii_lowercase().contains("captcha") {
-                    return Err(RecorderError::ApiError {
-                        error: "Please complete captcha verification".to_string(),
-                    });
+                    return Err(captcha_error_with_context(principal_id).await);
                 }
 
                 let Ok(value) = serde_json::from_str::<Value>(&body) else {
@@ -1945,6 +2825,299 @@ async fn fetch_livedetail_value(
     }
 
     Ok(best_value)
+}
+
+const KUAISHOU_MGRAPHQL_URL: &str = "https://live.kuaishou.com/m_graphql";
+const KUAISHOU_MOBILE_USER_AGENT: &str =
+    "ios/7.830 (ios 17.0; ; iPhone 15 (A2846/A3089/A3090/A3092))";
+const KUAISHOU_WEBLIVEDETAIL_QUERY: &str = r#"
+query LiveDetail($principalId: String) {
+  webLiveDetail(principalId: $principalId) {
+    author {
+      id
+      name
+      headUrl
+    }
+    liveStream {
+      caption
+      coverUrl
+      playUrls {
+        h264 {
+          adaptationSet {
+            representation {
+              url
+              name
+              qualityType
+              bitrate
+            }
+          }
+        }
+        h265 {
+          adaptationSet {
+            representation {
+              url
+              name
+              qualityType
+              bitrate
+            }
+          }
+        }
+      }
+    }
+  }
+}
+"#;
+
+async fn fetch_mgraphql_live_detail_value(
+    client: &Client,
+    account: &Account,
+    principal_id: &str,
+) -> Result<Option<Value>, RecorderError> {
+    if principal_id.trim().is_empty() {
+        return Ok(None);
+    }
+    if !web_api_allowed(account, principal_id).await {
+        return Ok(None);
+    }
+
+    let ctx = KuaishouRequestContext::from_account(account, principal_id);
+    warm_kuaishou_gdfp(client, &ctx).await;
+    let mut headers = reqwest::header::HeaderMap::new();
+    headers.insert("User-Agent", USER_AGENT.parse().unwrap());
+    headers.insert("Accept", "application/json, text/plain, */*".parse().unwrap());
+    headers.insert("Content-Type", "application/json".parse().unwrap());
+    headers.insert("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8".parse().unwrap());
+    headers.insert("Origin", "https://live.kuaishou.com".parse().unwrap());
+    headers.insert("Referer", ctx.web_referer().parse().unwrap());
+    headers.insert("Sec-Fetch-Dest", "empty".parse().unwrap());
+    headers.insert("Sec-Fetch-Mode", "cors".parse().unwrap());
+    headers.insert("Sec-Fetch-Site", "same-origin".parse().unwrap());
+    ctx.apply_cookie(&mut headers);
+    ctx.apply_kww(&mut headers);
+
+    let payload = json!({
+        "operationName": "LiveDetail",
+        "variables": { "principalId": principal_id },
+        "query": KUAISHOU_WEBLIVEDETAIL_QUERY,
+    });
+
+    wait_for_web_request_slot("m_graphql").await;
+    let response = client
+        .post(KUAISHOU_MGRAPHQL_URL)
+        .headers(headers)
+        .json(&payload)
+        .send()
+        .await?;
+
+    let status = response.status();
+    let body = response.text().await?;
+
+    if let Some(msg) = extract_rate_limit_message_from_body(&body) {
+        set_web_cooldown(account, principal_id, &msg).await;
+        return Err(RecorderError::ApiError { error: msg });
+    }
+    if !status.is_success() {
+        log::debug!(
+            "[Kuaishou] m_graphql status={}, principalId={}, body_preview={}",
+            status,
+            principal_id,
+            preview_log_body(&body)
+        );
+        return Ok(None);
+    }
+    if is_captcha_message(&body) || body.to_ascii_lowercase().contains("captcha") {
+        return Err(captcha_error_with_context(principal_id).await);
+    }
+
+    log::debug!(
+        "[Kuaishou] m_graphql status={}, principalId={}, body_preview={}",
+        status,
+        principal_id,
+        preview_log_body(&body)
+    );
+
+    let value = serde_json::from_str::<Value>(&body).map_err(|e| RecorderError::ApiError {
+        error: format!("Failed to parse m_graphql response: {e}"),
+    })?;
+    log_mgraphql_value(principal_id, &value);
+    Ok(Some(value))
+}
+
+async fn fetch_by_user_live_value(
+    client: &Client,
+    account: &Account,
+    principal_id: &str,
+) -> Result<Option<Value>, RecorderError> {
+    if principal_id.trim().is_empty() {
+        return Ok(None);
+    }
+    if !web_api_allowed(account, principal_id).await {
+        return Ok(None);
+    }
+
+    let ctx = KuaishouRequestContext::from_account(account, principal_id);
+    warm_kuaishou_gdfp(client, &ctx).await;
+    let mut headers = reqwest::header::HeaderMap::new();
+    headers.insert("User-Agent", KUAISHOU_MOBILE_USER_AGENT.parse().unwrap());
+    headers.insert(
+        "Accept-Language",
+        "zh-CN,zh;q=0.8,zh-TW;q=0.7,zh-HK;q=0.5,en-US;q=0.3,en;q=0.2"
+            .parse()
+            .unwrap(),
+    );
+    headers.insert("Referer", ctx.mobile_referer().parse().unwrap());
+    headers.insert("Content-Type", "application/json".parse().unwrap());
+    ctx.apply_cookie(&mut headers);
+    ctx.apply_kww(&mut headers);
+
+    let payload = ctx.by_user_payload();
+
+    wait_for_web_request_slot("by_user").await;
+    let response = client
+        .post(ctx.by_user_url())
+        .headers(headers)
+        .json(&payload)
+        .send()
+        .await?;
+
+    let status = response.status();
+    let body = response.text().await?;
+    log::debug!(
+        "[Kuaishou] byUser status={}, principalId={}, body_preview={}",
+        status,
+        principal_id,
+        preview_log_body(&body)
+    );
+
+    if !status.is_success() {
+        return Ok(None);
+    }
+
+    let value = serde_json::from_str::<Value>(&body).map_err(|e| RecorderError::ApiError {
+        error: format!("Failed to parse byUser response: {e}"),
+    })?;
+
+    let result_code = value.get("result").and_then(|v| v.as_i64());
+    if let Some(result) = result_code {
+        if result != 1 {
+            let error = value
+                .get("error_msg")
+                .or_else(|| value.get("errorMsg"))
+                .or_else(|| value.get("message"))
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("Kuaishou byUser returned result={result}"));
+            if is_rate_limit_message(&error) || is_captcha_message(&error) {
+                set_web_cooldown(account, principal_id, &error).await;
+            }
+            return Err(RecorderError::ApiError { error });
+        }
+    }
+
+    Ok(Some(value))
+}
+
+fn preview_log_body(body: &str) -> String {
+    const MAX_CHARS: usize = 160;
+    let mut preview = body.replace('\n', " ").replace('\r', " ");
+    preview.truncate(preview.char_indices().nth(MAX_CHARS).map(|(idx, _)| idx).unwrap_or(preview.len()));
+    preview
+}
+
+fn log_mgraphql_value(principal_id: &str, value: &Value) {
+    let errors = value
+        .get("errors")
+        .and_then(|v| v.as_array())
+        .map(|items| items.len())
+        .unwrap_or(0);
+    let detail = value.get("data").and_then(|data| data.get("webLiveDetail"));
+    let live_stream = detail.and_then(|detail| detail.get("liveStream"));
+    let author = detail.and_then(|detail| detail.get("author"));
+
+    log::debug!(
+        "[Kuaishou] m_graphql parsed principalId={} errors={} detail_type={} live_stream_type={} author_type={} live_stream_summary={} author_summary={}",
+        principal_id,
+        errors,
+        value_type_label(detail),
+        value_type_label(live_stream),
+        value_type_label(author),
+        summarize_mgraphql_live_stream(live_stream),
+        summarize_author(author)
+    );
+
+    if errors > 0 {
+        log::debug!(
+            "[Kuaishou] m_graphql errors principalId={} errors_preview={}",
+            principal_id,
+            preview_log_body(&value.get("errors").unwrap_or(&Value::Null).to_string())
+        );
+    }
+}
+
+fn value_type_label(value: Option<&Value>) -> &'static str {
+    match value {
+        Some(Value::Null) => "null",
+        Some(Value::Bool(_)) => "bool",
+        Some(Value::Number(_)) => "number",
+        Some(Value::String(_)) => "string",
+        Some(Value::Array(_)) => "array",
+        Some(Value::Object(_)) => "object",
+        None => "missing",
+    }
+}
+
+fn summarize_author(author: Option<&Value>) -> String {
+    match author {
+        Some(Value::Object(map)) => {
+            let keys = map.keys().take(8).cloned().collect::<Vec<_>>().join(",");
+            let id = map
+                .get("id")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            let name = map
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            format!("keys=[{keys}] id={id} name={name}")
+        }
+        Some(Value::String(text)) => format!("string_len={}", text.len()),
+        Some(other) => other.to_string(),
+        None => "missing".to_string(),
+    }
+}
+
+fn summarize_mgraphql_live_stream(live_stream: Option<&Value>) -> String {
+    match live_stream {
+        Some(Value::Object(map)) => {
+            let keys = map.keys().take(12).cloned().collect::<Vec<_>>().join(",");
+            let caption = map
+                .get("caption")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            let has_play_urls = map.get("playUrls").is_some();
+            let has_hls = map.get("hlsPlayUrl").is_some();
+            let has_multi = map.get("multiResolutionPlayUrls").is_some();
+            format!(
+                "keys=[{keys}] caption={caption} playUrls={has_play_urls} hlsPlayUrl={has_hls} multiResolutionPlayUrls={has_multi}"
+            )
+        }
+        Some(Value::String(text)) => {
+            let parsed = serde_json::from_str::<Value>(text).ok();
+            match parsed.as_ref() {
+                Some(Value::Object(map)) => {
+                    let keys = map.keys().take(12).cloned().collect::<Vec<_>>().join(",");
+                    format!("string_json keys=[{keys}] len={}", text.len())
+                }
+                Some(other) => format!("string_json type={} len={}", value_type_label(Some(other)), text.len()),
+                None => format!("string_len={}", text.len()),
+            }
+        }
+        Some(Value::Array(items)) => format!("array_len={}", items.len()),
+        Some(other) => other.to_string(),
+        None => "missing".to_string(),
+    }
 }
 
 fn score_livedetail_value(value: &Value, principal_id: &str, cookies: &str) -> i64 {
@@ -2110,6 +3283,105 @@ async fn get_room_info_via_livedetail(
         return Ok(None);
     };
     parse_room_info_from_livedetail_value(&value, principal_id, &account.cookies)
+}
+
+async fn get_room_info_via_mgraphql(
+    client: &Client,
+    account: &Account,
+    principal_id: &str,
+) -> Result<Option<RoomInfo>, RecorderError> {
+    let Some(value) = fetch_mgraphql_live_detail_value(client, account, principal_id).await? else {
+        return Ok(None);
+    };
+    for (idx, candidate) in extract_mgraphql_candidate_values(&value).into_iter().enumerate() {
+        log::debug!(
+            "[Kuaishou] m_graphql candidate principalId={} idx={} type={} summary={}",
+            principal_id,
+            idx,
+            value_type_label(Some(&candidate)),
+            summarize_mgraphql_candidate(&candidate)
+        );
+        if let Some(room) =
+            parse_room_info_from_livedetail_value(&candidate, principal_id, &account.cookies)?
+        {
+            if room.live_status || !room.streams.is_empty() {
+                return Ok(Some(room));
+            }
+        }
+    }
+    parse_room_info_from_livedetail_value(&value, principal_id, &account.cookies)
+}
+
+async fn get_room_info_via_by_user(
+    client: &Client,
+    account: &Account,
+    principal_id: &str,
+) -> Result<Option<RoomInfo>, RecorderError> {
+    let Some(value) = fetch_by_user_live_value(client, account, principal_id).await? else {
+        return Ok(None);
+    };
+    parse_room_info_from_livedetail_value(&value, principal_id, &account.cookies)
+}
+
+fn summarize_mgraphql_candidate(candidate: &Value) -> String {
+    match candidate {
+        Value::Object(map) => {
+            let keys = map.keys().take(12).cloned().collect::<Vec<_>>().join(",");
+            let has_author = map.get("author").is_some();
+            let has_live_stream = map.get("liveStream").is_some();
+            let has_play_urls = map.get("playUrls").is_some();
+            let has_hls = map.get("hlsPlayUrl").is_some();
+            let has_multi = map.get("multiResolutionPlayUrls").is_some();
+            format!(
+                "keys=[{keys}] author={has_author} liveStream={has_live_stream} playUrls={has_play_urls} hlsPlayUrl={has_hls} multiResolutionPlayUrls={has_multi}"
+            )
+        }
+        Value::String(text) => format!("string_len={}", text.len()),
+        Value::Array(items) => format!("array_len={}", items.len()),
+        _ => candidate.to_string(),
+    }
+}
+
+fn extract_mgraphql_candidate_values(value: &Value) -> Vec<Value> {
+    let mut candidates = Vec::new();
+
+    let mut push_unique = |candidate: Value| {
+        if !candidates.iter().any(|existing| existing == &candidate) {
+            candidates.push(candidate);
+        }
+    };
+
+    push_unique(value.clone());
+
+    if let Some(data) = value.get("data") {
+        push_unique(data.clone());
+        if let Some(detail) = data.get("webLiveDetail") {
+            push_unique(detail.clone());
+            if let Some(author) = detail.get("author") {
+                let wrapped = json!({
+                    "author": author,
+                    "liveStream": detail.get("liveStream").cloned().unwrap_or(Value::Null),
+                });
+                push_unique(wrapped);
+            }
+            if let Some(stream) = detail.get("liveStream") {
+                push_unique(stream.clone());
+                if let Value::String(text) = stream {
+                    if let Ok(parsed) = serde_json::from_str::<Value>(text) {
+                        push_unique(parsed.clone());
+                        if let Some(author) = detail.get("author") {
+                            push_unique(json!({
+                                "author": author,
+                                "liveStream": parsed,
+                            }));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    candidates
 }
 
 fn extract_image_url(value: &Value) -> Option<String> {
@@ -2503,6 +3775,11 @@ fn collect_stream_infos_from_livedetail_value(
                 collect_stream_infos_from_livedetail_value(child, cookie, urls, seen);
             }
         }
+        Value::String(text) => {
+            if let Ok(parsed) = serde_json::from_str::<Value>(text) {
+                collect_stream_infos_from_livedetail_value(&parsed, cookie, urls, seen);
+            }
+        }
         _ => {}
     }
 }
@@ -2824,9 +4101,13 @@ pub async fn get_room_info(
 ) -> Result<RoomInfo, RecorderError> {
     let account_obj = ensure_guest_cookie(account);
     let account = &account_obj;
+    if !web_api_allowed(account, url).await {
+        return Err(web_cooldown_error());
+    }
     let mut best_room: Option<RoomInfo> = None;
     let mut best_score = i64::MIN;
     let mut last_error: Option<RecorderError> = None;
+    let mut attempt_traces: Vec<String> = Vec::new();
     let candidates = principal_id_candidates(url);
     let mut follow_lookups: Vec<(String, String, String)> = Vec::new();
     let mut follow_lookup_seen: HashSet<String> = HashSet::new();
@@ -2839,8 +4120,19 @@ pub async fn get_room_info(
             principal_id,
             principal_id,
         );
-        match get_room_info_via_livedetail(client, account, &principal_id).await {
+        match get_room_info_via_by_user(client, account, principal_id).await {
             Ok(Some(room)) => {
+                push_attempt_trace(
+                    &mut attempt_traces,
+                    principal_id,
+                    "by_user",
+                    format!(
+                        "ok/live={}/streams={}/title={}",
+                        room.live_status,
+                        room.streams.len(),
+                        room.room_title
+                    ),
+                );
                 push_follow_lookup_candidate(
                     &mut follow_lookups,
                     &mut follow_lookup_seen,
@@ -2867,6 +4159,7 @@ pub async fn get_room_info(
                     );
                 }
                 if room.live_status && !room.streams.is_empty() {
+                    log_room_info_source("by_user", principal_id, &room);
                     return Ok(room);
                 }
                 let score = room_info_score(&room);
@@ -2875,35 +4168,195 @@ pub async fn get_room_info(
                     best_room = Some(room);
                 }
             }
-            Ok(None) => {}
+            Ok(None) => push_attempt_trace(
+                &mut attempt_traces,
+                principal_id,
+                "by_user",
+                "none".to_string(),
+            ),
             Err(err) => {
                 if is_rate_limited_error(&err) || is_captcha_error(&err) {
                     return Err(err);
                 }
+                push_attempt_trace(
+                    &mut attempt_traces,
+                    principal_id,
+                    "by_user",
+                    format!("err={}", err),
+                );
+                last_error = Some(err);
+            }
+        }
+
+        match get_room_info_via_livedetail(client, account, &principal_id).await {
+            Ok(Some(room)) => {
+                push_attempt_trace(
+                    &mut attempt_traces,
+                    principal_id,
+                    "livedetail",
+                    format!(
+                        "ok/live={}/streams={}/title={}",
+                        room.live_status,
+                        room.streams.len(),
+                        room.room_title
+                    ),
+                );
+                push_follow_lookup_candidate(
+                    &mut follow_lookups,
+                    &mut follow_lookup_seen,
+                    principal_id,
+                    &room.user_id,
+                    &room.user_name,
+                );
+                if !room.user_id.trim().is_empty() {
+                    push_follow_lookup_candidate(
+                        &mut follow_lookups,
+                        &mut follow_lookup_seen,
+                        &room.user_id,
+                        &room.user_id,
+                        &room.user_name,
+                    );
+                }
+                if !is_placeholder_user_name(&room.user_name) {
+                    push_follow_lookup_candidate(
+                        &mut follow_lookups,
+                        &mut follow_lookup_seen,
+                        principal_id,
+                        principal_id,
+                        &room.user_name,
+                    );
+                }
+                if room.live_status && !room.streams.is_empty() {
+                    log_room_info_source("livedetail", principal_id, &room);
+                    return Ok(room);
+                }
+                let score = room_info_score(&room);
+                if score > best_score {
+                    best_score = score;
+                    best_room = Some(room);
+                }
+            }
+            Ok(None) => push_attempt_trace(
+                &mut attempt_traces,
+                principal_id,
+                "livedetail",
+                "none".to_string(),
+            ),
+            Err(err) => {
+                if is_rate_limited_error(&err) || is_captcha_error(&err) {
+                    return Err(err);
+                }
+                push_attempt_trace(
+                    &mut attempt_traces,
+                    principal_id,
+                    "livedetail",
+                    format!("err={}", err),
+                );
+                last_error = Some(err);
+            }
+        }
+
+        match get_room_info_via_mgraphql(client, account, principal_id).await {
+            Ok(Some(room)) => {
+                push_attempt_trace(
+                    &mut attempt_traces,
+                    principal_id,
+                    "m_graphql",
+                    format!(
+                        "ok/live={}/streams={}/title={}",
+                        room.live_status,
+                        room.streams.len(),
+                        room.room_title
+                    ),
+                );
+                push_follow_lookup_candidate(
+                    &mut follow_lookups,
+                    &mut follow_lookup_seen,
+                    principal_id,
+                    &room.user_id,
+                    &room.user_name,
+                );
+                if !room.user_id.trim().is_empty() {
+                    push_follow_lookup_candidate(
+                        &mut follow_lookups,
+                        &mut follow_lookup_seen,
+                        &room.user_id,
+                        &room.user_id,
+                        &room.user_name,
+                    );
+                }
+                if !is_placeholder_user_name(&room.user_name) {
+                    push_follow_lookup_candidate(
+                        &mut follow_lookups,
+                        &mut follow_lookup_seen,
+                        principal_id,
+                        principal_id,
+                        &room.user_name,
+                    );
+                }
+                if room.live_status && !room.streams.is_empty() {
+                    log_room_info_source("m_graphql", principal_id, &room);
+                    return Ok(room);
+                }
+                let score = room_info_score(&room);
+                if score > best_score {
+                    best_score = score;
+                    best_room = Some(room);
+                }
+            }
+            Ok(None) => push_attempt_trace(
+                &mut attempt_traces,
+                principal_id,
+                "m_graphql",
+                "none".to_string(),
+            ),
+            Err(err) => {
+                if is_rate_limited_error(&err) || is_captcha_error(&err) {
+                    return Err(err);
+                }
+                push_attempt_trace(
+                    &mut attempt_traces,
+                    principal_id,
+                    "m_graphql",
+                    format!("err={}", err),
+                );
                 last_error = Some(err);
             }
         }
     }
 
-    // Fallback to userFollowCount reverse API, which can include direct play URLs.
-    for (lookup_room, lookup_author_id, lookup_author_name) in follow_lookups {
-        if let Some(info) = fetch_follow_live_info_cached(
-            client,
-            account,
-            &lookup_room,
-            &lookup_author_id,
-            &lookup_author_name,
-        )
-        .await
-        {
-            let room = room_info_from_follow_info(&lookup_room, info);
-            if room.live_status && !room.streams.is_empty() {
-                return Ok(room);
-            }
-            let score = room_info_score(&room);
-            if score > best_score {
-                best_score = score;
-                best_room = Some(room);
+    if use_follow_list_fallback(account) {
+        for (lookup_room, lookup_author_id, lookup_author_name) in follow_lookups {
+            if let Some(info) = fetch_follow_live_info_cached(
+                client,
+                account,
+                &lookup_room,
+                &lookup_author_id,
+                &lookup_author_name,
+            )
+            .await
+            {
+                let room = room_info_from_follow_info(&lookup_room, info);
+                push_attempt_trace(
+                    &mut attempt_traces,
+                    &lookup_room,
+                    "follow_list",
+                    format!(
+                        "ok/live={}/streams={}/title={}",
+                        room.live_status,
+                        room.streams.len(),
+                        room.room_title
+                    ),
+                );
+                if room.live_status && !room.streams.is_empty() {
+                    log_room_info_source("follow_list_fallback", &lookup_room, &room);
+                    return Ok(room);
+                }
+                let score = room_info_score(&room);
+                if score > best_score {
+                    best_score = score;
+                    best_room = Some(room);
+                }
             }
         }
     }
@@ -2914,7 +4367,19 @@ pub async fn get_room_info(
         for principal_id in &candidates {
             match get_room_info_via_public_page(client, account, principal_id).await {
                 Ok(Some(room)) => {
+                    push_attempt_trace(
+                        &mut attempt_traces,
+                        principal_id,
+                        "public_page",
+                        format!(
+                            "ok/live={}/streams={}/title={}",
+                            room.live_status,
+                            room.streams.len(),
+                            room.room_title
+                        ),
+                    );
                     if room.live_status && !room.streams.is_empty() {
+                        log_room_info_source("public_page_fallback", principal_id, &room);
                         return Ok(room);
                     }
                     let score = room_info_score(&room);
@@ -2923,11 +4388,22 @@ pub async fn get_room_info(
                         best_room = Some(room);
                     }
                 }
-                Ok(None) => {}
+                Ok(None) => push_attempt_trace(
+                    &mut attempt_traces,
+                    principal_id,
+                    "public_page",
+                    "none".to_string(),
+                ),
                 Err(err) => {
                     if is_rate_limited_error(&err) || is_captcha_error(&err) {
                         return Err(err);
                     }
+                    push_attempt_trace(
+                        &mut attempt_traces,
+                        principal_id,
+                        "public_page",
+                        format!("err={}", err),
+                    );
                     last_error = Some(err);
                 }
             }
@@ -2935,13 +4411,28 @@ pub async fn get_room_info(
     }
 
     if let Some(room) = best_room {
+        if !attempt_traces.is_empty() {
+            log::info!(
+                "[Kuaishou] best_effort trace url={} {}",
+                url,
+                attempt_traces.join(" | ")
+            );
+        }
+        log_room_info_source("best_effort", url, &room);
         return Ok(room);
     }
     if let Some(err) = last_error {
+        if !attempt_traces.is_empty() {
+            log::info!(
+                "[Kuaishou] room_info failed trace url={} {}",
+                url,
+                attempt_traces.join(" | ")
+            );
+        }
         return Err(err);
     }
     Err(RecorderError::ApiError {
-        error: "Failed to fetch Kuaishou room info via livedetail".to_string(),
+        error: "Failed to fetch Kuaishou room info via reverse APIs".to_string(),
     })
 }
 /// Get stream URLs from Kuaishou reverse APIs only.
@@ -2952,7 +4443,11 @@ pub async fn get_stream_urls(
 ) -> Result<Vec<StreamInfo>, RecorderError> {
     let account_obj = ensure_guest_cookie(account);
     let account = &account_obj;
+    if !web_api_allowed(account, url).await {
+        return Err(web_cooldown_error());
+    }
     let mut last_error: Option<RecorderError> = None;
+    let mut attempt_traces: Vec<String> = Vec::new();
     let candidates = principal_id_candidates(url);
     let mut follow_lookups: Vec<(String, String, String)> = Vec::new();
     let mut follow_lookup_seen: HashSet<String> = HashSet::new();
@@ -2965,9 +4460,79 @@ pub async fn get_stream_urls(
             principal_id,
             principal_id,
         );
-        match get_room_info_via_livedetail(client, account, &principal_id).await {
-            Ok(Some(room)) if !room.streams.is_empty() => return Ok(room.streams),
+        match get_room_info_via_by_user(client, account, principal_id).await {
+            Ok(Some(room)) if !room.streams.is_empty() => {
+                log_stream_urls_source("by_user", principal_id, &room.streams);
+                return Ok(room.streams);
+            }
             Ok(Some(room)) => {
+                push_attempt_trace(
+                    &mut attempt_traces,
+                    principal_id,
+                    "by_user",
+                    format!("empty_streams/title={}", room.room_title),
+                );
+                push_follow_lookup_candidate(
+                    &mut follow_lookups,
+                    &mut follow_lookup_seen,
+                    principal_id,
+                    &room.user_id,
+                    &room.user_name,
+                );
+                if !room.user_id.trim().is_empty() {
+                    push_follow_lookup_candidate(
+                        &mut follow_lookups,
+                        &mut follow_lookup_seen,
+                        &room.user_id,
+                        &room.user_id,
+                        &room.user_name,
+                    );
+                }
+                if !is_placeholder_user_name(&room.user_name) {
+                    push_follow_lookup_candidate(
+                        &mut follow_lookups,
+                        &mut follow_lookup_seen,
+                        principal_id,
+                        principal_id,
+                        &room.user_name,
+                    );
+                }
+                last_error = Some(RecorderError::ApiError {
+                    error: "Kuaishou byUser returned empty stream list".to_string(),
+                });
+            }
+            Ok(None) => push_attempt_trace(
+                &mut attempt_traces,
+                principal_id,
+                "by_user",
+                "none".to_string(),
+            ),
+            Err(err) => {
+                if is_rate_limited_error(&err) || is_captcha_error(&err) {
+                    return Err(err);
+                }
+                push_attempt_trace(
+                    &mut attempt_traces,
+                    principal_id,
+                    "by_user",
+                    format!("err={}", err),
+                );
+                last_error = Some(err);
+            }
+        }
+
+        match get_room_info_via_livedetail(client, account, &principal_id).await {
+            Ok(Some(room)) if !room.streams.is_empty() => {
+                log_stream_urls_source("livedetail", principal_id, &room.streams);
+                return Ok(room.streams);
+            }
+            Ok(Some(room)) => {
+                push_attempt_trace(
+                    &mut attempt_traces,
+                    principal_id,
+                    "livedetail",
+                    format!("empty_streams/title={}", room.room_title),
+                );
                 push_follow_lookup_candidate(
                     &mut follow_lookups,
                     &mut follow_lookup_seen,
@@ -2997,28 +4562,103 @@ pub async fn get_stream_urls(
                     error: "Kuaishou livedetail returned empty stream list".to_string(),
                 });
             }
-            Ok(None) => {}
+            Ok(None) => push_attempt_trace(
+                &mut attempt_traces,
+                principal_id,
+                "livedetail",
+                "none".to_string(),
+            ),
             Err(err) => {
                 if is_rate_limited_error(&err) || is_captcha_error(&err) {
                     return Err(err);
                 }
+                push_attempt_trace(
+                    &mut attempt_traces,
+                    principal_id,
+                    "livedetail",
+                    format!("err={}", err),
+                );
+                last_error = Some(err);
+            }
+        }
+
+        match get_room_info_via_mgraphql(client, account, principal_id).await {
+            Ok(Some(room)) if !room.streams.is_empty() => {
+                log_stream_urls_source("m_graphql", principal_id, &room.streams);
+                return Ok(room.streams);
+            }
+            Ok(Some(room)) => {
+                push_attempt_trace(
+                    &mut attempt_traces,
+                    principal_id,
+                    "m_graphql",
+                    format!("empty_streams/title={}", room.room_title),
+                );
+                push_follow_lookup_candidate(
+                    &mut follow_lookups,
+                    &mut follow_lookup_seen,
+                    principal_id,
+                    &room.user_id,
+                    &room.user_name,
+                );
+                if !room.user_id.trim().is_empty() {
+                    push_follow_lookup_candidate(
+                        &mut follow_lookups,
+                        &mut follow_lookup_seen,
+                        &room.user_id,
+                        &room.user_id,
+                        &room.user_name,
+                    );
+                }
+                if !is_placeholder_user_name(&room.user_name) {
+                    push_follow_lookup_candidate(
+                        &mut follow_lookups,
+                        &mut follow_lookup_seen,
+                        principal_id,
+                        principal_id,
+                        &room.user_name,
+                    );
+                }
+                last_error = Some(RecorderError::ApiError {
+                    error: "Kuaishou m_graphql returned empty stream list".to_string(),
+                });
+            }
+            Ok(None) => push_attempt_trace(
+                &mut attempt_traces,
+                principal_id,
+                "m_graphql",
+                "none".to_string(),
+            ),
+            Err(err) => {
+                if is_rate_limited_error(&err) || is_captcha_error(&err) {
+                    return Err(err);
+                }
+                push_attempt_trace(
+                    &mut attempt_traces,
+                    principal_id,
+                    "m_graphql",
+                    format!("err={}", err),
+                );
                 last_error = Some(err);
             }
         }
     }
 
-    for (lookup_room, lookup_author_id, lookup_author_name) in follow_lookups {
-        if let Some(info) = fetch_follow_live_info_cached(
-            client,
-            account,
-            &lookup_room,
-            &lookup_author_id,
-            &lookup_author_name,
-        )
-        .await
-        {
-            if !info.streams.is_empty() {
-                return Ok(info.streams);
+    if use_follow_list_fallback(account) {
+        for (lookup_room, lookup_author_id, lookup_author_name) in follow_lookups {
+            if let Some(info) = fetch_follow_live_info_cached(
+                client,
+                account,
+                &lookup_room,
+                &lookup_author_id,
+                &lookup_author_name,
+            )
+            .await
+            {
+                if !info.streams.is_empty() {
+                    log_stream_urls_source("follow_list_fallback", &lookup_room, &info.streams);
+                    return Ok(info.streams);
+                }
             }
         }
     }
@@ -3026,7 +4666,10 @@ pub async fn get_stream_urls(
     if use_public_page_fallback(account) {
         for principal_id in &candidates {
             match get_room_info_via_public_page(client, account, principal_id).await {
-                Ok(Some(room)) if !room.streams.is_empty() => return Ok(room.streams),
+                Ok(Some(room)) if !room.streams.is_empty() => {
+                    log_stream_urls_source("public_page_fallback", principal_id, &room.streams);
+                    return Ok(room.streams);
+                }
                 Ok(Some(_)) | Ok(None) => {}
                 Err(err) => {
                     if is_rate_limited_error(&err) || is_captcha_error(&err) {
@@ -3039,10 +4682,17 @@ pub async fn get_stream_urls(
     }
 
     if let Some(err) = last_error {
+        if !attempt_traces.is_empty() {
+            log::info!(
+                "[Kuaishou] stream_urls failed trace url={} {}",
+                url,
+                attempt_traces.join(" | ")
+            );
+        }
         return Err(err);
     }
     Err(RecorderError::ApiError {
-        error: "Failed to fetch Kuaishou stream list via livedetail".to_string(),
+        error: "Failed to fetch Kuaishou stream list via reverse APIs".to_string(),
     })
 }
 
@@ -3214,6 +4864,9 @@ fn find_string_value(value: &Value, keys: &[&str]) -> Option<String> {
             }
             None
         }
+        Value::String(text) => serde_json::from_str::<Value>(text)
+            .ok()
+            .and_then(|parsed| find_string_value(&parsed, keys)),
         _ => None,
     }
 }
@@ -3303,6 +4956,9 @@ fn find_user_info(value: &Value) -> Option<crate::UserInfo> {
             }
             None
         }
+        Value::String(text) => serde_json::from_str::<Value>(text)
+            .ok()
+            .and_then(|parsed| find_user_info(&parsed)),
         _ => None,
     }
 }

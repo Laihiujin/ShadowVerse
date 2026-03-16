@@ -152,6 +152,12 @@ fn print_streams(tag: &str, streams: &[api::StreamInfo]) {
 
 #[tokio::main]
 async fn main() {
+    let _ = env_logger::Builder::from_env(
+        env_logger::Env::default().default_filter_or("info,recorder::platforms::kuaishou::api=debug"),
+    )
+    .is_test(false)
+    .try_init();
+
     let mut urls: Vec<String> = std::env::args().skip(1).collect();
     if urls.is_empty() {
         urls = vec![
@@ -161,8 +167,21 @@ async fn main() {
     }
 
     let account = build_account();
-    let client = reqwest::Client::builder()
+    let mut client_builder = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
+        .no_proxy();
+    if let Some(proxy_url) = std::env::var("BSR_PROBE_PROXY")
+        .ok()
+        .or_else(|| std::env::var("HTTPS_PROXY").ok())
+        .or_else(|| std::env::var("HTTP_PROXY").ok())
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    {
+        let proxy = reqwest::Proxy::all(&proxy_url).expect("invalid probe proxy URL");
+        client_builder = client_builder.proxy(proxy);
+    }
+    let client = client_builder
+        .cookie_store(true)
         .build()
         .expect("failed to build reqwest client");
     let prefer = prefer_protocol();

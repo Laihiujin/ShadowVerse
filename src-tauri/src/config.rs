@@ -82,6 +82,10 @@ pub struct Config {
     pub login_accounts: Vec<DefaultAccountConfig>,
     #[serde(default = "default_use_login_accounts")]
     pub use_login_accounts: bool,
+    #[serde(default = "default_kuaishou_enable_follow_list_fallback")]
+    pub kuaishou_enable_follow_list_fallback: bool,
+    #[serde(default = "default_kuaishou_enable_public_page_fallback")]
+    pub kuaishou_enable_public_page_fallback: bool,
     #[serde(skip_serializing, skip_deserializing, default = "default_tiktok_feed")]
     pub tiktok_feed: TikTokFeedConfig,
     #[serde(default = "default_kuaishou_ws_token")]
@@ -356,6 +360,14 @@ fn default_login_accounts() -> Vec<DefaultAccountConfig> {
 
 fn default_use_login_accounts() -> bool {
     true
+}
+
+fn default_kuaishou_enable_follow_list_fallback() -> bool {
+    false
+}
+
+fn default_kuaishou_enable_public_page_fallback() -> bool {
+    false
 }
 
 fn locate_accounts_file(name: &str) -> Option<PathBuf> {
@@ -795,6 +807,11 @@ impl Config {
                     config.record_protocol_preference = default_record_protocol_preference();
                     needs_save = true;
                 }
+                if content.contains("BSR_KUAISHOU_ENABLE_FOLLOW_LIST_FALLBACK")
+                    || content.contains("BSR_KUAISHOU_ENABLE_PUBLIC_PAGE_FALLBACK")
+                {
+                    needs_save = true;
+                }
                 if config.normalize_storage_paths(default_cache, default_output) {
                     needs_save = true;
                 }
@@ -856,6 +873,8 @@ impl Config {
             use_guest_accounts: default_use_guest_accounts(),
             login_accounts: default_login_accounts(),
             use_login_accounts: default_use_login_accounts(),
+            kuaishou_enable_follow_list_fallback: default_kuaishou_enable_follow_list_fallback(),
+            kuaishou_enable_public_page_fallback: default_kuaishou_enable_public_page_fallback(),
             tiktok_feed: default_tiktok_feed(),
             kuaishou_ws_token: default_kuaishou_ws_token(),
             kuaishou_ws_urls: default_kuaishou_ws_urls(),
@@ -955,24 +974,51 @@ impl Config {
         let https = https_proxy.trim();
         self.http_proxy = http.to_string();
         self.https_proxy = https.to_string();
-        if http.is_empty() {
+        let normalized_http = normalize_proxy_url(http);
+        let normalized_https = normalize_proxy_url(https).or_else(|| normalized_http.clone());
+        if let Some(proxy_url) = normalized_http {
+            std::env::set_var("http_proxy", &proxy_url);
+            std::env::set_var("HTTP_PROXY", &proxy_url);
+        } else {
             std::env::remove_var("http_proxy");
             std::env::remove_var("HTTP_PROXY");
-        } else {
-            std::env::set_var("http_proxy", http);
-            std::env::set_var("HTTP_PROXY", http);
         }
-        if https.is_empty() {
+        if let Some(proxy_url) = normalized_https {
+            std::env::set_var("https_proxy", &proxy_url);
+            std::env::set_var("HTTPS_PROXY", &proxy_url);
+        } else {
             std::env::remove_var("https_proxy");
             std::env::remove_var("HTTPS_PROXY");
-        } else {
-            std::env::set_var("https_proxy", https);
-            std::env::set_var("HTTPS_PROXY", https);
         }
         self.save();
     }
 
     pub fn apply_network_env(&self) {
+        let http = normalize_proxy_url(&self.http_proxy);
+        let https = normalize_proxy_url(&self.https_proxy).or_else(|| http.clone());
+
+        if let Some(proxy_url) = http.clone() {
+            std::env::set_var("http_proxy", &proxy_url);
+            std::env::set_var("HTTP_PROXY", &proxy_url);
+        } else {
+            std::env::remove_var("http_proxy");
+            std::env::remove_var("HTTP_PROXY");
+        }
+
+        if let Some(proxy_url) = https.clone() {
+            std::env::set_var("https_proxy", &proxy_url);
+            std::env::set_var("HTTPS_PROXY", &proxy_url);
+        } else {
+            std::env::remove_var("https_proxy");
+            std::env::remove_var("HTTPS_PROXY");
+        }
+
+        log::info!(
+            "Applied network proxy env: http_proxy={:?} https_proxy={:?}",
+            http,
+            https
+        );
+
         self.apply_proxy_env();
     }
 
@@ -1002,6 +1048,20 @@ impl Config {
         } else {
             std::env::set_var("BSR_KUAISHOU_PREFER_PROTOCOL", value);
             std::env::set_var("BSR_TIKTOK_PREFER_PROTOCOL", value);
+        }
+    }
+
+    pub fn apply_kuaishou_fallback_env(&self) {
+        if self.kuaishou_enable_follow_list_fallback {
+            std::env::set_var("BSR_KUAISHOU_ENABLE_FOLLOW_LIST_FALLBACK", "true");
+        } else {
+            std::env::remove_var("BSR_KUAISHOU_ENABLE_FOLLOW_LIST_FALLBACK");
+        }
+
+        if self.kuaishou_enable_public_page_fallback {
+            std::env::set_var("BSR_KUAISHOU_ENABLE_PUBLIC_PAGE_FALLBACK", "true");
+        } else {
+            std::env::remove_var("BSR_KUAISHOU_ENABLE_PUBLIC_PAGE_FALLBACK");
         }
     }
 

@@ -534,6 +534,7 @@ async fn setup_server_state(args: Args) -> Result<State, Box<dyn std::error::Err
     };
     config.apply_network_env();
     config.apply_record_protocol_env();
+    config.apply_kuaishou_fallback_env();
     config.apply_douyin_passport_env();
     config.apply_tiktok_feed_env();
     config.apply_kuaishou_ws_env();
@@ -651,6 +652,7 @@ async fn setup_app_state(app: &tauri::App) -> Result<State, Box<dyn std::error::
     };
     config.apply_network_env();
     config.apply_record_protocol_env();
+    config.apply_kuaishou_fallback_env();
     config.apply_douyin_passport_env();
     config.apply_tiktok_feed_env();
     config.apply_kuaishou_ws_env();
@@ -823,6 +825,8 @@ fn setup_invoke_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<
         crate::handlers::config::update_auto_generate,
         crate::handlers::config::update_use_login_accounts,
         crate::handlers::config::update_use_guest_accounts,
+        crate::handlers::config::update_kuaishou_follow_list_fallback,
+        crate::handlers::config::update_kuaishou_public_page_fallback,
         crate::handlers::config::update_status_check_interval,
         crate::handlers::config::update_whisper_language,
         crate::handlers::config::update_webhook_url,

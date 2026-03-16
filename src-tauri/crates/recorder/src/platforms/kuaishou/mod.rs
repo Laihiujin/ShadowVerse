@@ -73,6 +73,31 @@ pub struct KuaishouExtra {
 pub type KuaishouRecorder = Recorder<KuaishouExtra>;
 
 impl KuaishouRecorder {
+    fn merge_cookie_headers(primary: &str, extra: &str) -> String {
+        let mut merged = std::collections::BTreeMap::new();
+        for source in [extra, primary] {
+            for part in source.split(';').map(str::trim) {
+                if part.is_empty() {
+                    continue;
+                }
+                let Some((key, value)) = part.split_once('=') else {
+                    continue;
+                };
+                let key = key.trim();
+                let value = value.trim();
+                if key.is_empty() || value.is_empty() {
+                    continue;
+                }
+                merged.insert(key.to_string(), value.to_string());
+            }
+        }
+        merged
+            .into_iter()
+            .map(|(key, value)| format!("{key}={value}"))
+            .collect::<Vec<_>>()
+            .join("; ")
+    }
+
     fn is_placeholder_text(value: &str) -> bool {
         matches!(value.trim(), "" | "Kuaishou" | "Kuaishou Live")
     }
@@ -91,7 +116,7 @@ impl KuaishouRecorder {
 
         let client = reqwest::Client::builder()
             .default_headers(default_headers)
-            .no_proxy()
+            .cookie_store(true)
             .build()
             .map_err(|e| RecorderError::ApiError {
                 error: e.to_string(),
@@ -714,8 +739,12 @@ impl KuaishouRecorder {
 
     async fn danmu(&self, cookies: String) -> Result<(), RecorderError> {
         self.log_info(&format!(
-            "Danmu cookie prepared: has_liveStreamId={}",
-            cookies.contains("liveStreamId=")
+            "Danmu cookie prepared: has_liveStreamId={}, has_web_st={}, has_pass_token={}, has_kwscode={}, has_kwfv1={}",
+            cookies.contains("liveStreamId="),
+            Self::get_cookie_value_ci(&cookies, "kuaishou.live.web_st").is_some(),
+            Self::get_cookie_value_ci(&cookies, "passToken").is_some(),
+            Self::get_cookie_value_ci(&cookies, "kwscode").is_some(),
+            Self::get_cookie_value_ci(&cookies, "kwfv1").is_some(),
         ));
 
         let room_id = self.room_id.clone();
@@ -819,8 +848,25 @@ impl KuaishouRecorder {
         let selected_stream = stream_list.iter().find(|s| s.url == stream_url);
         let stream_cookie = selected_stream.and_then(|s| s.cookie.clone());
 
-        let cookies =
-            api::normalize_record_cookie(stream_cookie.as_deref().unwrap_or(&self.account.cookies));
+        let merged_cookie = match stream_cookie.as_deref() {
+            Some(stream_cookie) if !stream_cookie.trim().is_empty() => {
+                Self::merge_cookie_headers(&self.account.cookies, stream_cookie)
+            }
+            _ => self.account.cookies.clone(),
+        };
+        let cookies = api::build_kuaishou_runtime_cookie(&merged_cookie, &self.room_id);
+        self.log_info(&format!(
+            "Prepared stream cookie: stream_cookie_present={}, has_web_st={}, has_pass_token={}, has_kwscode={}, has_kwfv1={}, has_liveStreamId={}",
+            stream_cookie
+                .as_deref()
+                .map(|value| !value.trim().is_empty())
+                .unwrap_or(false),
+            Self::get_cookie_value_ci(&cookies, "kuaishou.live.web_st").is_some(),
+            Self::get_cookie_value_ci(&cookies, "passToken").is_some(),
+            Self::get_cookie_value_ci(&cookies, "kwscode").is_some(),
+            Self::get_cookie_value_ci(&cookies, "kwfv1").is_some(),
+            Self::get_cookie_value_ci(&cookies, "liveStreamId").is_some(),
+        ));
 
         let mut danmu_cookie = cookies.clone();
         let has_live_stream_id = Self::get_cookie_value_ci(&danmu_cookie, "liveStreamId").is_some();

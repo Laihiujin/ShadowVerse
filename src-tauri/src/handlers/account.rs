@@ -561,10 +561,11 @@ fn build_account_extra_json(cookie_list: Vec<CookieItem>, user_info: &UserInfo) 
 
 fn is_kuaishou_login_cookie(cookies: &str) -> bool {
     let lower = cookies.to_ascii_lowercase();
-    lower.contains("userid=")
-        || lower.contains("kuaishou.live.web_st=")
+    lower.contains("kuaishou.live.web_st=")
+        || lower.contains("kuaishou.live.web.at=")
         || lower.contains("kuaishou.live.web_ph=")
-        || lower.contains("kwssectoken=")
+        || lower.contains("passtoken=")
+        || lower.contains("ssecurity=")
 }
 
 fn has_kuaishou_full_cookie(cookies: &str) -> bool {
@@ -734,22 +735,7 @@ pub async fn update_login_account(
     };
     if platform == "kuaishou" && !is_kuaishou_login_cookie(&cookies) {
         let mut config = state.config.write().await;
-        if let Some(entry) = config
-            .login_accounts
-            .iter_mut()
-            .find(|entry| entry.platform == platform)
-        {
-            entry.cookies.clear();
-            if let Some(extra) = extra.as_ref() {
-                entry.extra = extra.clone();
-            }
-        } else {
-            config.login_accounts.push(DefaultAccountConfig {
-                platform: platform.clone(),
-                cookies: String::new(),
-                extra: extra.clone().unwrap_or_default(),
-            });
-        }
+        config.login_accounts.retain(|entry| entry.platform != platform);
         config.save();
         drop(config);
 
@@ -759,7 +745,7 @@ pub async fn update_login_account(
                 paths.push(roaming_path);
             }
         }
-        write_login_account_to_paths(&paths, &platform, "", extra.as_deref());
+        remove_login_account_by_platform_from_paths(&paths, &platform);
 
         let _ = state.app_handle.emit("accounts-updated", ());
         return Ok(());
