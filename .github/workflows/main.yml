@@ -78,10 +78,12 @@ jobs:
         shell: bash
         run: |
           choco install cmake llvm -y --no-progress
-          echo "C:\Program Files\LLVM\bin" >> "$GITHUB_PATH"
-          echo "C:\Program Files\CMake\bin" >> "$GITHUB_PATH"
+          printf '%s\n' 'C:\Program Files\LLVM\bin' >> "$GITHUB_PATH"
+          printf '%s\n' 'C:\Program Files\CMake\bin' >> "$GITHUB_PATH"
 
       - name: Build artifacts
+        env:
+          WHISPER_DONT_GENERATE_BINDINGS: ${{ startsWith(matrix.platform, 'macos-') && '1' || '' }}
         run: ${{ matrix.build_cmd }}
 
       - name: Upload macOS artifact

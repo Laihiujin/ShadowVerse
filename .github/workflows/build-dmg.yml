@@ -26,16 +26,19 @@ on:
       - scripts/package-macos-dmg.sh
       - .github/workflows/build-dmg.yml
 
+env:
+  APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+  APPLE_ID: ${{ secrets.APPLE_ID }}
+  APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+  APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+
 jobs:
-  build-dmg:
+  build-arm64:
+    name: Build Apple Silicon DMG
+    if: github.event_name == 'push' || github.event.inputs.target == 'aarch64-apple-darwin' || github.event.inputs.target == 'universal'
     runs-on: macos-14
     permissions:
       contents: write
-    env:
-      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-      APPLE_ID: ${{ secrets.APPLE_ID }}
-      APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
 
     steps:
       - name: Checkout repository
@@ -52,26 +55,178 @@ jobs:
       - name: Install macOS dependencies
         run: |
           brew install cmake llvm
-          echo "$(brew --prefix llvm)/bin" >> "$GITHUB_PATH"
+          printf '%s\n' "$(brew --prefix llvm)/bin" >> "$GITHUB_PATH"
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-apple-darwin,x86_64-apple-darwin
+          targets: aarch64-apple-darwin
 
       - name: Install frontend dependencies
         run: yarn install --frozen-lockfile
 
       - name: Build Apple Silicon DMG
-        if: github.event_name == 'push' || github.event.inputs.target == 'aarch64-apple-darwin' || github.event.inputs.target == 'universal'
+        env:
+          WHISPER_DONT_GENERATE_BINDINGS: "1"
         run: bash ./scripts/build-macos-dmg.sh aarch64-apple-darwin
 
+      - name: Get version
+        id: version
+        run: echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare Apple Silicon app artifact
+        if: github.event_name == 'push' || github.event.inputs.target == 'universal'
+        run: |
+          mkdir -p .artifacts
+          tar -C src-tauri/target/aarch64-apple-darwin/release/bundle/macos -czf .artifacts/ShadowVerse-aarch64.app.tar.gz ShadowVerse.app
+
+      - name: Upload Apple Silicon app artifact
+        if: github.event_name == 'push' || github.event.inputs.target == 'universal'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ShadowVerse-app-aarch64
+          path: .artifacts/ShadowVerse-aarch64.app.tar.gz
+          if-no-files-found: error
+
+      - name: Notarize and staple Apple Silicon DMG
+        run: |
+          DMG="src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/ShadowVerse_${{ steps.version.outputs.version }}_aarch64.dmg"
+          if [ -z "${APPLE_ID}" ] || [ -z "${APPLE_PASSWORD}" ] || [ -z "${APPLE_TEAM_ID}" ]; then
+            echo "Skipping notarization: APPLE_ID/APPLE_PASSWORD/APPLE_TEAM_ID not fully configured."
+            exit 0
+          fi
+          xcrun notarytool submit "$DMG" --apple-id "${APPLE_ID}" --password "${APPLE_PASSWORD}" --team-id "${APPLE_TEAM_ID}" --wait
+          xcrun stapler staple "$DMG"
+          xcrun stapler validate "$DMG"
+
+      - name: Validate Apple Silicon DMG
+        run: hdiutil verify "src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/ShadowVerse_${{ steps.version.outputs.version }}_aarch64.dmg"
+
+      - name: Upload Apple Silicon DMG
+        uses: actions/upload-artifact@v4
+        with:
+          name: ShadowVerse-macOS-aarch64
+          path: src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/ShadowVerse_${{ steps.version.outputs.version }}_aarch64.dmg
+          if-no-files-found: error
+
+  build-x64:
+    name: Build Intel DMG
+    if: github.event_name == 'push' || github.event.inputs.target == 'x86_64-apple-darwin' || github.event.inputs.target == 'universal'
+    runs-on: macos-15-intel
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: yarn
+
+      - name: Install macOS dependencies
+        run: |
+          brew install cmake llvm
+          printf '%s\n' "$(brew --prefix llvm)/bin" >> "$GITHUB_PATH"
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-apple-darwin
+
+      - name: Install frontend dependencies
+        run: yarn install --frozen-lockfile
+
       - name: Build Intel DMG
-        if: github.event_name == 'push' || github.event.inputs.target == 'x86_64-apple-darwin' || github.event.inputs.target == 'universal'
+        env:
+          WHISPER_DONT_GENERATE_BINDINGS: "1"
         run: bash ./scripts/build-macos-dmg.sh x86_64-apple-darwin
 
-      - name: Build Universal app and DMG
+      - name: Get version
+        id: version
+        run: echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare Intel app artifact
         if: github.event_name == 'push' || github.event.inputs.target == 'universal'
+        run: |
+          mkdir -p .artifacts
+          tar -C src-tauri/target/x86_64-apple-darwin/release/bundle/macos -czf .artifacts/ShadowVerse-x86_64.app.tar.gz ShadowVerse.app
+
+      - name: Upload Intel app artifact
+        if: github.event_name == 'push' || github.event.inputs.target == 'universal'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ShadowVerse-app-x86_64
+          path: .artifacts/ShadowVerse-x86_64.app.tar.gz
+          if-no-files-found: error
+
+      - name: Notarize and staple Intel DMG
+        run: |
+          DMG="src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/ShadowVerse_${{ steps.version.outputs.version }}_x86_64.dmg"
+          if [ -z "${APPLE_ID}" ] || [ -z "${APPLE_PASSWORD}" ] || [ -z "${APPLE_TEAM_ID}" ]; then
+            echo "Skipping notarization: APPLE_ID/APPLE_PASSWORD/APPLE_TEAM_ID not fully configured."
+            exit 0
+          fi
+          xcrun notarytool submit "$DMG" --apple-id "${APPLE_ID}" --password "${APPLE_PASSWORD}" --team-id "${APPLE_TEAM_ID}" --wait
+          xcrun stapler staple "$DMG"
+          xcrun stapler validate "$DMG"
+
+      - name: Validate Intel DMG
+        run: hdiutil verify "src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/ShadowVerse_${{ steps.version.outputs.version }}_x86_64.dmg"
+
+      - name: Upload Intel DMG
+        uses: actions/upload-artifact@v4
+        with:
+          name: ShadowVerse-macOS-x86_64
+          path: src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/ShadowVerse_${{ steps.version.outputs.version }}_x86_64.dmg
+          if-no-files-found: error
+
+  build-universal:
+    name: Build Universal DMG
+    if: github.event_name == 'push' || github.event.inputs.target == 'universal'
+    needs:
+      - build-arm64
+      - build-x64
+    runs-on: macos-14
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: yarn
+
+      - name: Download Apple Silicon app artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ShadowVerse-app-aarch64
+          path: .artifacts/aarch64
+
+      - name: Download Intel app artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ShadowVerse-app-x86_64
+          path: .artifacts/x86_64
+
+      - name: Restore app bundles
+        run: |
+          mkdir -p src-tauri/target/aarch64-apple-darwin/release/bundle/macos
+          mkdir -p src-tauri/target/x86_64-apple-darwin/release/bundle/macos
+          tar -C src-tauri/target/aarch64-apple-darwin/release/bundle/macos -xzf .artifacts/aarch64/ShadowVerse-aarch64.app.tar.gz
+          tar -C src-tauri/target/x86_64-apple-darwin/release/bundle/macos -xzf .artifacts/x86_64/ShadowVerse-x86_64.app.tar.gz
+
+      - name: Build Universal app and DMG
         run: |
           mkdir -p src-tauri/target/universal-apple-darwin/release/bundle/macos
           cp -R src-tauri/target/aarch64-apple-darwin/release/bundle/macos/ShadowVerse.app \
@@ -96,53 +251,21 @@ jobs:
         id: version
         run: echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
 
-      - name: Notarize and staple DMGs
+      - name: Notarize and staple Universal DMG
         run: |
+          DMG="src-tauri/target/universal-apple-darwin/release/bundle/dmg/ShadowVerse_${{ steps.version.outputs.version }}_universal.dmg"
           if [ -z "${APPLE_ID}" ] || [ -z "${APPLE_PASSWORD}" ] || [ -z "${APPLE_TEAM_ID}" ]; then
             echo "Skipping notarization: APPLE_ID/APPLE_PASSWORD/APPLE_TEAM_ID not fully configured."
             exit 0
           fi
+          xcrun notarytool submit "$DMG" --apple-id "${APPLE_ID}" --password "${APPLE_PASSWORD}" --team-id "${APPLE_TEAM_ID}" --wait
+          xcrun stapler staple "$DMG"
+          xcrun stapler validate "$DMG"
 
-          for DMG in \
-            src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/ShadowVerse_${{ steps.version.outputs.version }}_aarch64.dmg \
-            src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/ShadowVerse_${{ steps.version.outputs.version }}_x86_64.dmg \
-            src-tauri/target/universal-apple-darwin/release/bundle/dmg/ShadowVerse_${{ steps.version.outputs.version }}_universal.dmg; do
-            if [ -f "$DMG" ]; then
-              xcrun notarytool submit "$DMG" --apple-id "${APPLE_ID}" --password "${APPLE_PASSWORD}" --team-id "${APPLE_TEAM_ID}" --wait
-              xcrun stapler staple "$DMG"
-              xcrun stapler validate "$DMG"
-            fi
-          done
-
-      - name: Validate DMGs
-        run: |
-          for DMG in \
-            src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/ShadowVerse_${{ steps.version.outputs.version }}_aarch64.dmg \
-            src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/ShadowVerse_${{ steps.version.outputs.version }}_x86_64.dmg \
-            src-tauri/target/universal-apple-darwin/release/bundle/dmg/ShadowVerse_${{ steps.version.outputs.version }}_universal.dmg; do
-            if [ -f "$DMG" ]; then
-              hdiutil verify "$DMG"
-            fi
-          done
-
-      - name: Upload Apple Silicon DMG
-        if: github.event_name == 'push' || github.event.inputs.target == 'aarch64-apple-darwin' || github.event.inputs.target == 'universal'
-        uses: actions/upload-artifact@v4
-        with:
-          name: ShadowVerse-macOS-aarch64
-          path: src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/ShadowVerse_${{ steps.version.outputs.version }}_aarch64.dmg
-          if-no-files-found: error
-
-      - name: Upload Intel DMG
-        if: github.event_name == 'push' || github.event.inputs.target == 'x86_64-apple-darwin' || github.event.inputs.target == 'universal'
-        uses: actions/upload-artifact@v4
-        with:
-          name: ShadowVerse-macOS-x86_64
-          path: src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/ShadowVerse_${{ steps.version.outputs.version }}_x86_64.dmg
-          if-no-files-found: error
+      - name: Validate Universal DMG
+        run: hdiutil verify "src-tauri/target/universal-apple-darwin/release/bundle/dmg/ShadowVerse_${{ steps.version.outputs.version }}_universal.dmg"
 
       - name: Upload Universal DMG
-        if: github.event_name == 'push' || github.event.inputs.target == 'universal'
         uses: actions/upload-artifact@v4
         with:
           name: ShadowVerse-macOS-universal
