@@ -83,7 +83,7 @@ jobs:
 
       - name: Build artifacts
         env:
-          WHISPER_DONT_GENERATE_BINDINGS: ${{ startsWith(matrix.platform, 'macos-') && '1' || '' }}
+          WHISPER_DONT_GENERATE_BINDINGS: 1
         run: ${{ matrix.build_cmd }}
 
       - name: Upload macOS artifact
