@@ -153,8 +153,7 @@ jobs:
         if: ${{ !startsWith(matrix.label, 'macos-') }}
         uses: tauri-apps/tauri-action@v0
         env:
-          # If RELEASE_TOKEN exists (PAT with repo scope), prefer it.
-          # Fallback to the default GITHUB_TOKEN.
+          WHISPER_DONT_GENERATE_BINDINGS: "1"
           GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN != '' && secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -162,7 +161,6 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          # CUDA 环境变量（仅 Windows CUDA 生效）
           CUDA_PATH: ${{ matrix.platform == 'windows-latest' && contains(matrix.args, 'cuda') && env.CUDA_PATH || '' }}
         with:
           tagName: ${{ github.ref_name }}
