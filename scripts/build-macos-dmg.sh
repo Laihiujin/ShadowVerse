@@ -8,6 +8,7 @@ cd "$ROOT_DIR"
 
 export SDKROOT="${SDKROOT:-$(xcrun --sdk macosx --show-sdk-path)}"
 export CMAKE_OSX_DEPLOYMENT_TARGET="${CMAKE_OSX_DEPLOYMENT_TARGET:-13.3}"
+export LIBCLANG_PATH="${LIBCLANG_PATH:-$(brew --prefix llvm)/lib}"
 
 if [[ "$TARGET" == "aarch64-apple-darwin" ]]; then
   export GGML_METAL_EMBED_LIBRARY="${GGML_METAL_EMBED_LIBRARY:-1}"

@@ -21,12 +21,13 @@ use recorder::platforms::{
 use recorder::UserInfo;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use tauri::Emitter;
 use url::Url;
 
 use hyper::header::HeaderValue;
 use reqwest::cookie::{CookieStore, Jar};
 use reqwest::header::{HeaderMap, USER_AGENT};
+#[cfg(feature = "gui")]
+use tauri::Emitter;
 #[cfg(feature = "gui")]
 use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 use tokio::time::Duration;
@@ -747,6 +748,7 @@ pub async fn update_login_account(
         }
         remove_login_account_by_platform_from_paths(&paths, &platform);
 
+        #[cfg(not(feature = "headless"))]
         let _ = state.app_handle.emit("accounts-updated", ());
         return Ok(());
     }
