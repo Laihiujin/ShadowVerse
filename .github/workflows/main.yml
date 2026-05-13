@@ -21,11 +21,6 @@ jobs:
             target: x86_64-apple-darwin
             label: macos-x64
             build_cmd: bash ./scripts/build-macos-dmg.sh x86_64-apple-darwin
-          - platform: windows-latest
-            target: ""
-            label: windows-cpu
-            build_cmd: yarn tauri build --features gui --config src-tauri/tauri.windows.cpu.conf.json
-
     runs-on: ${{ matrix.platform }}
     permissions:
       contents: read
@@ -104,12 +99,57 @@ jobs:
             src-tauri/target/release/bundle/deb/*.deb
           if-no-files-found: warn
 
-      - name: Upload Windows artifact
-        if: matrix.platform == 'windows-latest'
+  build-windows-packages:
+    runs-on: windows-latest
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: yarn
+
+      - name: Install frontend dependencies
+        run: yarn install --frozen-lockfile
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Windows dependencies
+        shell: bash
+        run: |
+          choco install cmake llvm -y --no-progress
+          printf '%s\n' 'C:\Program Files\LLVM\bin' >> "$GITHUB_PATH"
+          printf '%s\n' 'C:\Program Files\CMake\bin' >> "$GITHUB_PATH"
+
+      - name: Install CUDA Toolkit
+        uses: Jimver/cuda-toolkit@v0.2.19
+        with:
+          cuda: "12.4.0"
+          method: network
+          sub-packages: '["nvcc", "cudart"]'
+
+      - name: Prepare FFmpeg resources
+        shell: powershell
+        run: .\ffmpeg_setup.ps1
+
+      - name: Build Windows packages
+        shell: powershell
+        env:
+          CUDA_PATH: ${{ env.CUDA_PATH }}
+        run: .\build.ps1
+
+      - name: Upload Windows packages artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ShadowVerse-${{ matrix.label }}
+          name: ShadowVerse-windows-packages
           path: |
-            src-tauri/target/release/bundle/nsis/*.exe
-            src-tauri/target/release/bundle/msi/*.msi
-          if-no-files-found: warn
+            src-tauri/target/shadowverse-cpu_*_x64-setup.exe
+            src-tauri/target/shadowverse-cpu_*_x64_en-US.msi
+            src-tauri/target/shadowverse-cuda_*_x64-setup.exe
+            src-tauri/target/shadowverse-cuda_*_x64_en-US.msi
+          if-no-files-found: error

@@ -44,22 +44,6 @@ jobs:
             tauri-config: ""
             include-updater-json: true
 
-          # Windows CPU-only
-          - platform: windows-latest
-            args: "--features gui"
-            rust-target: ""
-            label: windows-cpu
-            tauri-config: "--config src-tauri/tauri.windows.cpu.conf.json"
-            include-updater-json: true
-
-          # Windows CUDA
-          - platform: windows-latest
-            args: "--features gui,cuda"
-            rust-target: ""
-            label: windows-cuda
-            tauri-config: "--config src-tauri/tauri.windows.cuda.conf.json"
-            include-updater-json: false
-
     runs-on: ${{ matrix.platform }}
     name: Publish (${{ matrix.label }})
 
@@ -220,12 +204,90 @@ jobs:
           path: src-tauri/target/${{ matrix.rust-target }}/release/bundle/dmg/*.dmg
           if-no-files-found: error
 
-      - name: Upload Windows CPU artifact
-        if: matrix.label == 'windows-cpu'
+  publish-windows:
+    runs-on: windows-latest
+    name: Publish (windows-packages)
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Debug git info
+        shell: bash
+        run: |
+          git describe --tags --always
+          git remote -v
+          echo "Current tag: ${GITHUB_REF#refs/tags/}"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install yarn
+        run: npm install -g yarn
+
+      - name: Install frontend dependencies
+        run: yarn install --frozen-lockfile
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "./src-tauri -> target"
+
+      - name: Install Windows dependencies
+        shell: bash
+        run: |
+          choco install cmake llvm -y --no-progress
+          printf '%s\n' 'C:\Program Files\LLVM\bin' >> "$GITHUB_PATH"
+          printf '%s\n' 'C:\Program Files\CMake\bin' >> "$GITHUB_PATH"
+
+      - name: Install CUDA Toolkit
+        uses: Jimver/cuda-toolkit@v0.2.19
+        with:
+          cuda: "12.4.0"
+          method: network
+          sub-packages: '["nvcc", "cudart"]'
+
+      - name: Prepare FFmpeg resources
+        shell: powershell
+        run: .\ffmpeg_setup.ps1
+
+      - name: Build Windows packages
+        shell: powershell
+        env:
+          CUDA_PATH: ${{ env.CUDA_PATH }}
+        run: .\build.ps1
+
+      - name: Upload Windows packages to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ShadowVerse ${{ github.ref_name }}
+          draft: true
+          prerelease: false
+          files: |
+            src-tauri/target/shadowverse-cpu_*_x64-setup.exe
+            src-tauri/target/shadowverse-cpu_*_x64_en-US.msi
+            src-tauri/target/shadowverse-cuda_*_x64-setup.exe
+            src-tauri/target/shadowverse-cuda_*_x64_en-US.msi
+        env:
+          GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN != '' && secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - name: Upload Windows packages artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ShadowVerse-windows-cpu
+          name: ShadowVerse-windows-packages
           path: |
-            src-tauri/target/release/bundle/nsis/*.exe
-            src-tauri/target/release/bundle/msi/*.msi
+            src-tauri/target/shadowverse-cpu_*_x64-setup.exe
+            src-tauri/target/shadowverse-cpu_*_x64_en-US.msi
+            src-tauri/target/shadowverse-cuda_*_x64-setup.exe
+            src-tauri/target/shadowverse-cuda_*_x64_en-US.msi
           if-no-files-found: error

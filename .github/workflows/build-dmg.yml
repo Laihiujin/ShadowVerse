@@ -14,7 +14,6 @@ on:
           - universal
   push:
     branches:
-      - Siuyechu
       - main
       - develop
     paths:

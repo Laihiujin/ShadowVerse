@@ -1,10 +1,25 @@
 $ErrorActionPreference = "Stop"
 Set-Location $PSScriptRoot
 
+function Invoke-Yarn {
+    param(
+        [Parameter(ValueFromRemainingArguments = $true)]
+        [string[]]$Args
+    )
+
+    if (Get-Command yarn -ErrorAction SilentlyContinue) {
+        & yarn @Args
+        return
+    }
+
+    & corepack yarn @Args
+}
+
 function Rename-And-MoveBundle {
     param(
         [string]$BundlePath,
         [string]$Suffix,
+        [string]$ProductName,
         [switch]$Debug
     )
 
@@ -13,8 +28,14 @@ function Rename-And-MoveBundle {
     }
 
     Get-ChildItem -Path $BundlePath -File | ForEach-Object {
-        $newName = $_.Name -replace 'ShadowVerse', "ShadowVerse-$Suffix"
-        $newName = $newName -replace 'shadowverse', "shadowverse-$Suffix"
+        $newName = $_.Name
+
+        if ($ProductName) {
+            $newName = $newName -replace [regex]::Escape($ProductName), "shadowverse-$Suffix"
+        } elseif ($newName -notmatch "(?i)shadowverse-$([regex]::Escape($Suffix))") {
+            $newName = $newName -replace 'ShadowVerse', "shadowverse-$Suffix"
+            $newName = $newName -replace 'shadowverse', "shadowverse-$Suffix"
+        }
 
         if ($Debug) {
             $newName = $newName -replace '\.msi$', '-debug.msi'
@@ -37,24 +58,24 @@ function Test-CudaResources {
     return $true
 }
 
-# CPU build (default config)
-yarn tauri build
-yarn tauri build --debug
+# CPU build
+Invoke-Yarn tauri build --features gui --config src-tauri/tauri.windows.cpu.conf.json
+Invoke-Yarn tauri build --debug --features gui --config src-tauri/tauri.windows.cpu.conf.json
 
-Rename-And-MoveBundle -BundlePath ./src-tauri/target/release/bundle/msi -Suffix "cpu"
-Rename-And-MoveBundle -BundlePath ./src-tauri/target/release/bundle/nsis -Suffix "cpu"
-Rename-And-MoveBundle -BundlePath ./src-tauri/target/debug/bundle/msi -Suffix "cpu" -Debug
-Rename-And-MoveBundle -BundlePath ./src-tauri/target/debug/bundle/nsis -Suffix "cpu" -Debug
+Rename-And-MoveBundle -BundlePath ./src-tauri/target/release/bundle/msi -Suffix "cpu" -ProductName "ShadowVerse-CPU"
+Rename-And-MoveBundle -BundlePath ./src-tauri/target/release/bundle/nsis -Suffix "cpu" -ProductName "ShadowVerse-CPU"
+Rename-And-MoveBundle -BundlePath ./src-tauri/target/debug/bundle/msi -Suffix "cpu" -ProductName "ShadowVerse-CPU" -Debug
+Rename-And-MoveBundle -BundlePath ./src-tauri/target/debug/bundle/nsis -Suffix "cpu" -ProductName "ShadowVerse-CPU" -Debug
 
 # CUDA build (override config)
 if (Test-CudaResources) {
-    yarn tauri build --config src-tauri/tauri.windows.cuda.conf.json
-    yarn tauri build --debug --config src-tauri/tauri.windows.cuda.conf.json
+    Invoke-Yarn tauri build --features gui,cuda --config src-tauri/tauri.windows.cuda.conf.json
+    Invoke-Yarn tauri build --debug --features gui,cuda --config src-tauri/tauri.windows.cuda.conf.json
 } else {
     Write-Host "Skip CUDA build: missing cudart/cublas DLLs in ./src-tauri" -ForegroundColor Yellow
 }
 
-Rename-And-MoveBundle -BundlePath ./src-tauri/target/release/bundle/msi -Suffix "cuda"
-Rename-And-MoveBundle -BundlePath ./src-tauri/target/release/bundle/nsis -Suffix "cuda"
-Rename-And-MoveBundle -BundlePath ./src-tauri/target/debug/bundle/msi -Suffix "cuda" -Debug
-Rename-And-MoveBundle -BundlePath ./src-tauri/target/debug/bundle/nsis -Suffix "cuda" -Debug
+Rename-And-MoveBundle -BundlePath ./src-tauri/target/release/bundle/msi -Suffix "cuda" -ProductName "ShadowVerse-CUDA"
+Rename-And-MoveBundle -BundlePath ./src-tauri/target/release/bundle/nsis -Suffix "cuda" -ProductName "ShadowVerse-CUDA"
+Rename-And-MoveBundle -BundlePath ./src-tauri/target/debug/bundle/msi -Suffix "cuda" -ProductName "ShadowVerse-CUDA" -Debug
+Rename-And-MoveBundle -BundlePath ./src-tauri/target/debug/bundle/nsis -Suffix "cuda" -ProductName "ShadowVerse-CUDA" -Debug
