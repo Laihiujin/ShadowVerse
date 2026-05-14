@@ -131,7 +131,11 @@ jobs:
         with:
           cuda: "12.4.0"
           method: network
-          sub-packages: '["nvcc", "cudart"]'
+          sub-packages: '["nvcc", "cudart", "cublas"]'
+
+      - name: Prepare CUDA resources
+        shell: powershell
+        run: .\prepare-cuda-resources.ps1
 
       - name: Prepare FFmpeg resources
         shell: powershell
@@ -141,6 +145,7 @@ jobs:
         shell: powershell
         env:
           CUDA_PATH: ${{ env.CUDA_PATH }}
+          REQUIRE_CUDA_BUILD: "1"
         run: .\build.ps1
 
       - name: Upload Windows packages artifact
