@@ -26,6 +26,8 @@ on:
       - .github/workflows/build-dmg.yml
 
 env:
+  APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+  APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
   APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
   APPLE_ID: ${{ secrets.APPLE_ID }}
   APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
@@ -63,6 +65,19 @@ jobs:
 
       - name: Install frontend dependencies
         run: yarn install --frozen-lockfile
+
+      - name: Prepare macOS signing env
+        shell: bash
+        run: |
+          if [ -n "${APPLE_SIGNING_IDENTITY:-}" ]; then
+            exit 0
+          fi
+
+          echo "Using ad-hoc codesign because APPLE_SIGNING_IDENTITY is not configured."
+          echo "APPLE_SIGNING_IDENTITY=-" >> "$GITHUB_ENV"
+          echo "APPLE_ID=" >> "$GITHUB_ENV"
+          echo "APPLE_PASSWORD=" >> "$GITHUB_ENV"
+          echo "APPLE_TEAM_ID=" >> "$GITHUB_ENV"
 
       - name: Build Apple Silicon DMG
         env:
@@ -139,6 +154,19 @@ jobs:
 
       - name: Install frontend dependencies
         run: yarn install --frozen-lockfile
+
+      - name: Prepare macOS signing env
+        shell: bash
+        run: |
+          if [ -n "${APPLE_SIGNING_IDENTITY:-}" ]; then
+            exit 0
+          fi
+
+          echo "Using ad-hoc codesign because APPLE_SIGNING_IDENTITY is not configured."
+          echo "APPLE_SIGNING_IDENTITY=-" >> "$GITHUB_ENV"
+          echo "APPLE_ID=" >> "$GITHUB_ENV"
+          echo "APPLE_PASSWORD=" >> "$GITHUB_ENV"
+          echo "APPLE_TEAM_ID=" >> "$GITHUB_ENV"
 
       - name: Build Intel DMG
         env:
@@ -224,6 +252,19 @@ jobs:
           mkdir -p src-tauri/target/x86_64-apple-darwin/release/bundle/macos
           tar -C src-tauri/target/aarch64-apple-darwin/release/bundle/macos -xzf .artifacts/aarch64/ShadowVerse-aarch64.app.tar.gz
           tar -C src-tauri/target/x86_64-apple-darwin/release/bundle/macos -xzf .artifacts/x86_64/ShadowVerse-x86_64.app.tar.gz
+
+      - name: Prepare macOS signing env
+        shell: bash
+        run: |
+          if [ -n "${APPLE_SIGNING_IDENTITY:-}" ]; then
+            exit 0
+          fi
+
+          echo "Using ad-hoc codesign because APPLE_SIGNING_IDENTITY is not configured."
+          echo "APPLE_SIGNING_IDENTITY=-" >> "$GITHUB_ENV"
+          echo "APPLE_ID=" >> "$GITHUB_ENV"
+          echo "APPLE_PASSWORD=" >> "$GITHUB_ENV"
+          echo "APPLE_TEAM_ID=" >> "$GITHUB_ENV"
 
       - name: Build Universal app and DMG
         run: |
