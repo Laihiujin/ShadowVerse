@@ -37,7 +37,7 @@ jobs:
   build-arm64:
     name: Build Apple Silicon DMG
     if: github.event_name == 'push' || github.event.inputs.target == 'aarch64-apple-darwin' || github.event.inputs.target == 'universal'
-    runs-on: macos-14
+    runs-on: macos-15
     permissions:
       contents: write
 
@@ -218,7 +218,7 @@ jobs:
     needs:
       - build-arm64
       - build-x64
-    runs-on: macos-14
+    runs-on: macos-15
     permissions:
       contents: write
 

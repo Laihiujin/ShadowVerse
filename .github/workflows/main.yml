@@ -9,7 +9,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - platform: macos-14
+          - platform: macos-15
             target: aarch64-apple-darwin
             label: macos-arm64
             build_cmd: bash ./scripts/build-macos-dmg.sh aarch64-apple-darwin
@@ -100,7 +100,7 @@ jobs:
           if-no-files-found: warn
 
   build-windows-packages:
-    runs-on: windows-latest
+    runs-on: windows-2022
     permissions:
       contents: read
 

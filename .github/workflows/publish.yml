@@ -21,7 +21,7 @@ jobs:
       matrix:
         include:
           # macOS arm64 (Apple Silicon)
-          - platform: macos-14
+          - platform: macos-15
             args: "--target aarch64-apple-darwin --bundles app"
             rust-target: aarch64-apple-darwin
             label: macos-arm64
@@ -205,7 +205,7 @@ jobs:
           if-no-files-found: error
 
   publish-windows:
-    runs-on: windows-latest
+    runs-on: windows-2022
     name: Publish (windows-packages)
     permissions:
       contents: write
