@@ -71,7 +71,6 @@ aes-gcm = "0.10"
 aead = "0.5"
 rusqlite = "0.32"
 anyhow = "1.0"
-tauri-plugin-process = "2.3.1"
 
 [features]
 # this feature is used for production builds or when `devPath` points to the filesystem
@@ -85,6 +84,7 @@ gui = [
     "tauri-plugin-single-instance",
     "tauri-plugin-dialog",
     "tauri-plugin-shell",
+    "tauri-plugin-process",
     "tauri-plugin-fs",
     "tauri-plugin-http",
     "tauri-plugin-sql",
@@ -112,6 +112,10 @@ optional = true
 
 [dependencies.tauri-plugin-shell]
 version = "2.3"
+optional = true
+
+[dependencies.tauri-plugin-process]
+version = "2.3.1"
 optional = true
 
 [dependencies.tauri-plugin-fs]
