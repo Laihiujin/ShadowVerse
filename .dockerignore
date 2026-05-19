@@ -37,3 +37,9 @@ yarn-error.log*
 # Tauri specific
 src-tauri/target
 src-tauri/dist 
+src-tauri/*.dll
+src-tauri/*.exe
+ffmpeg
+ffmpeg-release-essentials.zip
+.artifacts
+release

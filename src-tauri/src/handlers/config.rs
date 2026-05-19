@@ -2,13 +2,11 @@ use crate::config::Config;
 #[cfg(feature = "headless")]
 use crate::constants::API_PORT;
 use crate::danmu2ass::Danmu2AssOptions;
-use crate::state::State;
 use crate::state_type;
 use recorder::platforms::PlatformType;
 #[cfg(feature = "gui")]
 use tauri::Manager;
 
-#[cfg(feature = "gui")]
 #[cfg_attr(feature = "gui", tauri::command)]
 pub async fn get_config(state: state_type!()) -> Result<Config, ()> {
     let mut config = state.config.read().await.clone();

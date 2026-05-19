@@ -13,7 +13,7 @@ use crate::{
     handlers::{
         account::{
             add_account, get_account_count, get_accounts, get_qr, get_qr_status, remove_account,
-            update_default_account,
+            update_login_account,
         },
         config::{
             get_config, get_static_port, update_auto_generate, update_clip_name_format,
@@ -155,7 +155,7 @@ async fn handler_update_default_account(
     state: axum::extract::State<State>,
     Json(param): Json<UpdateDefaultAccountRequest>,
 ) -> Result<Json<ApiResponse<()>>, ApiError> {
-    update_default_account(state.0, param.platform, param.cookies, param.extra).await?;
+    update_login_account(state.0, param.platform, param.cookies, param.extra).await?;
     Ok(Json(ApiResponse::success(())))
 }
 
@@ -420,13 +420,20 @@ async fn handler_update_openai_api_key(
 struct UpdateAutoGenerateRequest {
     enable: bool,
     encode_danmu: bool,
+    #[serde(default)]
+    delete_cache_after_clip: bool,
 }
 
 async fn handler_update_auto_generate(
     state: axum::extract::State<State>,
     Json(auto_generate): Json<UpdateAutoGenerateRequest>,
 ) -> Result<Json<ApiResponse<()>>, ApiError> {
-    update_auto_generate(state.0, auto_generate.enable, auto_generate.encode_danmu)
+    update_auto_generate(
+        state.0,
+        auto_generate.enable,
+        auto_generate.encode_danmu,
+        auto_generate.delete_cache_after_clip,
+    )
         .await
         .expect("Failed to update auto generate");
     Ok(Json(ApiResponse::success(())))
@@ -1063,6 +1070,8 @@ struct GetFileSizeRequest {
 #[serde(rename_all = "camelCase")]
 struct GenerateWholeClipRequest {
     encode_danmu: bool,
+    #[serde(default)]
+    delete_cache_after_clip: bool,
     platform: String,
     room_id: String,
     parent_id: String,
@@ -1077,6 +1086,7 @@ async fn handler_generate_whole_clip(
     let task = generate_whole_clip(
         state.0,
         param.encode_danmu,
+        param.delete_cache_after_clip,
         param.platform,
         param.room_id,
         param.parent_id,

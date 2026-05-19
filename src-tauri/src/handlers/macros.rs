@@ -10,6 +10,6 @@ macro_rules! state_type {
 #[macro_export]
 macro_rules! state_type {
     () => {
-        State
+        crate::state::State
     };
 }

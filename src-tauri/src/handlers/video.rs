@@ -74,7 +74,6 @@ fn get_optimal_thumbnail_timestamp(duration: f64) -> f64 {
     }
 }
 
-use crate::state::State;
 use crate::state_type;
 
 // 带进度的文件复制函数

@@ -1,6 +1,5 @@
 use std::path::PathBuf;
 
-use crate::state::State;
 use crate::state_type;
 
 #[cfg(all(feature = "gui", not(feature = "headless")))]

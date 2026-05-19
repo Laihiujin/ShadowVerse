@@ -9,7 +9,6 @@ use crate::progress::progress_reporter::EventEmitter;
 use crate::progress::progress_reporter::ProgressReporter;
 use crate::progress::progress_reporter::ProgressReporterTrait;
 use crate::recorder_manager::RecorderList;
-use crate::state::State;
 use crate::state_type;
 use crate::task::Task;
 use crate::task::TaskPriority;
@@ -21,7 +20,6 @@ use recorder::platforms::douyin;
 use recorder::platforms::PlatformType;
 use recorder::platforms::{huya, kuaishou, tiktok};
 use recorder::RecorderInfo;
-#[cfg(feature = "gui")]
 use serde::Deserialize;
 use serde::Serialize;
 

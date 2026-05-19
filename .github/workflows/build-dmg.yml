@@ -53,6 +53,9 @@ jobs:
           node-version: 20
           cache: yarn
 
+      - name: Install yarn
+        run: npm install -g yarn
+
       - name: Install macOS dependencies
         run: |
           brew install cmake llvm
@@ -141,6 +144,9 @@ jobs:
         with:
           node-version: 20
           cache: yarn
+
+      - name: Install yarn
+        run: npm install -g yarn
 
       - name: Install macOS dependencies
         run: |
@@ -233,6 +239,9 @@ jobs:
         with:
           node-version: 20
           cache: yarn
+
+      - name: Install yarn
+        run: npm install -g yarn
 
       - name: Download Apple Silicon app artifact
         uses: actions/download-artifact@v4

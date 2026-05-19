@@ -126,7 +126,7 @@ jobs:
       # ---------- Windows CUDA Toolkit ----------
       - name: Install CUDA Toolkit (Windows CUDA only)
         if: matrix.platform == 'windows-latest' && contains(matrix.args, 'cuda')
-        uses: Jimver/cuda-toolkit@v0.2.19
+        uses: Jimver/cuda-toolkit@v0.2.24
         with:
           cuda: "12.4.0"
           method: network
@@ -250,7 +250,7 @@ jobs:
           printf '%s\n' 'C:\Program Files\CMake\bin' >> "$GITHUB_PATH"
 
       - name: Install CUDA Toolkit
-        uses: Jimver/cuda-toolkit@v0.2.19
+        uses: Jimver/cuda-toolkit@v0.2.24
         with:
           cuda: "12.4.0"
           method: network

@@ -34,6 +34,9 @@ jobs:
           node-version: 20
           cache: yarn
 
+      - name: Install yarn
+        run: npm install -g yarn
+
       - name: Install frontend dependencies
         run: yarn install --frozen-lockfile
 
@@ -113,6 +116,9 @@ jobs:
           node-version: 20
           cache: yarn
 
+      - name: Install yarn
+        run: npm install -g yarn
+
       - name: Install frontend dependencies
         run: yarn install --frozen-lockfile
 
@@ -127,7 +133,7 @@ jobs:
           printf '%s\n' 'C:\Program Files\CMake\bin' >> "$GITHUB_PATH"
 
       - name: Install CUDA Toolkit
-        uses: Jimver/cuda-toolkit@v0.2.19
+        uses: Jimver/cuda-toolkit@v0.2.24
         with:
           cuda: "12.4.0"
           method: network

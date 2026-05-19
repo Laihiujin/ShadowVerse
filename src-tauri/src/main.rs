@@ -502,8 +502,6 @@ impl MigrationSource<'static> for MigrationList {
 
 #[cfg(feature = "headless")]
 async fn setup_server_state(args: Args) -> Result<State, Box<dyn std::error::Error>> {
-    use std::path::PathBuf;
-
     use crate::{constants::API_PORT, static_server::StaticServer, task::TaskManager};
     use progress::progress_manager::ProgressManager;
     use progress::progress_reporter::EventEmitter;
@@ -578,7 +576,7 @@ async fn setup_server_state(args: Args) -> Result<State, Box<dyn std::error::Err
         }
     }
     let config_snapshot = config.read().await.clone();
-    crate::handlers::account::ensure_default_accounts(&db, &config_snapshot).await;
+    crate::handlers::account::ensure_login_accounts(&db, &config_snapshot).await;
     crate::handlers::account::ensure_guest_accounts(&db, &config_snapshot).await;
 
     let progress_manager = Arc::new(ProgressManager::new());
